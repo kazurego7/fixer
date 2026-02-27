@@ -1,0 +1,83 @@
+:root {
+  --pico-font-size: 95%;
+}
+
+body {
+  background: var(--pico-background-color);
+}
+
+.app-container {
+  padding-top: 0.75rem;
+  padding-bottom: 5.5rem;
+  max-width: 860px;
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  max-height: 220px;
+  overflow: auto;
+}
+
+.list li {
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+.list li:last-child {
+  border-bottom: 0;
+}
+
+.list button {
+  margin-top: 0.5rem;
+  margin-bottom: 0;
+}
+
+.output {
+  margin-top: 0.5rem;
+  min-height: 240px;
+  max-height: 46vh;
+  overflow: auto;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+.output pre,
+.output .diff {
+  overflow: auto;
+  background: #111827;
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.output code,
+.output .diff {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.autoscroll-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 640px) {
+  .app-container {
+    padding-bottom: 6rem;
+  }
+
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+
+  #send,
+  #cancel {
+    position: sticky;
+    bottom: 0.5rem;
+    z-index: 3;
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "codex-mobile-ui",
+  "version": "0.1.0",
+  "description": "Mobile web UI for local Codex App Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  }
+}

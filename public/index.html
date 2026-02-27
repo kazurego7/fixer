@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ja" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Codex Mobile UI</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="container app-container">
+    <header>
+      <h1>Codex Mobile UI</h1>
+      <p>GitHub連携 + Thread/Turn 実行</p>
+    </header>
+
+    <article>
+      <h2>1) GitHub リポジトリ一覧</h2>
+      <label>GitHub Token
+        <input id="token" type="password" placeholder="ghp_..." autocomplete="off" />
+      </label>
+      <label>検索
+        <input id="query" type="text" placeholder="repo名で検索" />
+      </label>
+      <button id="loadRepos">一覧取得</button>
+      <ul id="repoList" class="list"></ul>
+    </article>
+
+    <article>
+      <h2>2) クローン状態</h2>
+      <p id="cloneState">リポジトリ未選択</p>
+      <button id="cloneBtn" class="secondary">クローン実行</button>
+    </article>
+
+    <article>
+      <h2>3) セッション（Thread）</h2>
+      <div class="grid two-col">
+        <button id="loadThreads">Thread一覧更新</button>
+        <button id="newThread" class="secondary">新規Thread開始</button>
+      </div>
+      <ul id="threadList" class="list"></ul>
+      <p id="activeThread">選択中Thread: なし</p>
+    </article>
+
+    <article>
+      <h2>4) チャット（Turn）</h2>
+      <label>画像添付
+        <input id="imageInput" type="file" accept="image/*" />
+      </label>
+      <label>指示
+        <textarea id="message" rows="4" placeholder="指示を入力"></textarea>
+      </label>
+      <div class="grid two-col">
+        <button id="send">送信</button>
+        <button id="cancel" class="contrast">停止</button>
+      </div>
+      <label class="autoscroll-label"><input id="autoScroll" type="checkbox" checked /> 自動スクロール</label>
+      <article id="output" class="output" aria-live="polite"></article>
+    </article>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
