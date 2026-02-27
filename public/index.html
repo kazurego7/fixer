@@ -8,56 +8,78 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <main class="container app-container">
-    <header>
-      <h1>Codex Mobile UI</h1>
-      <p>GitHub連携 + Thread/Turn 実行</p>
-    </header>
+  <header class="topbar container">
+    <strong>Codex Mobile UI</strong>
+    <small>ローカル Codex App Server</small>
+  </header>
 
-    <article>
-      <h2>1) GitHub リポジトリ一覧</h2>
-      <label>GitHub Token
-        <input id="token" type="password" placeholder="ghp_..." autocomplete="off" />
-      </label>
-      <label>検索
-        <input id="query" type="text" placeholder="repo名で検索" />
-      </label>
-      <button id="loadRepos">一覧取得</button>
-      <ul id="repoList" class="list"></ul>
-    </article>
-
-    <article>
-      <h2>2) クローン状態</h2>
-      <p id="cloneState">リポジトリ未選択</p>
-      <button id="cloneBtn" class="secondary">クローン実行</button>
-    </article>
-
-    <article>
-      <h2>3) セッション（Thread）</h2>
-      <div class="grid two-col">
-        <button id="loadThreads">Thread一覧更新</button>
-        <button id="newThread" class="secondary">新規Thread開始</button>
+  <main class="container app-layout">
+    <section class="panel" aria-labelledby="repo-heading">
+      <div class="panel-head">
+        <h2 id="repo-heading">① リポジトリ選択</h2>
+        <small>GitHub連携</small>
       </div>
-      <ul id="threadList" class="list"></ul>
-      <p id="activeThread">選択中Thread: なし</p>
-    </article>
+      <div class="panel-body">
+        <label>GitHub Token
+          <input id="token" type="password" placeholder="ghp_..." autocomplete="off" />
+        </label>
+        <div class="grid search-row">
+          <input id="query" type="text" placeholder="repo名で検索" />
+          <button id="loadRepos">一覧取得</button>
+        </div>
+        <ul id="repoList" class="list"></ul>
+      </div>
+    </section>
 
-    <article>
-      <h2>4) チャット（Turn）</h2>
-      <label>画像添付
-        <input id="imageInput" type="file" accept="image/*" />
-      </label>
-      <label>指示
-        <textarea id="message" rows="4" placeholder="指示を入力"></textarea>
-      </label>
+    <section class="panel" aria-labelledby="clone-heading">
+      <div class="panel-head">
+        <h2 id="clone-heading">② クローン状態</h2>
+      </div>
+      <div class="panel-body grid status-row">
+        <p id="cloneState" class="status-text">リポジトリ未選択</p>
+        <button id="cloneBtn" class="secondary">クローン実行</button>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="thread-heading">
+      <div class="panel-head">
+        <h2 id="thread-heading">③ セッション（Thread）</h2>
+      </div>
+      <div class="panel-body">
+        <div class="grid two-col">
+          <button id="loadThreads">Thread一覧更新</button>
+          <button id="newThread" class="secondary">新規Thread開始</button>
+        </div>
+        <ul id="threadList" class="list"></ul>
+        <p id="activeThread" class="status-text">選択中Thread: なし</p>
+      </div>
+    </section>
+
+    <section class="panel chat-panel" aria-labelledby="chat-heading">
+      <div class="panel-head">
+        <h2 id="chat-heading">④ チャット（Turn）</h2>
+      </div>
+      <div class="panel-body">
+        <div class="chat-tools grid two-col">
+          <label>画像添付
+            <input id="imageInput" type="file" accept="image/*" />
+          </label>
+          <label class="autoscroll-label"><input id="autoScroll" type="checkbox" checked /> 自動スクロール</label>
+        </div>
+        <article id="output" class="output" aria-live="polite"></article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="composer" aria-label="メッセージ入力エリア">
+    <div class="container composer-inner">
+      <textarea id="message" rows="3" placeholder="指示を入力"></textarea>
       <div class="grid two-col">
         <button id="send">送信</button>
         <button id="cancel" class="contrast">停止</button>
       </div>
-      <label class="autoscroll-label"><input id="autoScroll" type="checkbox" checked /> 自動スクロール</label>
-      <article id="output" class="output" aria-live="polite"></article>
-    </article>
-  </main>
+    </div>
+  </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="/app.js"></script>

@@ -3,13 +3,65 @@
 }
 
 body {
-  background: var(--pico-background-color);
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+  padding-bottom: 12rem;
 }
 
-.app-container {
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 0.75rem 0;
+  backdrop-filter: blur(6px);
+  background: rgba(255, 255, 255, 0.85);
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.app-layout {
   padding-top: 0.75rem;
-  padding-bottom: 5.5rem;
-  max-width: 860px;
+  max-width: 920px;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.panel-head {
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.panel-body {
+  padding: 0.9rem;
+}
+
+.search-row {
+  grid-template-columns: 1fr auto;
+}
+
+.status-row {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.status-text {
+  margin: 0;
 }
 
 .list {
@@ -36,10 +88,14 @@ body {
   margin-bottom: 0;
 }
 
+.chat-tools {
+  align-items: end;
+}
+
 .output {
   margin-top: 0.5rem;
-  min-height: 240px;
-  max-height: 46vh;
+  min-height: 280px;
+  max-height: 52vh;
   overflow: auto;
   background: #0f172a;
   color: #e2e8f0;
@@ -62,22 +118,42 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  margin-top: 0.5rem;
+}
+
+.composer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  background: rgba(255, 255, 255, 0.96);
+  border-top: 1px solid var(--pico-muted-border-color);
+  backdrop-filter: blur(8px);
+}
+
+.composer-inner {
+  max-width: 920px;
+  padding-top: 0.65rem;
+  padding-bottom: 0.65rem;
+}
+
+.composer textarea {
+  margin: 0;
+  min-height: 5.5rem;
 }
 
 @media (max-width: 640px) {
-  .app-container {
-    padding-bottom: 6rem;
+  body {
+    padding-bottom: 13rem;
   }
 
-  .two-col {
+  .two-col,
+  .search-row,
+  .status-row {
     grid-template-columns: 1fr;
   }
 
-  #send,
-  #cancel {
-    position: sticky;
-    bottom: 0.5rem;
-    z-index: 3;
+  .panel-body {
+    padding: 0.75rem;
   }
 }
