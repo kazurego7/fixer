@@ -1,0 +1,411 @@
+:root {
+  --fx-safe-top: env(safe-area-inset-top, 0px);
+  --fx-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --f7-theme-color: #2563eb;
+  --f7-theme-color-rgb: 37, 99, 235;
+  --f7-theme-color-shade: #1d4ed8;
+  --f7-theme-color-tint: #3b82f6;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: #0f172a;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+  overflow: hidden;
+}
+
+.page-content.fx-page {
+  overflow: hidden !important;
+}
+
+.fx-page {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.fx-page-repos,
+.fx-page-chat {
+  background: transparent;
+}
+
+.fx-error-panel {
+  margin: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.fx-error-panel h2,
+.fx-error-panel p {
+  margin: 0 0 0.55rem;
+}
+
+.fx-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.fx-code {
+  margin: 0 0 0.65rem;
+  padding: 0.7rem;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #e2e8f0;
+  overflow: auto;
+}
+
+.fx-repos-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.fx-repos-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: calc(0.55rem + var(--fx-safe-top)) 0.75rem 0.45rem;
+  background: rgba(248, 250, 252, 0.98);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid #dbeafe;
+}
+
+.fx-repos-toolbar input {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  height: 2.8rem;
+  border-radius: 12px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  padding: 0 0.8rem;
+  font-size: 0.95rem;
+}
+
+.fx-filter {
+  display: flex;
+  gap: 0.45rem;
+  margin-top: 0.55rem;
+  overflow-x: auto;
+}
+
+.fx-filter button {
+  flex: 0 0 auto;
+}
+
+.fx-repo-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.55rem 0.75rem calc(0.9rem + var(--fx-safe-bottom));
+}
+
+.fx-repo-tile {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #dbeafe;
+  background: #fff;
+  border-radius: 14px;
+  padding: 0.85rem;
+  margin-bottom: 0.6rem;
+  cursor: pointer;
+}
+
+.fx-repo-tile.is-selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.fx-repo-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.fx-repo-text {
+  min-width: 0;
+}
+
+.fx-repo-name {
+  font-size: 1.08rem;
+  line-height: 1.3;
+  font-weight: 700;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.fx-repo-owner {
+  margin-top: 0.15rem;
+  font-size: 0.84rem;
+  color: #475569;
+  word-break: break-word;
+}
+
+.fx-chip {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.fx-chip.is-ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.fx-mini {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.fx-chat-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: calc(0.45rem + var(--fx-safe-top)) 0.75rem 0.5rem;
+  border-bottom: 1px solid #dbeafe;
+  background: rgba(248, 250, 252, 0.98);
+  backdrop-filter: blur(10px);
+}
+
+.fx-back-icon {
+  position: absolute;
+  left: 0.75rem;
+  top: calc(0.2rem + var(--fx-safe-top));
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.fx-repo-pill {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0f172a;
+  font-size: 0.94rem;
+  font-weight: 700;
+  text-align: center;
+  max-width: calc(100% - 5.2rem);
+}
+
+.fx-new-thread-icon {
+  position: absolute;
+  right: 0.75rem;
+  top: calc(0.2rem + var(--fx-safe-top));
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.fx-new-thread-icon:disabled {
+  opacity: 0.45;
+}
+
+.fx-chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.85rem 0.75rem 5.4rem;
+}
+
+.fx-msg {
+  display: flex;
+  margin-bottom: 0.75rem;
+}
+
+.fx-msg-bubble {
+  max-width: 92%;
+  border-radius: 14px;
+  padding: 0.65rem 0.75rem;
+  line-height: 1.45;
+  font-size: 0.95rem;
+  word-break: break-word;
+}
+
+.fx-msg-user {
+  justify-content: flex-end;
+}
+
+.fx-msg-user .fx-msg-bubble {
+  background: #2563eb;
+  color: #fff;
+  border-bottom-right-radius: 6px;
+}
+
+.fx-msg-user .fx-msg-bubble p {
+  margin: 0;
+}
+
+.fx-msg-assistant {
+  justify-content: flex-start;
+}
+
+.fx-msg-assistant .fx-msg-bubble {
+  background: #fff;
+  color: #0f172a;
+  border: 1px solid #dbeafe;
+  border-bottom-left-radius: 6px;
+}
+
+.fx-reasoning {
+  font-size: 0.86rem;
+  color: #334155;
+  font-style: italic;
+}
+
+.fx-msg-assistant .fx-msg-bubble > :first-child {
+  margin-top: 0;
+}
+
+.fx-msg-assistant .fx-msg-bubble > :last-child {
+  margin-bottom: 0;
+}
+
+.fx-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  min-height: 1rem;
+}
+
+.fx-typing span {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: #64748b;
+  opacity: 0.35;
+  animation: fx-dot 1s ease-in-out infinite;
+}
+
+.fx-typing span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.fx-typing span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes fx-dot {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.3;
+  }
+  40% {
+    transform: translateY(-2px);
+    opacity: 1;
+  }
+}
+
+.fx-diff {
+  margin: 0;
+  white-space: pre-wrap;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 10px;
+  padding: 0.65rem;
+  overflow: auto;
+}
+
+.fx-composer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  padding: 0.42rem 0.6rem calc(0.42rem + var(--fx-safe-bottom));
+  background: rgba(248, 250, 252, 0.98);
+  border-top: 1px solid #dbeafe;
+  backdrop-filter: blur(12px);
+}
+
+.fx-composer-inner {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem;
+  align-items: end;
+}
+
+.fx-composer textarea {
+  width: 100%;
+  margin: 0;
+  resize: none;
+  min-height: 2.05rem;
+  max-height: 16vh;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.92rem;
+  transition: min-height 0.16s ease, max-height 0.16s ease;
+}
+
+.fx-composer textarea:focus {
+  min-height: 6.4rem;
+  max-height: 38vh;
+}
+
+.fx-composer-actions {
+  display: flex;
+  transition: opacity 0.14s ease, transform 0.14s ease, width 0.14s ease;
+}
+
+.fx-composer-actions.is-hidden {
+  opacity: 0;
+  transform: translateX(6px);
+  width: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.fx-icon-btn {
+  min-width: 2.1rem;
+  min-height: 2.1rem;
+  padding: 0;
+  border-radius: 10px;
+  font-size: 0.92rem;
+}
+
+.fx-icon-btn:disabled {
+  opacity: 0.4;
+  filter: saturate(0.25);
+}
+
+@media (min-width: 768px) {
+  .fx-chat-scroll {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .fx-msg-bubble {
+    max-width: 75%;
+  }
+}
