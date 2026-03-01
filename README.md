@@ -9,6 +9,12 @@ npm run build
 npm start
 ```
 
+開発時（サーバー自動再起動 + フロント再ビルド監視）:
+
+```bash
+npm run dev
+```
+
 フロント開発:
 
 ```bash

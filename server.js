@@ -156,12 +156,68 @@ function buildTurnInput(prompt, attachments) {
   return input;
 }
 
+function isThreadMissingError(error) {
+  const message = String(error?.message || '');
+  return message.includes('thread not found') || message.includes('thread_not_found') || message.includes('no rollout found for thread id');
+}
+
+function isThreadWarmupError(error) {
+  const message = String(error?.message || '');
+  return message.includes('no rollout found for thread id') || message.includes('thread_not_found') || message.includes('thread not found');
+}
+
+async function startTurnWithRetry(threadId, input, maxAttempts = 20, onRetry = null) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const turnStart = await rpcRequest('turn/start', { threadId, input });
+      const turnId = turnStart?.turn?.id;
+      if (!turnId) throw new Error('turn_id_missing');
+      if (attempt > 1) {
+        pushRuntimeLog({
+          level: 'info',
+          event: 'turn_start_recovered',
+          threadId,
+          attempt
+        });
+      }
+      return turnId;
+    } catch (error) {
+      lastError = error;
+      if (!isThreadWarmupError(error) || attempt === maxAttempts) throw error;
+      if (typeof onRetry === 'function') {
+        onRetry({
+          attempt,
+          message: String(error?.message || 'unknown_error')
+        });
+      }
+      pushRuntimeLog({
+        level: 'info',
+        event: 'turn_start_retry',
+        threadId,
+        attempt,
+        message: String(error?.message || 'unknown_error')
+      });
+      await sleep(Math.min(700, 100 + attempt * 60));
+    }
+  }
+  throw lastError || new Error('turn_start_failed');
+}
+
 function looksLikeDiff(text) {
   return /^diff --git/m.test(text) || /^@@/m.test(text) || /^\+\+\+/m.test(text);
 }
 
+function formatReasoningMarkdown(text) {
+  const normalized = String(text || '')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('  \n');
+  return normalized.replace(/\s+$/, '') + '  \n';
+}
+
 function composeAssistantText(reasoningText, answerText) {
-  if (reasoningText) return `**思考**\n\n${reasoningText}\n\n---\n\n${answerText}`;
+  if (reasoningText) return `**思考**\n\n${formatReasoningMarkdown(reasoningText)}\n\n<hr />\n\n${answerText}`;
   return answerText;
 }
 
@@ -170,12 +226,21 @@ function normalizeThreadMessages(readResult) {
   const messages = [];
 
   for (const turn of turns) {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
     const input = Array.isArray(turn?.input) ? turn.input : [];
-    const userText = input
+    const userTextFromInput = input
       .filter((item) => item?.type === 'text' && typeof item.text === 'string')
       .map((item) => item.text)
       .join('\n')
       .trim();
+    const userTextFromItems = items
+      .filter((item) => item?.type === 'userMessage')
+      .flatMap((item) => (Array.isArray(item.content) ? item.content : []))
+      .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('\n')
+      .trim();
+    const userText = userTextFromInput || userTextFromItems;
     if (userText) {
       messages.push({
         id: `${turn.id}:user`,
@@ -185,7 +250,6 @@ function normalizeThreadMessages(readResult) {
       });
     }
 
-    const items = Array.isArray(turn?.items) ? turn.items : [];
     const answerText = items
       .filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string')
       .map((item) => item.text)
@@ -194,7 +258,7 @@ function normalizeThreadMessages(readResult) {
       .filter((item) => item?.type === 'reasoning' && Array.isArray(item.summary))
       .flatMap((item) => item.summary)
       .filter((summary) => typeof summary === 'string')
-      .join('\n');
+      .join('\n\n');
 
     if (answerText || reasoningText) {
       messages.push({
@@ -581,14 +645,34 @@ function buildServer() {
       });
       return { items };
     } catch (error) {
-      const message = String(error?.message || '');
-      if (message.includes('no rollout found for thread id')) {
+      if (isThreadMissingError(error)) {
         pushRuntimeLog({
           level: 'info',
           event: 'thread_messages_not_ready',
           threadId
         });
         return { items: [] };
+      }
+      throw error;
+    }
+  });
+
+  app.post('/api/threads/resume', async (request, reply) => {
+    const body = request.body || {};
+    const threadId = body.thread_id;
+    if (!threadId) {
+      reply.code(400);
+      return { error: 'thread_id is required' };
+    }
+    try {
+      await rpcRequest('thread/resume', { threadId });
+      pushRuntimeLog({ level: 'info', event: 'thread_resumed', threadId });
+      return { ok: true };
+    } catch (error) {
+      if (isThreadMissingError(error)) {
+        pushRuntimeLog({ level: 'info', event: 'thread_resume_missing', threadId });
+        reply.code(404);
+        return { error: 'thread_not_found' };
       }
       throw error;
     }
@@ -612,6 +696,42 @@ function buildServer() {
     return { id };
   });
 
+  app.post('/api/threads/ensure', async (request, reply) => {
+    const body = request.body || {};
+    const repoFullName = body.repoFullName;
+    const preferredThreadId = body.preferred_thread_id;
+    if (!repoFullName) {
+      reply.code(400);
+      return { error: 'repoFullName is required' };
+    }
+
+    if (preferredThreadId) {
+      pushRuntimeLog({
+        level: 'info',
+        event: 'thread_ensured_preferred',
+        repoFullName,
+        threadId: preferredThreadId
+      });
+      return { id: preferredThreadId, reused: true };
+    }
+
+    const repoPath = repoPathFromFullName(repoFullName);
+    const result = await rpcRequest('thread/start', {
+      cwd: repoPath,
+      approvalPolicy: 'never',
+      sandbox: 'workspace-write'
+    });
+    const id = result?.thread?.id;
+    if (!id) throw new Error('thread_id_missing');
+    pushRuntimeLog({
+      level: 'info',
+      event: 'thread_ensured_new',
+      repoFullName,
+      threadId: id
+    });
+    return { id, reused: false };
+  });
+
   app.post('/api/turns/stream', async (request, reply) => {
     const body = request.body || {};
     const threadId = body.thread_id;
@@ -626,17 +746,6 @@ function buildServer() {
       threadId,
       inputLength: prompt.length
     });
-    // thread/list の status が notLoaded の場合でも送信できるよう、先に resume する。
-    await rpcRequest('thread/resume', { threadId });
-
-    const turnStart = await rpcRequest('turn/start', {
-      threadId,
-      input: buildTurnInput(prompt, body.attachments || [])
-    });
-    const turnId = turnStart?.turn?.id;
-    if (!turnId) throw new Error('turn_id_missing');
-    runningTurnByThreadId.set(threadId, turnId);
-
     reply.hijack();
     reply.raw.writeHead(200, {
       'Content-Type': 'application/x-ndjson; charset=utf-8',
@@ -648,11 +757,31 @@ function buildServer() {
     let aborted = false;
     let emittedAnswer = '';
     let emittedReasoning = '';
-    const deadline = Date.now() + 10 * 60 * 1000;
+    const deadline = Date.now() + 60 * 1000;
+    let missingTargetCount = 0;
 
     function writeEvent(event) {
       if (aborted) return;
       reply.raw.write(`${JSON.stringify(event)}\n`);
+    }
+
+    writeEvent({ type: 'started' });
+
+    let turnId = null;
+    try {
+      turnId = await startTurnWithRetry(
+        threadId,
+        buildTurnInput(prompt, body.attachments || []),
+        20,
+        ({ attempt, message }) => {
+          writeEvent({ type: 'status', phase: 'starting', attempt, message });
+        }
+      );
+      runningTurnByThreadId.set(threadId, turnId);
+    } catch (error) {
+      writeEvent({ type: 'error', message: String(error?.message || 'turn_start_failed') });
+      if (!aborted) reply.raw.end();
+      return;
     }
 
     async function writeChunked(type, deltaText) {
@@ -673,7 +802,21 @@ function buildServer() {
     while (!aborted && Date.now() < deadline) {
       const read = await rpcRequest('thread/read', { threadId, includeTurns: true });
       const turns = Array.isArray(read?.thread?.turns) ? read.thread.turns : [];
-      const target = turns.find((t) => t.id === turnId);
+      let target = turns.find((t) => t.id === turnId);
+      if (!target) {
+        missingTargetCount += 1;
+        if (missingTargetCount >= 4 && turns.length > 0) {
+          target = turns[turns.length - 1];
+          pushRuntimeLog({
+            level: 'info',
+            event: 'turn_target_fallback',
+            expectedTurnId: turnId,
+            actualTurnId: target?.id || null
+          });
+        }
+      } else {
+        missingTargetCount = 0;
+      }
 
       if (target) {
         const items = Array.isArray(target.items) ? target.items : [];
@@ -685,7 +828,7 @@ function buildServer() {
           .filter((item) => item?.type === 'reasoning' && Array.isArray(item.summary))
           .flatMap((item) => item.summary)
           .filter((s) => typeof s === 'string')
-          .join('\n');
+          .join('\n\n');
 
         if (reasoningText && reasoningText !== emittedReasoning) {
           if (reasoningText.startsWith(emittedReasoning)) {
@@ -718,7 +861,7 @@ function buildServer() {
         }
       }
 
-      await sleep(350);
+      await sleep(120);
     }
 
     runningTurnByThreadId.delete(threadId);

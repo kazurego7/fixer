@@ -289,6 +289,12 @@ body {
   margin-bottom: 0;
 }
 
+.fx-msg-assistant .fx-msg-bubble hr {
+  border: 0;
+  border-top: 1px solid #cbd5e1;
+  margin: 0.72rem 0;
+}
+
 .fx-typing {
   display: inline-flex;
   align-items: center;
@@ -311,6 +317,48 @@ body {
 
 .fx-typing span:nth-child(3) {
   animation-delay: 0.32s;
+}
+
+.fx-ellipsis {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.16rem;
+  min-height: 1rem;
+  padding: 0.14rem 0.48rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #475569;
+  font-size: 1.08rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+}
+
+.fx-ellipsis span {
+  display: inline-block;
+  opacity: 0.35;
+  animation: fx-ellipsis 1.05s ease-in-out infinite;
+}
+
+.fx-ellipsis span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.fx-ellipsis span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes fx-ellipsis {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0) scale(0.96);
+    opacity: 0.32;
+  }
+  40% {
+    transform: translateY(-1px) scale(1.08);
+    opacity: 0.95;
+  }
 }
 
 @keyframes fx-dot {

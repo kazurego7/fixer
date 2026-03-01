@@ -64,6 +64,7 @@ function ReposPage() {
     notClonedRepos,
     filteredRepos,
     activeRepoFullName,
+    activeThreadId,
     chatVisible,
     navigate,
     bootstrapConnection,
@@ -127,6 +128,10 @@ function ReposPage() {
                     onClick={async () => {
                       if (busy) return;
                       setSelectedRepo(repo);
+                      if (chatVisible && activeRepoFullName === repo.fullName && activeThreadId) {
+                        navigate('/chat/');
+                        return;
+                      }
                       const ok = await startWithRepo(repo);
                       if (ok) navigate('/chat/');
                     }}
@@ -152,12 +157,12 @@ function ReposPage() {
 }
 
 function renderAssistant(item, pending = false) {
-  if (pending) {
+  if (pending || item.text === '・・・') {
     return (
-      <div className="fx-typing" aria-label="応答中">
-        <span />
-        <span />
-        <span />
+      <div className="fx-ellipsis" aria-label="応答中">
+        <span>・</span>
+        <span>・</span>
+        <span>・</span>
       </div>
     );
   }
@@ -165,6 +170,19 @@ function renderAssistant(item, pending = false) {
     return <pre className="fx-diff">{item.text}</pre>;
   }
   return <div dangerouslySetInnerHTML={{ __html: marked.parse(item.text || '') }} />;
+}
+
+function formatReasoningMarkdown(text) {
+  const normalized = String(text || '')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('  \n');
+  return normalized.replace(/\s+$/, '') + '  \n';
+}
+
+function composeAssistantBody(reasoning, answer) {
+  if (reasoning) return `**思考**\n\n${formatReasoningMarkdown(reasoning)}\n\n<hr />\n\n${answer}`;
+  return answer;
 }
 
 function ChatPage() {
@@ -347,19 +365,36 @@ export default function AppRoot() {
     setRepos(data.repos || []);
   }
 
-  async function fetchThreads(repoFullName) {
-    const res = await fetch(`/api/threads?repoFullName=${encodeURIComponent(repoFullName)}`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'thread_list_failed');
-    const items = Array.isArray(data.items) ? data.items : [];
-    return items.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
-  }
-
   async function fetchThreadMessages(threadId) {
     const res = await fetch(`/api/threads/messages?threadId=${encodeURIComponent(threadId)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'thread_messages_failed');
     return Array.isArray(data.items) ? data.items : [];
+  }
+
+  async function ensureThread(repoFullName, preferredThreadId = null) {
+    const res = await fetch('/api/threads/ensure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repoFullName,
+        preferred_thread_id: preferredThreadId || undefined
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'thread_ensure_failed');
+    const id = data.id || data.thread_id;
+    if (!id) throw new Error('thread_id_missing');
+    return id;
+  }
+
+  function isRecoverableThreadError(text) {
+    const raw = String(text || '');
+    return (
+      raw.includes('thread not found') ||
+      raw.includes('thread_not_found') ||
+      raw.includes('no rollout found for thread id')
+    );
   }
 
   async function bootstrapConnection() {
@@ -426,17 +461,6 @@ export default function AppRoot() {
     return id;
   }
 
-  async function resolveThreadId(repoFullName, preferredThreadId, options = {}) {
-    const { allowCreate = true, preferLatest = false, preferPreferred = false } = options;
-    if (preferPreferred && preferredThreadId) return preferredThreadId;
-    const threads = await fetchThreads(repoFullName);
-    if (preferLatest && threads[0]?.id) return threads[0].id;
-    if (preferredThreadId && threads.some((t) => t.id === preferredThreadId)) return preferredThreadId;
-    if (threads[0]?.id) return threads[0].id;
-    if (!allowCreate) return preferredThreadId || null;
-    return createThread(repoFullName);
-  }
-
   function restoreOutputForThread(threadId) {
     if (!threadId) return;
     // スレッド切替直後でも、到着した履歴を破棄しないよう即時更新する。
@@ -460,12 +484,16 @@ export default function AppRoot() {
       if (repo.cloneState?.status !== 'cloned') {
         await cloneSelectedRepo(repo);
         await waitForClone(repo.fullName);
-        await fetchRepos(query);
+        setRepos((prev) =>
+          prev.map((item) =>
+            item.fullName === repo.fullName
+              ? { ...item, cloneState: { ...(item.cloneState || {}), status: 'cloned' } }
+              : item
+          )
+        );
       }
-      const threadId = await resolveThreadId(repo.fullName, threadByRepo[repo.fullName] || null, {
-        allowCreate: true,
-        preferPreferred: true
-      });
+      let threadId = threadByRepo[repo.fullName] || null;
+      threadId = await ensureThread(repo.fullName, threadId);
 
       if (!threadId) throw new Error('thread_not_found');
       setActiveThreadId(threadId);
@@ -494,23 +522,29 @@ export default function AppRoot() {
       return;
     }
     if (!activeThreadId) {
-      toast('Threadの準備ができていません');
-      return;
+      try {
+        const created = await ensureThread(activeRepoFullName, null);
+        setActiveThreadId(created);
+        setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: created }));
+        restoreOutputForThread(created);
+      } catch (e) {
+        toast(`Thread準備失敗: ${String(e.message || 'unknown_error')}`);
+        return;
+      }
     }
     const prompt = message.trim();
     if (!prompt) return;
 
-    let threadIdToUse = activeThreadId;
+    let threadIdToUse = activeThreadId || threadByRepo[activeRepoFullName];
+    if (!threadIdToUse) return;
+
     try {
-      const resolved = await resolveThreadId(activeRepoFullName, activeThreadId, {
-        allowCreate: true,
-        preferPreferred: true
-      });
-      if (!resolved) throw new Error('thread_not_found');
-      threadIdToUse = resolved;
-      if (resolved !== activeThreadId) {
-        setActiveThreadId(resolved);
-        setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: resolved }));
+      const ensured = await ensureThread(activeRepoFullName, threadIdToUse);
+      threadIdToUse = ensured;
+      if (ensured !== activeThreadId) {
+        setActiveThreadId(ensured);
+        setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: ensured }));
+        restoreOutputForThread(ensured);
       }
     } catch (e) {
       toast(`Thread再接続失敗: ${String(e.message || 'unknown_error')}`);
@@ -545,13 +579,15 @@ export default function AppRoot() {
       let res = await postTurn(threadIdToUse);
       if (!res.ok) {
         const firstErr = await res.text();
-        if (firstErr.includes('thread not found') || firstErr.includes('thread_not_found')) {
-          const resolved = await resolveThreadId(activeRepoFullName, threadIdToUse, { allowCreate: true });
-          if (!resolved) throw new Error(firstErr || 'thread_not_found');
-          threadIdToUse = resolved;
-          setActiveThreadId(resolved);
-          setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: resolved }));
+        if (isRecoverableThreadError(firstErr)) {
+          const recovered = await ensureThread(activeRepoFullName, null);
+          threadIdToUse = recovered;
+          setActiveThreadId(recovered);
+          setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: recovered }));
+          restoreOutputForThread(recovered);
           res = await postTurn(threadIdToUse);
+        } else {
+          throw new Error(firstErr || 'send_failed');
         }
       }
 
@@ -564,6 +600,7 @@ export default function AppRoot() {
       const decoder = new TextDecoder('utf-8');
       let aggregated = '';
       let reasoning = '';
+      let statusText = '';
       let lineBuf = '';
 
       while (true) {
@@ -579,10 +616,9 @@ export default function AppRoot() {
           try {
             const evt = JSON.parse(trimmed);
             if (evt.type === 'reasoning_delta' && evt.delta) {
+              statusText = '';
               reasoning += evt.delta;
-              const composed = reasoning
-                ? `**思考**\n\n${reasoning}\n\n---\n\n${aggregated}`
-                : aggregated;
+              const composed = composeAssistantBody(reasoning, aggregated);
               setOutputItems((prev) =>
                 prev.map((item) =>
                   item.id === assistantId ? { ...item, text: composed } : item
@@ -591,13 +627,28 @@ export default function AppRoot() {
               continue;
             }
             if (evt.type === 'answer_delta' && evt.delta) {
+              statusText = '';
               aggregated += evt.delta;
-              const composed = reasoning
-                ? `**思考**\n\n${reasoning}\n\n---\n\n${aggregated}`
-                : aggregated;
+              const composed = composeAssistantBody(reasoning, aggregated);
               setOutputItems((prev) =>
                 prev.map((item) => (item.id === assistantId ? { ...item, text: composed } : item))
               );
+              continue;
+            }
+            if (evt.type === 'started') {
+              statusText = '・・・';
+              setOutputItems((prev) =>
+                prev.map((item) => (item.id === assistantId ? { ...item, text: statusText } : item))
+              );
+              continue;
+            }
+            if (evt.type === 'status' && evt.phase === 'starting') {
+              statusText = '・・・';
+              if (!aggregated && !reasoning) {
+                setOutputItems((prev) =>
+                  prev.map((item) => (item.id === assistantId ? { ...item, text: statusText } : item))
+                );
+              }
               continue;
             }
             if (evt.type === 'error') {
@@ -612,9 +663,7 @@ export default function AppRoot() {
         }
       }
 
-      const finalText = reasoning
-        ? `**思考**\n\n${reasoning}\n\n---\n\n${aggregated}`
-        : aggregated;
+      const finalText = composeAssistantBody(reasoning, aggregated);
       const kind = looksLikeDiff(aggregated) ? 'diff' : 'markdown';
       setOutputItems((prev) =>
         prev.map((item) => (item.id === assistantId ? { ...item, type: kind, text: finalText } : item))
@@ -725,28 +774,6 @@ export default function AppRoot() {
   }, [activeRepoFullName, activeThreadId]);
 
   useEffect(() => {
-    if (!connected || !activeRepoFullName || !activeThreadId) return;
-    let disposed = false;
-    (async () => {
-      try {
-        const resolved = await resolveThreadId(activeRepoFullName, activeThreadId, {
-          allowCreate: false,
-          preferPreferred: true
-        });
-        if (disposed || !resolved || resolved === activeThreadId) return;
-        setActiveThreadId(resolved);
-        setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: resolved }));
-        restoreOutputForThread(resolved);
-      } catch {
-        // 現状維持。送信時エラーでユーザーに通知される。
-      }
-    })();
-    return () => {
-      disposed = true;
-    };
-  }, [connected, activeRepoFullName, activeThreadId]);
-
-  useEffect(() => {
     window.localStorage.setItem(THREAD_BY_REPO_KEY, JSON.stringify(threadByRepo));
   }, [threadByRepo]);
 
@@ -785,6 +812,7 @@ export default function AppRoot() {
       notClonedRepos,
       filteredRepos,
       activeRepoFullName,
+      activeThreadId,
       chatVisible,
       outputItems,
       outputRef,
@@ -811,6 +839,7 @@ export default function AppRoot() {
       notClonedRepos,
       filteredRepos,
       activeRepoFullName,
+      activeThreadId,
       chatVisible,
       outputItems,
       message,
