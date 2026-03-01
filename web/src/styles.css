@@ -217,16 +217,26 @@ body {
   top: calc(0.2rem + var(--fx-safe-top));
   width: 2rem;
   height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border-radius: 999px;
   border: 1px solid #cbd5e1;
   background: #fff;
   color: #0f172a;
-  font-size: 1rem;
+  font-size: 1.34rem;
+  font-weight: 700;
   line-height: 1;
 }
 
 .fx-new-thread-icon:disabled {
   opacity: 0.45;
+}
+
+.fx-new-thread-icon-svg {
+  width: 1.2rem;
+  height: 1.2rem;
 }
 
 .fx-chat-scroll {
@@ -699,6 +709,11 @@ body {
   padding: 0;
   border-radius: 8px;
   font-size: 0.92rem;
+}
+
+.fx-send-icon-svg {
+  width: 1.08rem;
+  height: 1.08rem;
 }
 
 .fx-icon-btn:disabled {
