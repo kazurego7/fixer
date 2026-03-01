@@ -2,6 +2,8 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { marked } from 'marked';
 import { App, Page, PageContent, Button, f7ready, f7 } from 'framework7-react';
 
+marked.setOptions({ gfm: true, breaks: true });
+
 const CLONE_TIMEOUT_MS = 180000;
 const LAST_THREAD_ID_KEY = 'fx:lastThreadId';
 const LAST_REPO_FULLNAME_KEY = 'fx:lastRepoFullName';
@@ -157,7 +159,16 @@ function ReposPage() {
 }
 
 function renderAssistant(item, pending = false) {
-  if (pending || item.text === '・・・') {
+  const answer = typeof item.answer === 'string' ? item.answer : String(item.text || '');
+  const statusText = !answer ? String(item.status || item.text || '').trim() : '';
+
+  if (item.type === 'diff') {
+    return <pre className="fx-diff">{answer}</pre>;
+  }
+  if (pending && answer) {
+    return <pre className="fx-stream-live">{answer}</pre>;
+  }
+  if (pending || statusText === '・・・') {
     return (
       <div className="fx-ellipsis" aria-label="応答中">
         <span>・</span>
@@ -166,23 +177,65 @@ function renderAssistant(item, pending = false) {
       </div>
     );
   }
-  if (item.type === 'diff') {
-    return <pre className="fx-diff">{item.text}</pre>;
+  if (!answer && statusText) return <div className="fx-stream-status">{statusText}</div>;
+  return <div dangerouslySetInnerHTML={{ __html: marked.parse(answer) }} />;
+}
+
+function extractFirstBold(text) {
+  const source = String(text || '');
+  const match = source.match(/\*\*([^*\n][^*\n]*)\*\*/);
+  return match ? match[1].trim() : '';
+}
+
+function expandAssistantItems(items) {
+  const src = Array.isArray(items) ? items : [];
+  const out = [];
+  for (const item of src) {
+    if (item?.role === 'assistant') {
+      const answer =
+        typeof item.answer === 'string' && item.answer.length > 0
+          ? item.answer
+          : String(item.text || '');
+      out.push({
+        ...item,
+        answer,
+        text: answer,
+        reasoning: ''
+      });
+      continue;
+    }
+    out.push(item);
   }
-  return <div dangerouslySetInnerHTML={{ __html: marked.parse(item.text || '') }} />;
+  return out;
 }
 
-function formatReasoningMarkdown(text) {
-  const normalized = String(text || '')
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .join('  \n');
-  return normalized.replace(/\s+$/, '') + '  \n';
-}
+function withAutoAssistantSeparators(items) {
+  const src = Array.isArray(items) ? items : [];
+  const out = [];
+  let prev = null;
+  for (const item of src) {
+    const current = item && typeof item === 'object' ? item : null;
+    if (!current) continue;
 
-function composeAssistantBody(reasoning, answer) {
-  if (reasoning) return `**思考**\n\n${formatReasoningMarkdown(reasoning)}\n\n<hr />\n\n${answer}`;
-  return answer;
+    if (
+      prev &&
+      prev.type !== 'separator' &&
+      current.type !== 'separator' &&
+      prev.role === 'assistant' &&
+      current.role === 'assistant'
+    ) {
+      out.push({
+        id: `auto-sep:${prev.id}->${current.id}`,
+        role: 'system',
+        type: 'separator',
+        text: ''
+      });
+    }
+
+    out.push(current);
+    prev = current;
+  }
+  return out;
 }
 
 function ChatPage() {
@@ -197,12 +250,22 @@ function ChatPage() {
     outputItems,
     outputRef,
     streaming,
+    streamingAssistantId,
     sendTurn,
     cancelTurn,
     startNewThread
   } = useContext(AppCtx);
   const canSend = message.trim().length > 0 && !streaming;
   const [isInputFocused, setIsInputFocused] = useState(false);
+  const composerInputRef = useRef(null);
+  const displayItems = useMemo(() => withAutoAssistantSeparators(outputItems), [outputItems]);
+  const keepComposerFocus = (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.closest('textarea,button,input,select,a,[role="button"]')) return;
+    event.preventDefault();
+    composerInputRef.current?.focus();
+  };
 
   useEffect(() => {
     if (connected && !chatVisible) navigate('/repos/', true);
@@ -237,20 +300,35 @@ function ChatPage() {
         </div>
 
         <article className="fx-chat-scroll" ref={outputRef}>
-          {outputItems.map((item) => (
-            <div key={item.id} className={`fx-msg fx-msg-${item.role}`}>
-              <div className="fx-msg-bubble">
-                {item.role === 'assistant'
-                  ? renderAssistant(item, streaming && !item.text)
-                  : <p>{item.text}</p>}
+          {displayItems.map((item) => {
+            if (item.type === 'separator') {
+              return <div key={item.id} className="fx-turn-separator" />;
+            }
+            if (item.role !== 'assistant' && item.role !== 'user') {
+              return (
+                <div key={item.id} className="fx-msg fx-msg-system">
+                  <div className="fx-msg-bubble">
+                    <pre className="fx-system-line">{String(item.text || '')}</pre>
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div key={item.id} className={`fx-msg fx-msg-${item.role}`}>
+                <div className="fx-msg-bubble">
+                  {item.role === 'assistant'
+                    ? renderAssistant(item, streaming && item.id === streamingAssistantId)
+                    : <p className="fx-user-line">{item.text}</p>}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </article>
 
-        <div className="fx-composer">
+        <div className="fx-composer" onPointerDownCapture={keepComposerFocus}>
           <div className="fx-composer-inner">
             <textarea
+              ref={composerInputRef}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               rows={1}
@@ -312,6 +390,7 @@ export default function AppRoot() {
   const [message, setMessage] = useState('');
   const [outputItems, setOutputItems] = useState([]);
   const [streaming, setStreaming] = useState(false);
+  const [streamingAssistantId, setStreamingAssistantId] = useState(null);
   const [currentPath, setCurrentPath] = useState(getCurrentPath());
   const [threadByRepo, setThreadByRepo] = useState(() => {
     if (typeof window === 'undefined') return {};
@@ -369,7 +448,7 @@ export default function AppRoot() {
     const res = await fetch(`/api/threads/messages?threadId=${encodeURIComponent(threadId)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'thread_messages_failed');
-    return Array.isArray(data.items) ? data.items : [];
+    return expandAssistantItems(Array.isArray(data.items) ? data.items : []);
   }
 
   async function ensureThread(repoFullName, preferredThreadId = null) {
@@ -395,6 +474,10 @@ export default function AppRoot() {
       raw.includes('thread_not_found') ||
       raw.includes('no rollout found for thread id')
     );
+  }
+
+  function looksLikeDiff(text) {
+    return /^diff --git/m.test(text) || /^@@/m.test(text) || /^\+\+\+/m.test(text);
   }
 
   async function bootstrapConnection() {
@@ -511,10 +594,6 @@ export default function AppRoot() {
     }
   }
 
-  function looksLikeDiff(text) {
-    return /^diff --git/m.test(text) || /^@@/m.test(text) || /^\+\+\+/m.test(text);
-  }
-
   async function sendTurn() {
     if (streaming) return;
     if (!activeRepoFullName) {
@@ -556,10 +635,11 @@ export default function AppRoot() {
 
     const userId = `u-${Date.now()}`;
     const assistantId = `a-${Date.now() + 1}`;
+    setStreamingAssistantId(assistantId);
     setOutputItems((prev) => [
       ...prev,
       { id: userId, role: 'user', type: 'plain', text: prompt },
-      { id: assistantId, role: 'assistant', type: 'markdown', text: '' }
+      { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '・・・', answer: '' }
     ]);
 
     const controller = new AbortController();
@@ -598,10 +678,20 @@ export default function AppRoot() {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder('utf-8');
-      let aggregated = '';
-      let reasoning = '';
+      let answerCommitted = '';
       let statusText = '';
+      let reasoningRaw = '';
       let lineBuf = '';
+
+      function updateAssistant(patch) {
+        setOutputItems((prev) =>
+          prev.map((item) => {
+            if (item.id !== assistantId) return item;
+            const merged = typeof patch === 'function' ? patch(item) : { ...item, ...patch };
+            return merged;
+          })
+        );
+      }
 
       while (true) {
         const { done, value } = await reader.read();
@@ -616,58 +706,64 @@ export default function AppRoot() {
           try {
             const evt = JSON.parse(trimmed);
             if (evt.type === 'reasoning_delta' && evt.delta) {
-              statusText = '';
-              reasoning += evt.delta;
-              const composed = composeAssistantBody(reasoning, aggregated);
-              setOutputItems((prev) =>
-                prev.map((item) =>
-                  item.id === assistantId ? { ...item, text: composed } : item
-                )
-              );
+              reasoningRaw += evt.delta;
+              const header = extractFirstBold(reasoningRaw);
+              statusText = header ? `考え中: ${header}` : '・・・';
+              if (!answerCommitted) updateAssistant({ status: statusText, text: statusText });
               continue;
             }
             if (evt.type === 'answer_delta' && evt.delta) {
               statusText = '';
-              aggregated += evt.delta;
-              const composed = composeAssistantBody(reasoning, aggregated);
-              setOutputItems((prev) =>
-                prev.map((item) => (item.id === assistantId ? { ...item, text: composed } : item))
-              );
+              answerCommitted += evt.delta;
+              const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
+              updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
               continue;
             }
             if (evt.type === 'started') {
               statusText = '・・・';
-              setOutputItems((prev) =>
-                prev.map((item) => (item.id === assistantId ? { ...item, text: statusText } : item))
-              );
+              updateAssistant({ status: statusText, text: statusText });
               continue;
             }
-            if (evt.type === 'status' && evt.phase === 'starting') {
-              statusText = '・・・';
-              if (!aggregated && !reasoning) {
-                setOutputItems((prev) =>
-                  prev.map((item) => (item.id === assistantId ? { ...item, text: statusText } : item))
-                );
-              }
+            if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) {
+              statusText = evt.phase === 'reconnecting' ? String(evt.message || '再接続中...') : '・・・';
+              if (!answerCommitted) updateAssistant({ status: statusText, text: statusText });
               continue;
             }
             if (evt.type === 'error') {
               throw new Error(String(evt.message || 'unknown_error'));
             }
           } catch {
-            aggregated += trimmed;
-            setOutputItems((prev) =>
-              prev.map((item) => (item.id === assistantId ? { ...item, text: aggregated } : item))
-            );
+            answerCommitted += `${line}\n`;
+            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
+            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
           }
         }
       }
 
-      const finalText = composeAssistantBody(reasoning, aggregated);
-      const kind = looksLikeDiff(aggregated) ? 'diff' : 'markdown';
-      setOutputItems((prev) =>
-        prev.map((item) => (item.id === assistantId ? { ...item, type: kind, text: finalText } : item))
-      );
+      if (lineBuf.trim()) {
+        try {
+          const evt = JSON.parse(lineBuf.trim());
+          if (evt.type === 'answer_delta' && evt.delta) {
+            answerCommitted += evt.delta;
+            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
+            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
+          }
+        } catch {
+          answerCommitted += lineBuf;
+        }
+      }
+
+      const finalAnswer = answerCommitted.trim() ? answerCommitted : '(応答なし)';
+      const finalType = looksLikeDiff(finalAnswer) ? 'diff' : 'markdown';
+      setOutputItems((prev) => {
+        const next = prev.map((item) =>
+          item.id === assistantId
+            ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer }
+            : item
+        );
+        next.push({ id: `${assistantId}:sep`, role: 'system', type: 'separator', text: '' });
+        return next;
+      });
       completedNormally = true;
     } catch (e) {
       if (e.name === 'AbortError') {
@@ -686,6 +782,7 @@ export default function AppRoot() {
       }
     } finally {
       setStreaming(false);
+      setStreamingAssistantId(null);
       streamAbortRef.current = null;
       if (completedNormally) notifyResponseComplete();
     }
@@ -819,6 +916,7 @@ export default function AppRoot() {
       message,
       setMessage,
       streaming,
+      streamingAssistantId,
       navigate,
       bootstrapConnection,
       fetchRepos,

@@ -45,6 +45,11 @@ function pushRuntimeLog(entry) {
   if (runtimeLogs.length > MAX_RUNTIME_LOGS) runtimeLogs.shift();
 }
 
+function addWsSubscriber(handler) {
+  wsSubscribers.add(handler);
+  return () => wsSubscribers.delete(handler);
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -110,8 +115,12 @@ async function connectWs() {
     attachWsHandlers(ws);
     appServerWs = ws;
     await rpcRequestRaw('initialize', {
-      clientInfo: { name: 'fixer-mobile-ui', version: '0.1.0' }
+      clientInfo: { name: 'fixer-mobile-ui', version: '0.1.0' },
+      capabilities: {
+        experimentalApi: true
+      }
     });
+    sendClientNotification('initialized');
   })();
 
   try {
@@ -138,6 +147,15 @@ function rpcRequestRaw(method, params) {
       }
     });
   });
+}
+
+function sendClientNotification(method, params) {
+  if (!appServerWs || appServerWs.readyState !== WebSocket.OPEN) {
+    throw new Error('app_server_not_connected');
+  }
+  const payload = { jsonrpc: '2.0', method };
+  if (params && typeof params === 'object') payload.params = params;
+  appServerWs.send(JSON.stringify(payload));
 }
 
 async function rpcRequest(method, params) {
@@ -208,17 +226,145 @@ function looksLikeDiff(text) {
   return /^diff --git/m.test(text) || /^@@/m.test(text) || /^\+\+\+/m.test(text);
 }
 
-function formatReasoningMarkdown(text) {
-  const normalized = String(text || '')
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .join('  \n');
-  return normalized.replace(/\s+$/, '') + '  \n';
+function asObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
-function composeAssistantText(reasoningText, answerText) {
-  if (reasoningText) return `**思考**\n\n${formatReasoningMarkdown(reasoningText)}\n\n<hr />\n\n${answerText}`;
-  return answerText;
+function asString(value) {
+  return typeof value === 'string' ? value : null;
+}
+
+function parseV2TurnNotification(msg) {
+  const method = asString(msg?.method);
+  if (!method || method.startsWith('codex/event/')) return null;
+  const params = asObject(msg?.params);
+  if (!params) return null;
+  const turnObj = asObject(params.turn);
+  const errorObj = asObject(params.error);
+  const turnErrorObj = asObject(turnObj?.error);
+  return {
+    protocol: 'v2',
+    method,
+    threadId: asString(params.threadId),
+    turnId: asString(params.turnId) || asString(turnObj?.id),
+    delta: asString(params.delta),
+    status: asString(turnObj?.status),
+    errorMessage: asString(turnErrorObj?.message) || asString(errorObj?.message),
+    willRetry: Boolean(params.willRetry)
+  };
+}
+
+function parseLegacyTurnNotification(msg) {
+  const method = asString(msg?.method);
+  if (!method || !method.startsWith('codex/event/')) return null;
+  const params = asObject(msg?.params);
+  if (!params) return null;
+  const event = asObject(params.msg) || {};
+  const type =
+    asString(event.type) ||
+    method
+      .slice('codex/event/'.length)
+      .replace(/\//g, '_')
+      .trim();
+  return {
+    protocol: 'legacy',
+    method,
+    type,
+    threadId: asString(params.conversationId) || asString(params.threadId),
+    turnId: asString(event.turn_id) || asString(event.turnId) || asString(params.turnId),
+    delta: asString(event.delta),
+    message: asString(event.message),
+    reason: asString(event.reason)
+  };
+}
+
+function isCompletedStatus(status) {
+  return String(status || '').toLowerCase() === 'completed';
+}
+
+function isErrorStatus(status) {
+  const normalized = String(status || '').toLowerCase();
+  return normalized === 'failed' || normalized === 'interrupted' || normalized === 'cancelled';
+}
+
+function selectTurnStreamUpdate(msg, state) {
+  const threadId = state?.threadId || null;
+  const turnId = state?.turnId || null;
+  const preferV2 = Boolean(state?.preferV2);
+  let nextPreferV2 = preferV2;
+
+  const v2 = parseV2TurnNotification(msg);
+  if (v2 && v2.threadId === threadId && (!v2.turnId || v2.turnId === turnId)) {
+    nextPreferV2 = true;
+    if (v2.method === 'item/agentMessage/delta' && v2.delta) {
+      return { matched: true, nextPreferV2, streamEvent: { type: 'answer_delta', delta: v2.delta } };
+    }
+    if ((v2.method === 'item/reasoning/summaryTextDelta' || v2.method === 'item/reasoning/textDelta') && v2.delta) {
+      return { matched: true, nextPreferV2, streamEvent: { type: 'reasoning_delta', delta: v2.delta } };
+    }
+    if (v2.method === 'turn/completed') {
+      if (isCompletedStatus(v2.status)) return { matched: true, nextPreferV2, terminal: { kind: 'done' } };
+      if (isErrorStatus(v2.status)) {
+        return {
+          matched: true,
+          nextPreferV2,
+          terminal: { kind: 'error', message: `turn_${String(v2.status || '').toLowerCase()}` }
+        };
+      }
+      return { matched: true, nextPreferV2, terminal: { kind: 'done' } };
+    }
+    if (v2.method === 'error') {
+      if (v2.willRetry) {
+        return {
+          matched: true,
+          nextPreferV2,
+          streamEvent: {
+            type: 'status',
+            phase: 'reconnecting',
+            message: v2.errorMessage || 'reconnecting'
+          }
+        };
+      }
+      return {
+        matched: true,
+        nextPreferV2,
+        terminal: { kind: 'error', message: v2.errorMessage || 'turn_failed' }
+      };
+    }
+    return { matched: true, nextPreferV2 };
+  }
+
+  if (nextPreferV2) return { matched: false, nextPreferV2 };
+
+  const legacy = parseLegacyTurnNotification(msg);
+  if (!legacy) return { matched: false, nextPreferV2 };
+  if (legacy.threadId !== threadId) return { matched: false, nextPreferV2 };
+  if (legacy.turnId && legacy.turnId !== turnId) return { matched: false, nextPreferV2 };
+
+  const legacyType = String(legacy.type || '').toLowerCase();
+  if (legacy.delta) {
+    if (legacyType.includes('reasoning')) {
+      return { matched: true, nextPreferV2, streamEvent: { type: 'reasoning_delta', delta: legacy.delta } };
+    }
+    if (legacyType.includes('agent_message')) {
+      return { matched: true, nextPreferV2, streamEvent: { type: 'answer_delta', delta: legacy.delta } };
+    }
+    return { matched: true, nextPreferV2 };
+  }
+  if (legacyType === 'task_complete' || legacyType === 'turn_complete') {
+    return { matched: true, nextPreferV2, terminal: { kind: 'done' } };
+  }
+  if (legacyType === 'turn_aborted') {
+    return {
+      matched: true,
+      nextPreferV2,
+      terminal: { kind: 'error', message: `turn_${legacy.reason || 'aborted'}` }
+    };
+  }
+  if (legacyType === 'error') {
+    return { matched: true, nextPreferV2, terminal: { kind: 'error', message: legacy.message || 'turn_failed' } };
+  }
+  return { matched: true, nextPreferV2 };
 }
 
 function normalizeThreadMessages(readResult) {
@@ -254,18 +400,20 @@ function normalizeThreadMessages(readResult) {
       .filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string')
       .map((item) => item.text)
       .join('\n');
-    const reasoningText = items
-      .filter((item) => item?.type === 'reasoning' && Array.isArray(item.summary))
-      .flatMap((item) => item.summary)
-      .filter((summary) => typeof summary === 'string')
-      .join('\n\n');
 
-    if (answerText || reasoningText) {
+    if (answerText) {
       messages.push({
         id: `${turn.id}:assistant`,
         role: 'assistant',
         type: looksLikeDiff(answerText) ? 'diff' : 'markdown',
-        text: composeAssistantText(reasoningText, answerText)
+        text: answerText,
+        answer: answerText
+      });
+      messages.push({
+        id: `${turn.id}:sep`,
+        role: 'system',
+        type: 'separator',
+        text: ''
       });
     }
   }
@@ -753,16 +901,32 @@ function buildServer() {
       Connection: 'keep-alive'
     });
 
-    let closed = false;
     let aborted = false;
-    let emittedAnswer = '';
-    let emittedReasoning = '';
-    const deadline = Date.now() + 60 * 1000;
-    let missingTargetCount = 0;
+    let closed = false;
+    let unsubWs = null;
+    let timeoutHandle = null;
+    let preferV2 = false;
 
     function writeEvent(event) {
       if (aborted) return;
       reply.raw.write(`${JSON.stringify(event)}\n`);
+    }
+
+    function closeStream(kind, message = null) {
+      if (closed) return;
+      closed = true;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+      if (typeof unsubWs === 'function') {
+        unsubWs();
+        unsubWs = null;
+      }
+      runningTurnByThreadId.delete(threadId);
+      if (kind === 'done') writeEvent({ type: 'done' });
+      if (kind === 'error') writeEvent({ type: 'error', message: message || 'unknown_error' });
+      if (!aborted) reply.raw.end();
     }
 
     writeEvent({ type: 'started' });
@@ -784,92 +948,51 @@ function buildServer() {
       return;
     }
 
-    async function writeChunked(type, deltaText) {
-      if (!deltaText) return;
-      const text = String(deltaText);
-      const step = 28;
-      for (let i = 0; i < text.length; i += step) {
-        if (aborted) return;
-        writeEvent({ type, delta: text.slice(i, i + step) });
-        if (text.length > step) await sleep(14);
-      }
-    }
-
     reply.raw.on('close', () => {
       aborted = true;
+      closeStream('error', 'client_disconnected');
     });
 
-    while (!aborted && Date.now() < deadline) {
-      const read = await rpcRequest('thread/read', { threadId, includeTurns: true });
-      const turns = Array.isArray(read?.thread?.turns) ? read.thread.turns : [];
-      let target = turns.find((t) => t.id === turnId);
-      if (!target) {
-        missingTargetCount += 1;
-        if (missingTargetCount >= 4 && turns.length > 0) {
-          target = turns[turns.length - 1];
-          pushRuntimeLog({
-            level: 'info',
-            event: 'turn_target_fallback',
-            expectedTurnId: turnId,
-            actualTurnId: target?.id || null
-          });
-        }
-      } else {
-        missingTargetCount = 0;
+    timeoutHandle = setTimeout(() => {
+      pushRuntimeLog({
+        level: 'error',
+        event: 'turn_stream_timeout',
+        threadId,
+        turnId
+      });
+      closeStream('error', 'turn_timeout');
+    }, 180000);
+
+    unsubWs = addWsSubscriber((msg) => {
+      if (aborted || closed) return;
+      const update = selectTurnStreamUpdate(msg, { threadId, turnId, preferV2 });
+      preferV2 = update.nextPreferV2;
+      if (!update.matched) return;
+      if (update.streamEvent?.type === 'status' && update.streamEvent.phase === 'reconnecting') {
+        pushRuntimeLog({
+          level: 'info',
+          event: 'turn_stream_reconnecting',
+          threadId,
+          turnId,
+          message: String(update.streamEvent.message || 'reconnecting')
+        });
       }
-
-      if (target) {
-        const items = Array.isArray(target.items) ? target.items : [];
-        const answerText = items
-          .filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string')
-          .map((item) => item.text)
-          .join('\n');
-        const reasoningText = items
-          .filter((item) => item?.type === 'reasoning' && Array.isArray(item.summary))
-          .flatMap((item) => item.summary)
-          .filter((s) => typeof s === 'string')
-          .join('\n\n');
-
-        if (reasoningText && reasoningText !== emittedReasoning) {
-          if (reasoningText.startsWith(emittedReasoning)) {
-            await writeChunked('reasoning_delta', reasoningText.slice(emittedReasoning.length));
-          } else {
-            await writeChunked('reasoning_delta', reasoningText);
-          }
-          emittedReasoning = reasoningText;
-        }
-
-        if (answerText && answerText !== emittedAnswer) {
-          if (answerText.startsWith(emittedAnswer)) {
-            await writeChunked('answer_delta', answerText.slice(emittedAnswer.length));
-          } else {
-            await writeChunked('answer_delta', answerText);
-          }
-          emittedAnswer = answerText;
-        }
-
-        if (target.status === 'completed') {
-          writeEvent({ type: 'done' });
-          closed = true;
-          break;
-        }
-
-        if (target.status === 'failed' || target.status === 'cancelled' || target.status === 'interrupted') {
-          writeEvent({ type: 'error', message: `turn_${target.status}` });
-          closed = true;
-          break;
-        }
+      if (update.streamEvent) {
+        writeEvent(update.streamEvent);
+        return;
       }
-
-      await sleep(120);
-    }
-
-    runningTurnByThreadId.delete(threadId);
-
-    if (!aborted) {
-      if (!closed) writeEvent({ type: 'error', message: 'turn_timeout' });
-      reply.raw.end();
-    }
+      if (update.terminal) {
+        pushRuntimeLog({
+          level: update.terminal.kind === 'error' ? 'error' : 'info',
+          event: 'turn_stream_terminal',
+          threadId,
+          turnId,
+          kind: update.terminal.kind,
+          message: update.terminal.message || null
+        });
+        closeStream(update.terminal.kind, update.terminal.message);
+      }
+    });
   });
 
   app.post('/api/turns/cancel', async (request, reply) => {
@@ -911,5 +1034,9 @@ module.exports = {
   buildServer,
   repoFolderFromFullName,
   repoPathFromFullName,
-  getCloneState
+  getCloneState,
+  parseV2TurnNotification,
+  parseLegacyTurnNotification,
+  selectTurnStreamUpdate,
+  normalizeThreadMessages
 };

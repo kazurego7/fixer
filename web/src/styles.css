@@ -233,52 +233,89 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0.85rem 0.75rem 5.4rem;
+  padding: 0.62rem 0.7rem 4.85rem;
+  background: #f8fafc;
 }
 
 .fx-msg {
-  display: flex;
-  margin-bottom: 0.75rem;
+  margin: 0 0 0.5rem;
 }
 
 .fx-msg-bubble {
-  max-width: 92%;
-  border-radius: 14px;
-  padding: 0.65rem 0.75rem;
-  line-height: 1.45;
+  max-width: 100%;
+  display: block;
+  box-sizing: border-box;
+  padding: 0.58rem 0.68rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 11px;
+  background: #fff;
+  line-height: 1.55;
   font-size: 0.95rem;
   word-break: break-word;
-}
-
-.fx-msg-user {
-  justify-content: flex-end;
+  color: #0f172a;
 }
 
 .fx-msg-user .fx-msg-bubble {
-  background: #2563eb;
-  color: #fff;
-  border-bottom-right-radius: 6px;
+  background: #dbeafe;
+  border-color: #93c5fd;
 }
 
-.fx-msg-user .fx-msg-bubble p {
+.fx-msg-user .fx-msg-bubble p,
+.fx-user-line {
   margin: 0;
 }
 
-.fx-msg-assistant {
-  justify-content: flex-start;
-}
-
 .fx-msg-assistant .fx-msg-bubble {
-  background: #fff;
-  color: #0f172a;
-  border: 1px solid #dbeafe;
-  border-bottom-left-radius: 6px;
+  background: #ffffff;
+  border-color: #cbd5e1;
 }
 
-.fx-reasoning {
-  font-size: 0.86rem;
-  color: #334155;
-  font-style: italic;
+.fx-msg-assistant .fx-msg-bubble > div {
+  min-width: 0;
+}
+
+.fx-msg-assistant .fx-msg-bubble p {
+  margin: 0 0 0.5rem;
+}
+
+.fx-msg-assistant .fx-msg-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.fx-msg-assistant .fx-msg-bubble ul,
+.fx-msg-assistant .fx-msg-bubble ol {
+  margin: 0.25rem 0 0.55rem 1rem;
+  padding: 0;
+}
+
+.fx-msg-assistant .fx-msg-bubble li {
+  margin-bottom: 0.2rem;
+}
+
+.fx-reasoning-stream {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #64748b;
+  background: transparent;
+  border: 0;
+  padding: 0.05rem 0;
+}
+
+.fx-stream-status {
+  font-size: 0.84rem;
+  color: #475569;
+}
+
+.fx-stream-live {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #1f2937;
 }
 
 .fx-msg-assistant .fx-msg-bubble > :first-child {
@@ -293,6 +330,20 @@ body {
   border: 0;
   border-top: 1px solid #cbd5e1;
   margin: 0.72rem 0;
+}
+
+.fx-msg-system .fx-msg-bubble {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+.fx-system-line {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.83rem;
+  line-height: 1.45;
+  color: #64748b;
 }
 
 .fx-typing {
@@ -374,13 +425,22 @@ body {
   }
 }
 
+.fx-turn-separator {
+  height: 1px;
+  margin: 0.45rem 0 0.75rem;
+  background: linear-gradient(90deg, transparent 0%, #cbd5e1 15%, #94a3b8 50%, #cbd5e1 85%, transparent 100%);
+}
+
 .fx-diff {
   margin: 0;
   white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.84rem;
+  line-height: 1.45;
   background: #0f172a;
   color: #e2e8f0;
-  border-radius: 10px;
-  padding: 0.65rem;
+  border-radius: 8px;
+  padding: 0.55rem 0.6rem;
   overflow: auto;
 }
 
@@ -390,9 +450,9 @@ body {
   right: 0;
   bottom: 0;
   z-index: 30;
-  padding: 0.42rem 0.6rem calc(0.42rem + var(--fx-safe-bottom));
+  padding: 0.36rem 0.56rem calc(0.36rem + var(--fx-safe-bottom));
   background: rgba(248, 250, 252, 0.98);
-  border-top: 1px solid #dbeafe;
+  border-top: 1px solid #e2e8f0;
   backdrop-filter: blur(12px);
 }
 
@@ -407,18 +467,22 @@ body {
   width: 100%;
   margin: 0;
   resize: none;
-  min-height: 2.05rem;
+  min-height: 2rem;
   max-height: 16vh;
-  border: 1px solid #cbd5e1;
-  border-radius: 12px;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.92rem;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.4rem 0.58rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
   transition: min-height 0.16s ease, max-height 0.16s ease;
 }
 
 .fx-composer textarea:focus {
   min-height: 6.4rem;
   max-height: 38vh;
+  outline: none;
+  border-color: #94a3b8;
 }
 
 .fx-composer-actions {
@@ -435,10 +499,10 @@ body {
 }
 
 .fx-icon-btn {
-  min-width: 2.1rem;
-  min-height: 2.1rem;
+  min-width: 2.15rem;
+  min-height: 2.15rem;
   padding: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   font-size: 0.92rem;
 }
 
@@ -451,9 +515,5 @@ body {
   .fx-chat-scroll {
     padding-left: 1rem;
     padding-right: 1rem;
-  }
-
-  .fx-msg-bubble {
-    max-width: 75%;
   }
 }
