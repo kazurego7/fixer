@@ -185,23 +185,35 @@ function renderAssistant(item, pending = false) {
   if (pending && answer) {
     return <pre className="fx-stream-live">{answer}</pre>;
   }
-  if (pending || statusText === '・・・') {
-    return (
-      <div className="fx-ellipsis" aria-label="応答中">
-        <span>・</span>
-        <span>・</span>
-        <span>・</span>
-      </div>
-    );
-  }
+  if (pending && !answer && !statusText) return null;
+  if (statusText === '・・・') return null;
   if (!answer && statusText) return <div className="fx-stream-status">{statusText}</div>;
   return <div dangerouslySetInnerHTML={{ __html: marked.parse(answer) }} />;
 }
 
-function extractFirstBold(text) {
-  const source = String(text || '');
-  const match = source.match(/\*\*([^*\n][^*\n]*)\*\*/);
-  return match ? match[1].trim() : '';
+function extractDisplayReasoningText(raw) {
+  const source = String(raw || '');
+  const marker = /\*\*([^*\n][^*\n]*)\*\*/g;
+  const matches = [];
+  let found = marker.exec(source);
+  while (found) {
+    matches.push({
+      index: found.index,
+      markerEnd: marker.lastIndex,
+      title: String(found[1] || '').trim()
+    });
+    found = marker.exec(source);
+  }
+  if (matches.length === 0) return source.trim();
+  if (matches.length === 1) {
+    const current = matches[0];
+    const body = source.slice(current.markerEnd).trim();
+    return [current.title, body].filter(Boolean).join('\n').trim();
+  }
+  const committed = matches[matches.length - 2];
+  const next = matches[matches.length - 1];
+  const body = source.slice(committed.markerEnd, next.index).trim();
+  return [committed.title, body].filter(Boolean).join('\n').trim();
 }
 
 function expandAssistantItems(items) {
@@ -271,6 +283,10 @@ function ChatPage() {
     outputRef,
     streaming,
     streamingAssistantId,
+    liveReasoningText,
+    awaitingFirstStreamChunk,
+    hasReasoningStarted,
+    hasAnswerStarted,
     sendTurn,
     cancelTurn,
     startNewThread
@@ -283,6 +299,9 @@ function ChatPage() {
   const swipeStartXRef = useRef(null);
   const swipeStartYRef = useRef(null);
   const displayItems = useMemo(() => withAutoAssistantSeparators(outputItems), [outputItems]);
+  const thinkingText = typeof liveReasoningText === 'string' ? liveReasoningText : '';
+  const showInitialLoading = streaming && awaitingFirstStreamChunk;
+  const showThinkingWorking = streaming && hasReasoningStarted;
   const previewAttachment =
     previewIndex !== null && previewIndex >= 0 && previewIndex < pendingAttachments.length
       ? pendingAttachments[previewIndex]
@@ -431,6 +450,11 @@ function ChatPage() {
                 </div>
               );
             }
+            if (item.role === 'assistant' && streaming && item.id === streamingAssistantId) {
+              const currentAnswer = typeof item.answer === 'string' ? item.answer : String(item.text || '');
+              const currentStatus = !currentAnswer ? String(item.status || item.text || '').trim() : '';
+              if (!currentAnswer.trim() && !currentStatus.trim()) return null;
+            }
             return (
               <div key={item.id} className={`fx-msg fx-msg-${item.role}`}>
                 <div className="fx-msg-bubble">
@@ -454,6 +478,25 @@ function ChatPage() {
               </div>
             );
           })}
+          {showInitialLoading ? (
+            <div className="fx-thinking-live-panel fx-working-panel" data-testid="stream-loading-indicator" aria-live="polite">
+              <div className="fx-working-dots" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+            </div>
+          ) : null}
+          {showThinkingWorking ? (
+            <div className="fx-thinking-live-panel fx-working-panel" data-testid="thinking-working-indicator" aria-live="polite">
+              <div className="fx-working-dots" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+              {thinkingText ? <pre className="fx-thinking-live-text" data-testid="thinking-live-content">{thinkingText}</pre> : null}
+            </div>
+          ) : null}
         </article>
 
         <div className="fx-composer" onPointerDownCapture={keepComposerFocus} data-testid="composer">
@@ -671,6 +714,10 @@ export default function AppRoot() {
   const [outputItems, setOutputItems] = useState([]);
   const [streaming, setStreaming] = useState(false);
   const [streamingAssistantId, setStreamingAssistantId] = useState(null);
+  const [liveReasoningText, setLiveReasoningText] = useState('');
+  const [awaitingFirstStreamChunk, setAwaitingFirstStreamChunk] = useState(false);
+  const [hasReasoningStarted, setHasReasoningStarted] = useState(false);
+  const [hasAnswerStarted, setHasAnswerStarted] = useState(false);
   const [currentPath, setCurrentPath] = useState(getCurrentPath());
   const [threadByRepo, setThreadByRepo] = useState(() => {
     if (typeof window === 'undefined') return {};
@@ -946,6 +993,10 @@ export default function AppRoot() {
 
     setMessage('');
     setPendingAttachments([]);
+    setLiveReasoningText('');
+    setAwaitingFirstStreamChunk(true);
+    setHasReasoningStarted(false);
+    setHasAnswerStarted(false);
     setStreaming(true);
 
     const userId = `u-${Date.now()}`;
@@ -960,7 +1011,7 @@ export default function AppRoot() {
     setOutputItems((prev) => [
       ...prev,
       { id: userId, role: 'user', type: 'plain', text: prompt, attachments: attachmentMeta },
-      { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '・・・', answer: '' }
+      { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '', answer: '' }
     ]);
 
     const controller = new AbortController();
@@ -1004,7 +1055,6 @@ export default function AppRoot() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let answerCommitted = '';
-      let statusText = '';
       let reasoningRaw = '';
       let lineBuf = '';
 
@@ -1031,33 +1081,33 @@ export default function AppRoot() {
           try {
             const evt = JSON.parse(trimmed);
             if (evt.type === 'reasoning_delta' && evt.delta) {
+              setAwaitingFirstStreamChunk(false);
+              setHasReasoningStarted(true);
               reasoningRaw += evt.delta;
-              const header = extractFirstBold(reasoningRaw);
-              statusText = header ? `考え中: ${header}` : '・・・';
-              if (!answerCommitted) updateAssistant({ status: statusText, text: statusText });
+              const displayReasoning = extractDisplayReasoningText(reasoningRaw);
+              if (displayReasoning) setLiveReasoningText(displayReasoning);
               continue;
             }
             if (evt.type === 'answer_delta' && evt.delta) {
-              statusText = '';
+              setAwaitingFirstStreamChunk(false);
+              setHasAnswerStarted(true);
               answerCommitted += evt.delta;
               const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
               updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
               continue;
             }
             if (evt.type === 'started') {
-              statusText = '・・・';
-              updateAssistant({ status: statusText, text: statusText });
               continue;
             }
             if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) {
-              statusText = evt.phase === 'reconnecting' ? String(evt.message || '再接続中...') : '・・・';
-              if (!answerCommitted) updateAssistant({ status: statusText, text: statusText });
               continue;
             }
             if (evt.type === 'error') {
               throw new Error(String(evt.message || 'unknown_error'));
             }
           } catch {
+            setAwaitingFirstStreamChunk(false);
+            setHasAnswerStarted(true);
             answerCommitted += `${line}\n`;
             const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
             updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
@@ -1069,11 +1119,15 @@ export default function AppRoot() {
         try {
           const evt = JSON.parse(lineBuf.trim());
           if (evt.type === 'answer_delta' && evt.delta) {
+            setAwaitingFirstStreamChunk(false);
+            setHasAnswerStarted(true);
             answerCommitted += evt.delta;
             const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
             updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
           }
         } catch {
+          setAwaitingFirstStreamChunk(false);
+          setHasAnswerStarted(true);
           answerCommitted += lineBuf;
         }
       }
@@ -1108,6 +1162,10 @@ export default function AppRoot() {
     } finally {
       setStreaming(false);
       setStreamingAssistantId(null);
+      setLiveReasoningText('');
+      setAwaitingFirstStreamChunk(false);
+      setHasReasoningStarted(false);
+      setHasAnswerStarted(false);
       streamAbortRef.current = null;
       if (completedNormally) notifyResponseComplete();
     }
@@ -1246,6 +1304,10 @@ export default function AppRoot() {
       removePendingAttachment,
       streaming,
       streamingAssistantId,
+      liveReasoningText,
+      awaitingFirstStreamChunk,
+      hasReasoningStarted,
+      hasAnswerStarted,
       navigate,
       bootstrapConnection,
       fetchRepos,
@@ -1272,6 +1334,10 @@ export default function AppRoot() {
       message,
       pendingAttachments,
       streaming,
+      liveReasoningText,
+      awaitingFirstStreamChunk,
+      hasReasoningStarted,
+      hasAnswerStarted,
       navigate
     ]
   );
