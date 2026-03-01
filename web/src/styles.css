@@ -208,7 +208,33 @@ body {
   font-size: 0.94rem;
   font-weight: 700;
   text-align: center;
-  max-width: calc(100% - 5.2rem);
+  max-width: calc(100% - 7.6rem);
+}
+
+.fx-push-icon {
+  position: absolute;
+  right: 3.15rem;
+  top: calc(0.2rem + var(--fx-safe-top));
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+  line-height: 1;
+}
+
+.fx-push-icon:disabled {
+  opacity: 0.45;
+}
+
+.fx-push-icon-svg {
+  width: 1.28rem;
+  height: 1.28rem;
 }
 
 .fx-new-thread-icon {

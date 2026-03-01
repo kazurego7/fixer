@@ -33,6 +33,7 @@ npm run web:dev
 前提:
 - `gh` CLI がインストール済みであること
 - `gh auth login` が完了していること
+- Push通知を使う場合は HTTPS でアクセスすること（Tailscale `serve` 推奨）
 
 ## UI
 
@@ -64,3 +65,21 @@ npm run web:dev
 Codex App Server 側のエンドポイント仕様に差異がある場合は `server.js` の `/api/threads`, `/api/turns/stream`, `/api/turns/cancel`, `/api/approvals/respond` を調整してください。
 
 デバッグ用に `GET /api/logs?limit=200&level=error` でサーバーログ（メモリ保持分）を取得できます。クローン追跡は `event=clone_started|clone_succeeded|clone_failed` を確認してください。
+
+## iOS Push通知の設定
+
+1. サーバーを起動（初回起動時にVAPID鍵を自動生成）
+
+```bash
+npm run dev
+```
+
+2. Tailscale HTTPS で公開
+
+```bash
+tailscale serve https / http://127.0.0.1:3000
+```
+
+3. iPhone で `https://<マシン名>.<tailnet>.ts.net` にアクセスし、ホーム画面に追加
+
+4. チャット画面の通知ボタン（ベル）で通知を有効化

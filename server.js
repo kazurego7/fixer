@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const WebSocket = require('ws');
+const webPush = require('web-push');
 const Fastify = require('fastify');
 const fastifyStatic = require('@fastify/static');
 
@@ -27,6 +28,9 @@ function resolveWorkspaceRoot() {
 }
 
 const WORKSPACE_ROOT = resolveWorkspaceRoot();
+const PUSH_SUBSCRIPTIONS_PATH = path.join(WORKSPACE_ROOT, 'push-subscriptions.json');
+const PUSH_VAPID_PATH = path.join(WORKSPACE_ROOT, 'push-vapid.json');
+const DEFAULT_PUSH_SUBJECT = 'mailto:fixer@local.invalid';
 const cloneJobs = new Map();
 const runtimeLogs = [];
 const MAX_RUNTIME_LOGS = 2000;
@@ -39,10 +43,165 @@ let wsConnectPromise = null;
 let rpcSeq = 1;
 const rpcPending = new Map();
 const wsSubscribers = new Set();
+let pushSubscriptions = [];
+let pushPublicKey = '';
+let pushPrivateKey = '';
+let pushEnabled = false;
 
 function pushRuntimeLog(entry) {
   runtimeLogs.push({ timestamp: new Date().toISOString(), ...entry });
   if (runtimeLogs.length > MAX_RUNTIME_LOGS) runtimeLogs.shift();
+}
+
+function loadPushSubscriptions() {
+  try {
+    if (!fs.existsSync(PUSH_SUBSCRIPTIONS_PATH)) return [];
+    const raw = fs.readFileSync(PUSH_SUBSCRIPTIONS_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item) =>
+        item &&
+        typeof item === 'object' &&
+        typeof item.endpoint === 'string' &&
+        item.endpoint &&
+        item.keys &&
+        typeof item.keys.p256dh === 'string' &&
+        typeof item.keys.auth === 'string'
+    );
+  } catch {
+    return [];
+  }
+}
+
+function savePushSubscriptions() {
+  const tmp = `${PUSH_SUBSCRIPTIONS_PATH}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(pushSubscriptions, null, 2));
+  fs.renameSync(tmp, PUSH_SUBSCRIPTIONS_PATH);
+}
+
+function loadOrCreateVapidKeys() {
+  try {
+    if (fs.existsSync(PUSH_VAPID_PATH)) {
+      const raw = fs.readFileSync(PUSH_VAPID_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        typeof parsed.publicKey === 'string' &&
+        typeof parsed.privateKey === 'string' &&
+        parsed.publicKey &&
+        parsed.privateKey
+      ) {
+        return {
+          publicKey: parsed.publicKey,
+          privateKey: parsed.privateKey
+        };
+      }
+    }
+  } catch {
+    // 読み込み失敗時は再生成する。
+  }
+
+  const generated = webPush.generateVAPIDKeys();
+  const payload = {
+    publicKey: String(generated.publicKey),
+    privateKey: String(generated.privateKey),
+    createdAt: new Date().toISOString()
+  };
+  const tmp = `${PUSH_VAPID_PATH}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2));
+  fs.renameSync(tmp, PUSH_VAPID_PATH);
+  return {
+    publicKey: payload.publicKey,
+    privateKey: payload.privateKey
+  };
+}
+
+function upsertPushSubscription({ endpoint, keys, currentThreadId = null, userAgent = '' }) {
+  const now = new Date().toISOString();
+  const record = {
+    endpoint,
+    keys: {
+      p256dh: String(keys.p256dh),
+      auth: String(keys.auth)
+    },
+    currentThreadId: currentThreadId ? String(currentThreadId) : null,
+    userAgent: String(userAgent || ''),
+    updatedAt: now
+  };
+  const idx = pushSubscriptions.findIndex((item) => item.endpoint === endpoint);
+  if (idx >= 0) pushSubscriptions[idx] = { ...pushSubscriptions[idx], ...record };
+  else pushSubscriptions.push(record);
+  savePushSubscriptions();
+  return record;
+}
+
+function removePushSubscription(endpoint) {
+  const before = pushSubscriptions.length;
+  pushSubscriptions = pushSubscriptions.filter((item) => item.endpoint !== endpoint);
+  if (pushSubscriptions.length !== before) savePushSubscriptions();
+  return before !== pushSubscriptions.length;
+}
+
+function setPushContext(endpoint, currentThreadId = null) {
+  const idx = pushSubscriptions.findIndex((item) => item.endpoint === endpoint);
+  if (idx < 0) return null;
+  pushSubscriptions[idx] = {
+    ...pushSubscriptions[idx],
+    currentThreadId: currentThreadId ? String(currentThreadId) : null,
+    updatedAt: new Date().toISOString()
+  };
+  savePushSubscriptions();
+  return pushSubscriptions[idx];
+}
+
+async function notifyPushSubscribersForThread(threadId) {
+  if (!pushEnabled) return { sent: 0, staleRemoved: 0, skipped: 'push_not_configured' };
+  const targets = pushSubscriptions.filter((sub) => sub.currentThreadId === threadId);
+  if (targets.length === 0) return { sent: 0, staleRemoved: 0 };
+
+  const payload = JSON.stringify({
+    title: 'Fixer',
+    body: '返答が完了しました',
+    threadId,
+    url: '/chat/'
+  });
+
+  let sent = 0;
+  let staleRemoved = 0;
+
+  for (const sub of targets) {
+    try {
+      await webPush.sendNotification(
+        {
+          endpoint: sub.endpoint,
+          keys: {
+            p256dh: sub.keys.p256dh,
+            auth: sub.keys.auth
+          }
+        },
+        payload,
+        { TTL: 60 }
+      );
+      sent += 1;
+    } catch (error) {
+      const statusCode = Number(error?.statusCode || 0);
+      if (statusCode === 404 || statusCode === 410) {
+        if (removePushSubscription(sub.endpoint)) staleRemoved += 1;
+      }
+      pushRuntimeLog({
+        level: 'error',
+        event: 'push_send_failed',
+        threadId,
+        endpoint: sub.endpoint,
+        statusCode: statusCode || null,
+        message: String(error?.message || 'unknown_error')
+      });
+    }
+  }
+
+  return { sent, staleRemoved };
 }
 
 function addWsSubscriber(handler) {
@@ -635,6 +794,22 @@ async function githubRepos(token, query) {
 }
 
 function buildServer() {
+  pushSubscriptions = loadPushSubscriptions();
+  try {
+    const keys = loadOrCreateVapidKeys();
+    pushPublicKey = keys.publicKey;
+    pushPrivateKey = keys.privateKey;
+    webPush.setVapidDetails(DEFAULT_PUSH_SUBJECT, pushPublicKey, pushPrivateKey);
+    pushEnabled = true;
+  } catch (error) {
+    pushEnabled = false;
+    pushRuntimeLog({
+      level: 'error',
+      event: 'push_vapid_init_failed',
+      message: String(error?.message || 'unknown_error')
+    });
+  }
+
   const app = Fastify({ logger: { level: 'info' } });
 
   app.register(fastifyStatic, {
@@ -694,6 +869,75 @@ function buildServer() {
     if (level) logs = logs.filter((entry) => entry.level === level);
     const items = logs.slice(-limit);
     return { total: logs.length, count: items.length, items };
+  });
+
+  app.get('/api/push/config', async () => {
+    return {
+      enabled: pushEnabled,
+      publicKey: pushEnabled ? pushPublicKey : '',
+      hasVapidConfig: pushEnabled,
+      subscriptionCount: pushSubscriptions.length
+    };
+  });
+
+  app.post('/api/push/subscribe', async (request, reply) => {
+    const body = request.body || {};
+    const sub = body.subscription || {};
+    const endpoint = typeof sub.endpoint === 'string' ? sub.endpoint.trim() : '';
+    const p256dh = typeof sub?.keys?.p256dh === 'string' ? sub.keys.p256dh.trim() : '';
+    const auth = typeof sub?.keys?.auth === 'string' ? sub.keys.auth.trim() : '';
+    if (!endpoint || !p256dh || !auth) {
+      reply.code(400);
+      return { error: 'invalid_subscription' };
+    }
+    const record = upsertPushSubscription({
+      endpoint,
+      keys: { p256dh, auth },
+      currentThreadId: body.threadId ? String(body.threadId) : null,
+      userAgent: body.userAgent ? String(body.userAgent) : ''
+    });
+    pushRuntimeLog({
+      level: 'info',
+      event: 'push_subscribed',
+      endpoint,
+      threadId: record.currentThreadId
+    });
+    return { ok: true, endpoint, threadId: record.currentThreadId };
+  });
+
+  app.post('/api/push/context', async (request, reply) => {
+    const body = request.body || {};
+    const endpoint = typeof body.endpoint === 'string' ? body.endpoint.trim() : '';
+    if (!endpoint) {
+      reply.code(400);
+      return { error: 'endpoint_required' };
+    }
+    const record = setPushContext(endpoint, body.threadId ? String(body.threadId) : null);
+    if (!record) {
+      reply.code(404);
+      return { error: 'subscription_not_found' };
+    }
+    return { ok: true, endpoint, threadId: record.currentThreadId };
+  });
+
+  app.post('/api/push/unsubscribe', async (request, reply) => {
+    const body = request.body || {};
+    const endpoint = typeof body.endpoint === 'string' ? body.endpoint.trim() : '';
+    if (!endpoint) {
+      reply.code(400);
+      return { error: 'endpoint_required' };
+    }
+    const removed = removePushSubscription(endpoint);
+    if (!removed) {
+      reply.code(404);
+      return { error: 'subscription_not_found' };
+    }
+    pushRuntimeLog({
+      level: 'info',
+      event: 'push_unsubscribed',
+      endpoint
+    });
+    return { ok: true };
   });
 
   app.get('/api/github/auth/status', async () => {
@@ -927,6 +1171,27 @@ function buildServer() {
       if (kind === 'done') writeEvent({ type: 'done' });
       if (kind === 'error') writeEvent({ type: 'error', message: message || 'unknown_error' });
       if (!aborted) reply.raw.end();
+      if (kind === 'done') {
+        notifyPushSubscribersForThread(threadId)
+          .then((result) => {
+            pushRuntimeLog({
+              level: 'info',
+              event: 'push_notified',
+              threadId,
+              sent: result.sent,
+              staleRemoved: result.staleRemoved,
+              skipped: result.skipped || null
+            });
+          })
+          .catch((error) => {
+            pushRuntimeLog({
+              level: 'error',
+              event: 'push_notify_failed',
+              threadId,
+              message: String(error?.message || 'unknown_error')
+            });
+          });
+      }
     }
 
     writeEvent({ type: 'started' });

@@ -8,6 +8,7 @@ const CLONE_TIMEOUT_MS = 180000;
 const LAST_THREAD_ID_KEY = 'fx:lastThreadId';
 const LAST_REPO_FULLNAME_KEY = 'fx:lastRepoFullName';
 const THREAD_BY_REPO_KEY = 'fx:threadByRepo';
+const PUSH_ENDPOINT_KEY = 'fx:pushEndpoint';
 const AppCtx = createContext(null);
 
 function formatFileSize(size) {
@@ -25,6 +26,18 @@ function readFileAsDataUrl(file) {
     reader.onerror = () => reject(new Error('file_read_failed'));
     reader.readAsDataURL(file);
   });
+}
+
+function decodeBase64UrlToUint8Array(base64Url) {
+  const normalized = String(base64Url || '')
+    .replace(/-/g, '+')
+    .replace(/_/g, '/');
+  const pad = '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
+  const base64 = normalized + pad;
+  const raw = atob(base64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+  return bytes;
 }
 
 function normalizePath(rawPath) {
@@ -287,6 +300,11 @@ function ChatPage() {
     awaitingFirstStreamChunk,
     hasReasoningStarted,
     hasAnswerStarted,
+    pushSupported,
+    pushEnabled,
+    pushBusy,
+    pushLabel,
+    enablePushNotifications,
     sendTurn,
     cancelTurn,
     startNewThread
@@ -409,6 +427,48 @@ function ChatPage() {
             ←
           </button>
           <span className="fx-repo-pill">{activeRepoFullName}</span>
+          <button
+            className="fx-push-icon"
+            type="button"
+            onClick={enablePushNotifications}
+            disabled={!pushSupported || pushBusy}
+            aria-label={pushEnabled ? '通知を無効化' : '通知を有効化'}
+            title={pushLabel}
+            data-testid="push-enable-button"
+          >
+            <svg
+              className="fx-push-icon-svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              {pushEnabled ? (
+                <>
+                  <path d="M10 18a2 2 0 1 0 4 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  <path
+                    d="M12 3a6 6 0 0 0 -6 6v4.586l-2 2.414h16l-2 -2.414v-4.586a6 6 0 0 0 -6 -6z"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </>
+              ) : (
+                <>
+                  <path d="M10 18a2 2 0 1 0 4 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  <path
+                    d="M12 3a6 6 0 0 0 -6 6v4.586l-2 2.414h16l-2 -2.414v-4.586a6 6 0 0 0 -6 -6z"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path d="M3 3l18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </>
+              )}
+            </svg>
+          </button>
           <button
             className="fx-new-thread-icon"
             type="button"
@@ -718,6 +778,10 @@ export default function AppRoot() {
   const [awaitingFirstStreamChunk, setAwaitingFirstStreamChunk] = useState(false);
   const [hasReasoningStarted, setHasReasoningStarted] = useState(false);
   const [hasAnswerStarted, setHasAnswerStarted] = useState(false);
+  const [pushSupported, setPushSupported] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushLabel, setPushLabel] = useState('通知を有効化');
   const [currentPath, setCurrentPath] = useState(getCurrentPath());
   const [threadByRepo, setThreadByRepo] = useState(() => {
     if (typeof window === 'undefined') return {};
@@ -734,6 +798,11 @@ export default function AppRoot() {
   const didBootstrapRef = useRef(false);
   const lastPathRef = useRef(getCurrentPath());
   const activeThreadRef = useRef(activeThreadId);
+  const pushEndpointRef = useRef(
+    typeof window !== 'undefined' ? window.localStorage.getItem(PUSH_ENDPOINT_KEY) || '' : ''
+  );
+  const pushPublicKeyRef = useRef('');
+  const serviceWorkerRegRef = useRef(null);
 
   function toast(text) {
     f7?.toast?.create({ text, closeTimeout: 1400, position: 'center' }).open();
@@ -771,21 +840,109 @@ export default function AppRoot() {
     setPendingAttachments((prev) => prev.filter((_, idx) => idx !== index));
   }
 
-  function notifyResponseComplete() {
-    const title = 'Fixer';
-    const body = '返答が完了しました';
-    if (typeof window === 'undefined') return;
-    if (!('Notification' in window)) return;
+  async function fetchPushConfig() {
+    const res = await fetch('/api/push/config');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'push_config_failed');
+    return data;
+  }
 
-    if (Notification.permission === 'granted') {
-      new Notification(title, { body });
+  async function ensureServiceWorkerRegistration() {
+    if (serviceWorkerRegRef.current) return serviceWorkerRegRef.current;
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    serviceWorkerRegRef.current = reg;
+    return reg;
+  }
+
+  async function syncPushSubscription(subscription, threadId = activeThreadRef.current) {
+    const json = subscription?.toJSON?.();
+    if (!json?.endpoint || !json?.keys?.p256dh || !json?.keys?.auth) throw new Error('push_subscription_invalid');
+    const res = await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        subscription: json,
+        threadId: threadId || null,
+        userAgent: navigator.userAgent
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'push_subscribe_failed');
+    pushEndpointRef.current = json.endpoint;
+    window.localStorage.setItem(PUSH_ENDPOINT_KEY, json.endpoint);
+    return data;
+  }
+
+  async function disablePushNotifications() {
+    const reg = await ensureServiceWorkerRegistration();
+    const subscription = await reg.pushManager.getSubscription();
+    const endpointFromSub = subscription?.endpoint ? String(subscription.endpoint) : '';
+    const endpoint = endpointFromSub || pushEndpointRef.current || '';
+
+    if (endpoint) {
+      await fetch('/api/push/unsubscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint })
+      }).catch(() => {});
+    }
+    if (subscription) {
+      await subscription.unsubscribe().catch(() => {});
+    }
+    pushEndpointRef.current = '';
+    window.localStorage.removeItem(PUSH_ENDPOINT_KEY);
+    setPushEnabled(false);
+    setPushLabel('通知を有効化');
+  }
+
+  async function enablePushNotifications() {
+    if (typeof window === 'undefined') return;
+    if (!pushSupported) {
+      return;
+    }
+    if (!window.isSecureContext) {
+      toast('HTTPSでアクセスしてください');
+      return;
+    }
+    if (!pushPublicKeyRef.current) {
+      toast('Push設定が未完了です');
       return;
     }
 
-    if (Notification.permission === 'default') {
-      Notification.requestPermission().then((permission) => {
-        if (permission === 'granted') new Notification(title, { body });
-      });
+    setPushBusy(true);
+    try {
+      if (pushEnabled) {
+        await disablePushNotifications();
+        toast('Push通知を無効化しました');
+        return;
+      }
+
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        setPushEnabled(false);
+        setPushLabel(permission === 'denied' ? '通知が拒否されています' : '通知を有効化');
+        return;
+      }
+
+      const reg = await ensureServiceWorkerRegistration();
+      let subscription = await reg.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeBase64UrlToUint8Array(pushPublicKeyRef.current)
+        });
+      }
+
+      await syncPushSubscription(subscription, activeThreadRef.current);
+      setPushEnabled(true);
+      setPushLabel('通知を無効化');
+      toast('Push通知を有効化しました');
+    } catch (e) {
+      setPushEnabled(false);
+      setPushLabel('通知設定に失敗しました');
+      toast(`通知設定失敗: ${String(e.message || 'unknown_error')}`);
+    } finally {
+      setPushBusy(false);
     }
   }
 
@@ -1016,7 +1173,6 @@ export default function AppRoot() {
 
     const controller = new AbortController();
     streamAbortRef.current = controller;
-    let completedNormally = false;
 
     try {
       async function postTurn(targetThreadId) {
@@ -1143,7 +1299,6 @@ export default function AppRoot() {
         next.push({ id: `${assistantId}:sep`, role: 'system', type: 'separator', text: '' });
         return next;
       });
-      completedNormally = true;
     } catch (e) {
       if (e.name === 'AbortError') {
         setOutputItems((prev) =>
@@ -1167,7 +1322,6 @@ export default function AppRoot() {
       setHasReasoningStarted(false);
       setHasAnswerStarted(false);
       streamAbortRef.current = null;
-      if (completedNormally) notifyResponseComplete();
     }
   }
 
@@ -1214,6 +1368,62 @@ export default function AppRoot() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const supported =
+      window.isSecureContext &&
+      'serviceWorker' in navigator &&
+      'PushManager' in window &&
+      'Notification' in window;
+    setPushSupported(supported);
+
+    if (!supported) {
+      setPushEnabled(false);
+      setPushLabel(window.isSecureContext ? 'このブラウザはPush非対応' : 'HTTPSでアクセスしてください');
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const config = await fetchPushConfig();
+        if (cancelled) return;
+        if (!config.enabled || !config.publicKey) {
+          setPushEnabled(false);
+          setPushLabel('サーバーのPush設定が未完了です');
+          return;
+        }
+        pushPublicKeyRef.current = String(config.publicKey);
+        const reg = await ensureServiceWorkerRegistration();
+        if (cancelled) return;
+        if (Notification.permission === 'denied') {
+          setPushEnabled(false);
+          setPushLabel('通知が拒否されています');
+          return;
+        }
+        const subscription = await reg.pushManager.getSubscription();
+        if (!subscription) {
+          setPushEnabled(false);
+          setPushLabel('通知を有効化');
+          return;
+        }
+        await syncPushSubscription(subscription, activeThreadRef.current);
+        if (cancelled) return;
+        setPushEnabled(true);
+        setPushLabel('通知を無効化');
+      } catch {
+        if (cancelled) return;
+        setPushEnabled(false);
+        setPushLabel('通知を有効化');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const onPopState = () => setCurrentPath(getCurrentPath());
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -1235,6 +1445,19 @@ export default function AppRoot() {
   useEffect(() => {
     activeThreadRef.current = activeThreadId;
   }, [activeThreadId]);
+
+  useEffect(() => {
+    const endpoint = pushEndpointRef.current;
+    if (!endpoint || !pushEnabled) return;
+    fetch('/api/push/context', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        endpoint,
+        threadId: activeThreadId || null
+      })
+    }).catch(() => {});
+  }, [activeThreadId, pushEnabled]);
 
   useEffect(() => {
     if (activeThreadId && activeRepoFullName) {
@@ -1308,6 +1531,11 @@ export default function AppRoot() {
       awaitingFirstStreamChunk,
       hasReasoningStarted,
       hasAnswerStarted,
+      pushSupported,
+      pushEnabled,
+      pushBusy,
+      pushLabel,
+      enablePushNotifications,
       navigate,
       bootstrapConnection,
       fetchRepos,
@@ -1338,6 +1566,10 @@ export default function AppRoot() {
       awaitingFirstStreamChunk,
       hasReasoningStarted,
       hasAnswerStarted,
+      pushSupported,
+      pushEnabled,
+      pushBusy,
+      pushLabel,
       navigate
     ]
   );
