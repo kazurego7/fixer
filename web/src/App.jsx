@@ -381,7 +381,14 @@ function ChatPage() {
     <Page noNavbar>
       <PageContent className="fx-page fx-page-chat">
         <div className="fx-chat-head">
-          <button className="fx-back-icon" type="button" onClick={() => navigate('/repos/')}>←</button>
+          <button
+            className="fx-back-icon"
+            type="button"
+            onClick={() => navigate('/repos/')}
+            data-testid="back-button"
+          >
+            ←
+          </button>
           <span className="fx-repo-pill">{activeRepoFullName}</span>
           <button
             className="fx-new-thread-icon"
@@ -390,6 +397,7 @@ function ChatPage() {
             disabled={busy || streaming}
             aria-label="新規スレッド"
             title="新規スレッド"
+            data-testid="new-thread-button"
           >
             <svg
               className="fx-new-thread-icon-svg"
@@ -448,10 +456,10 @@ function ChatPage() {
           })}
         </article>
 
-        <div className="fx-composer" onPointerDownCapture={keepComposerFocus}>
+        <div className="fx-composer" onPointerDownCapture={keepComposerFocus} data-testid="composer">
           {pendingAttachments.length > 0 ? (
-            <div className="fx-attachments-bar">
-              <div className="fx-attachments-list">
+            <div className="fx-attachments-bar" data-testid="attachments-bar">
+              <div className="fx-attachments-list" data-testid="attachments-list">
                 {pendingAttachments.map((att, idx) => (
                   <div
                     key={`${att.name}:${att.size}:${idx}`}
@@ -467,8 +475,14 @@ function ChatPage() {
                     }}
                     aria-label={`プレビュー: ${att.name}`}
                     title="プレビュー"
+                    data-testid={`attachment-item-${idx}`}
                   >
-                    <img src={att.dataUrl} alt={att.name} className="fx-attachment-thumb" />
+                    <img
+                      src={att.dataUrl}
+                      alt={att.name}
+                      className="fx-attachment-thumb"
+                      data-testid={`attachment-thumb-${idx}`}
+                    />
                     <div className="fx-attachment-meta">
                       <span className="fx-attachment-name">{att.name}</span>
                       <span className="fx-attachment-size">{formatFileSize(att.size)}</span>
@@ -482,6 +496,7 @@ function ChatPage() {
                       }}
                       aria-label={`添付解除: ${att.name}`}
                       title="添付解除"
+                      data-testid={`attachment-remove-${idx}`}
                     >
                       ×
                     </button>
@@ -497,6 +512,7 @@ function ChatPage() {
               accept="image/*"
               multiple
               className="fx-file-input"
+              data-testid="attachment-input"
               onChange={async (e) => {
                 await addImageAttachments(e.target.files);
                 e.target.value = '';
@@ -509,6 +525,7 @@ function ChatPage() {
               onClick={() => fileInputRef.current?.click()}
               aria-label="画像を添付"
               title="画像を添付"
+              data-testid="attachment-add-button"
             >
               ＋
             </Button>
@@ -520,6 +537,7 @@ function ChatPage() {
               placeholder="指示を入力"
               onFocus={() => setIsInputFocused(true)}
               onBlur={() => setIsInputFocused(false)}
+              data-testid="composer-textarea"
             />
             <div
               className={`fx-composer-actions${
@@ -546,6 +564,7 @@ function ChatPage() {
                   disabled={!canSend}
                   aria-label="送信"
                   title="送信"
+                  data-testid="send-button"
                 >
                   <svg
                     className="fx-send-icon-svg"
@@ -564,13 +583,20 @@ function ChatPage() {
           </div>
         </div>
         {previewAttachment ? (
-          <div className="fx-image-preview-overlay" role="dialog" aria-modal="true" onClick={closePreview}>
+          <div
+            className="fx-image-preview-overlay"
+            role="dialog"
+            aria-modal="true"
+            onClick={closePreview}
+            data-testid="image-preview-overlay"
+          >
             <div
               className="fx-image-preview-panel"
               onClick={(e) => e.stopPropagation()}
               onPointerDown={onPreviewPointerDown}
               onPointerUp={onPreviewPointerUp}
               onPointerCancel={onPreviewPointerCancel}
+              data-testid="image-preview-panel"
             >
               <button
                 type="button"
@@ -578,6 +604,7 @@ function ChatPage() {
                 onClick={closePreview}
                 aria-label="プレビューを閉じる"
                 title="閉じる"
+                data-testid="image-preview-close"
               >
                 ×
               </button>
@@ -588,10 +615,16 @@ function ChatPage() {
                 disabled={!canGoPrev}
                 aria-label="前の画像"
                 title="前の画像"
+                data-testid="image-preview-prev"
               >
                 ‹
               </button>
-              <img src={previewAttachment.dataUrl} alt={previewAttachment.name} className="fx-image-preview-img" />
+              <img
+                src={previewAttachment.dataUrl}
+                alt={previewAttachment.name}
+                className="fx-image-preview-img"
+                data-testid="image-preview-img"
+              />
               <button
                 type="button"
                 className="fx-image-preview-nav is-right"
@@ -599,10 +632,11 @@ function ChatPage() {
                 disabled={!canGoNext}
                 aria-label="次の画像"
                 title="次の画像"
+                data-testid="image-preview-next"
               >
                 ›
               </button>
-              <div className="fx-image-preview-caption">
+              <div className="fx-image-preview-caption" data-testid="image-preview-caption">
                 <span className="fx-image-preview-name">{previewAttachment.name}</span>
                 <span className="fx-image-preview-index">
                   {previewIndex + 1} / {pendingAttachments.length}

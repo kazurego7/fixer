@@ -10,7 +10,10 @@
     "build:watch": "vite build --watch --config vite.config.js",
     "dev": "bash -lc \"trap 'kill 0' EXIT; npm run build:watch & npm run start:watch\"",
     "web:dev": "vite --config vite.config.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:e2e": "playwright test",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:all": "npm test && npm run test:smoke"
   },
   "dependencies": {
     "@fastify/static": "^9.0.0",
@@ -23,6 +26,7 @@
     "ws": "^8.19.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@vitejs/plugin-react": "^5.1.4",
     "vite": "^7.3.1"
   }
