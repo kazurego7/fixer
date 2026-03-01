@@ -10,6 +10,23 @@ const LAST_REPO_FULLNAME_KEY = 'fx:lastRepoFullName';
 const THREAD_BY_REPO_KEY = 'fx:threadByRepo';
 const AppCtx = createContext(null);
 
+function formatFileSize(size) {
+  const bytes = Number(size || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('file_read_failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
 function normalizePath(rawPath) {
   if (rawPath === '/chat' || rawPath === '/chat/') return '/chat/';
   return '/repos/';
@@ -247,6 +264,9 @@ function ChatPage() {
     activeRepoFullName,
     message,
     setMessage,
+    pendingAttachments,
+    addImageAttachments,
+    removePendingAttachment,
     outputItems,
     outputRef,
     streaming,
@@ -255,21 +275,97 @@ function ChatPage() {
     cancelTurn,
     startNewThread
   } = useContext(AppCtx);
-  const canSend = message.trim().length > 0 && !streaming;
+  const canSend = (message.trim().length > 0 || pendingAttachments.length > 0) && !streaming;
   const [isInputFocused, setIsInputFocused] = useState(false);
+  const [previewIndex, setPreviewIndex] = useState(null);
   const composerInputRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const swipeStartXRef = useRef(null);
+  const swipeStartYRef = useRef(null);
   const displayItems = useMemo(() => withAutoAssistantSeparators(outputItems), [outputItems]);
+  const previewAttachment =
+    previewIndex !== null && previewIndex >= 0 && previewIndex < pendingAttachments.length
+      ? pendingAttachments[previewIndex]
+      : null;
+  const canGoPrev = previewIndex !== null && previewIndex > 0;
+  const canGoNext = previewIndex !== null && previewIndex < pendingAttachments.length - 1;
   const keepComposerFocus = (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
+    if (target.closest('.fx-attachments-bar')) return;
     if (target.closest('textarea,button,input,select,a,[role="button"]')) return;
     event.preventDefault();
     composerInputRef.current?.focus();
+  };
+  const closePreview = () => setPreviewIndex(null);
+  const openPreviewAt = (idx) => {
+    if (idx < 0 || idx >= pendingAttachments.length) return;
+    setPreviewIndex(idx);
+  };
+  const showPrevPreview = () => {
+    setPreviewIndex((prev) => {
+      if (prev === null || prev <= 0) return prev;
+      return prev - 1;
+    });
+  };
+  const showNextPreview = () => {
+    setPreviewIndex((prev) => {
+      if (prev === null || prev >= pendingAttachments.length - 1) return prev;
+      return prev + 1;
+    });
+  };
+  const onPreviewPointerDown = (event) => {
+    swipeStartXRef.current = event.clientX;
+    swipeStartYRef.current = event.clientY;
+  };
+  const onPreviewPointerUp = (event) => {
+    if (swipeStartXRef.current === null || swipeStartYRef.current === null) return;
+    const dx = event.clientX - swipeStartXRef.current;
+    const dy = event.clientY - swipeStartYRef.current;
+    swipeStartXRef.current = null;
+    swipeStartYRef.current = null;
+    if (Math.abs(dx) < 40 || Math.abs(dx) <= Math.abs(dy)) return;
+    if (dx < 0) showNextPreview();
+    else showPrevPreview();
+  };
+  const onPreviewPointerCancel = () => {
+    swipeStartXRef.current = null;
+    swipeStartYRef.current = null;
   };
 
   useEffect(() => {
     if (connected && !chatVisible) navigate('/repos/', true);
   }, [connected, chatVisible, navigate]);
+
+  useEffect(() => {
+    if (previewIndex === null) return;
+    if (pendingAttachments.length === 0) {
+      setPreviewIndex(null);
+      return;
+    }
+    if (previewIndex > pendingAttachments.length - 1) {
+      setPreviewIndex(pendingAttachments.length - 1);
+    }
+  }, [previewIndex, pendingAttachments.length]);
+
+  useEffect(() => {
+    if (previewIndex === null) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closePreview();
+        return;
+      }
+      if (event.key === 'ArrowLeft') {
+        showPrevPreview();
+        return;
+      }
+      if (event.key === 'ArrowRight') {
+        showNextPreview();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [previewIndex, pendingAttachments.length]);
 
   if (!chatVisible) {
     return (
@@ -318,7 +414,20 @@ function ChatPage() {
                 <div className="fx-msg-bubble">
                   {item.role === 'assistant'
                     ? renderAssistant(item, streaming && item.id === streamingAssistantId)
-                    : <p className="fx-user-line">{item.text}</p>}
+                    : (
+                      <>
+                        {item.text ? <p className="fx-user-line">{item.text}</p> : null}
+                        {Array.isArray(item.attachments) && item.attachments.length > 0 ? (
+                          <div className="fx-user-attachments">
+                            {item.attachments.map((att, idx) => (
+                              <span key={`${item.id}:att:${idx}`} className="fx-user-attachment-chip">
+                                画像: {String(att?.name || 'image')} ({formatFileSize(att?.size)})
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </>
+                    )}
                 </div>
               </div>
             );
@@ -326,7 +435,69 @@ function ChatPage() {
         </article>
 
         <div className="fx-composer" onPointerDownCapture={keepComposerFocus}>
+          {pendingAttachments.length > 0 ? (
+            <div className="fx-attachments-bar">
+              <div className="fx-attachments-list">
+                {pendingAttachments.map((att, idx) => (
+                  <div
+                    key={`${att.name}:${att.size}:${idx}`}
+                    className="fx-attachment-item"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openPreviewAt(idx)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openPreviewAt(idx);
+                      }
+                    }}
+                    aria-label={`プレビュー: ${att.name}`}
+                    title="プレビュー"
+                  >
+                    <img src={att.dataUrl} alt={att.name} className="fx-attachment-thumb" />
+                    <div className="fx-attachment-meta">
+                      <span className="fx-attachment-name">{att.name}</span>
+                      <span className="fx-attachment-size">{formatFileSize(att.size)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="fx-attachment-remove"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removePendingAttachment(idx);
+                      }}
+                      aria-label={`添付解除: ${att.name}`}
+                      title="添付解除"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="fx-composer-inner">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="fx-file-input"
+              onChange={async (e) => {
+                await addImageAttachments(e.target.files);
+                e.target.value = '';
+                composerInputRef.current?.focus();
+              }}
+            />
+            <Button
+              tonal
+              className="fx-icon-btn fx-attach-btn"
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="画像を添付"
+              title="画像を添付"
+            >
+              ＋
+            </Button>
             <textarea
               ref={composerInputRef}
               value={message}
@@ -338,7 +509,9 @@ function ChatPage() {
             />
             <div
               className={`fx-composer-actions${
-                !isInputFocused && !streaming && message.trim().length === 0 ? ' is-hidden' : ''
+                !isInputFocused && !streaming && message.trim().length === 0 && pendingAttachments.length === 0
+                  ? ' is-hidden'
+                  : ''
               }`}
             >
               {streaming ? (
@@ -366,6 +539,54 @@ function ChatPage() {
             </div>
           </div>
         </div>
+        {previewAttachment ? (
+          <div className="fx-image-preview-overlay" role="dialog" aria-modal="true" onClick={closePreview}>
+            <div
+              className="fx-image-preview-panel"
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={onPreviewPointerDown}
+              onPointerUp={onPreviewPointerUp}
+              onPointerCancel={onPreviewPointerCancel}
+            >
+              <button
+                type="button"
+                className="fx-image-preview-close"
+                onClick={closePreview}
+                aria-label="プレビューを閉じる"
+                title="閉じる"
+              >
+                ×
+              </button>
+              <button
+                type="button"
+                className="fx-image-preview-nav is-left"
+                onClick={showPrevPreview}
+                disabled={!canGoPrev}
+                aria-label="前の画像"
+                title="前の画像"
+              >
+                ‹
+              </button>
+              <img src={previewAttachment.dataUrl} alt={previewAttachment.name} className="fx-image-preview-img" />
+              <button
+                type="button"
+                className="fx-image-preview-nav is-right"
+                onClick={showNextPreview}
+                disabled={!canGoNext}
+                aria-label="次の画像"
+                title="次の画像"
+              >
+                ›
+              </button>
+              <div className="fx-image-preview-caption">
+                <span className="fx-image-preview-name">{previewAttachment.name}</span>
+                <span className="fx-image-preview-index">
+                  {previewIndex + 1} / {pendingAttachments.length}
+                </span>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </PageContent>
     </Page>
   );
@@ -388,6 +609,7 @@ export default function AppRoot() {
   const [chatVisible, setChatVisible] = useState(Boolean(initialThreadId && initialRepoFullName));
 
   const [message, setMessage] = useState('');
+  const [pendingAttachments, setPendingAttachments] = useState([]);
   const [outputItems, setOutputItems] = useState([]);
   const [streaming, setStreaming] = useState(false);
   const [streamingAssistantId, setStreamingAssistantId] = useState(null);
@@ -410,6 +632,38 @@ export default function AppRoot() {
 
   function toast(text) {
     f7?.toast?.create({ text, closeTimeout: 1400, position: 'center' }).open();
+  }
+
+  async function addImageAttachments(fileList) {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    const next = [];
+
+    for (const file of files) {
+      if (!file.type || !file.type.startsWith('image/')) {
+        toast(`画像のみ添付できます: ${file.name}`);
+        continue;
+      }
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        if (!dataUrl) throw new Error('empty_data_url');
+        next.push({
+          type: 'image',
+          name: String(file.name || 'image'),
+          mime: String(file.type || 'image/*'),
+          size: Number(file.size || 0),
+          dataUrl
+        });
+      } catch {
+        toast(`画像読み込み失敗: ${file.name}`);
+      }
+    }
+
+    if (next.length > 0) setPendingAttachments((prev) => [...prev, ...next]);
+  }
+
+  function removePendingAttachment(index) {
+    setPendingAttachments((prev) => prev.filter((_, idx) => idx !== index));
   }
 
   function notifyResponseComplete() {
@@ -563,6 +817,7 @@ export default function AppRoot() {
   async function startWithRepo(repo) {
     setBusy(true);
     try {
+      setPendingAttachments([]);
       setSelectedRepo(repo);
       if (repo.cloneState?.status !== 'cloned') {
         await cloneSelectedRepo(repo);
@@ -612,7 +867,8 @@ export default function AppRoot() {
       }
     }
     const prompt = message.trim();
-    if (!prompt) return;
+    if (!prompt && pendingAttachments.length === 0) return;
+    const attachmentsToSend = pendingAttachments;
 
     let threadIdToUse = activeThreadId || threadByRepo[activeRepoFullName];
     if (!threadIdToUse) return;
@@ -631,14 +887,21 @@ export default function AppRoot() {
     }
 
     setMessage('');
+    setPendingAttachments([]);
     setStreaming(true);
 
     const userId = `u-${Date.now()}`;
     const assistantId = `a-${Date.now() + 1}`;
+    const attachmentMeta = attachmentsToSend.map((att) => ({
+      type: 'image',
+      name: att.name,
+      size: att.size,
+      mime: att.mime
+    }));
     setStreamingAssistantId(assistantId);
     setOutputItems((prev) => [
       ...prev,
-      { id: userId, role: 'user', type: 'plain', text: prompt },
+      { id: userId, role: 'user', type: 'plain', text: prompt, attachments: attachmentMeta },
       { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '・・・', answer: '' }
     ]);
 
@@ -651,7 +914,11 @@ export default function AppRoot() {
         return fetch('/api/turns/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ thread_id: targetThreadId, input: prompt, attachments: [] }),
+          body: JSON.stringify({
+            thread_id: targetThreadId,
+            input: prompt,
+            attachments: attachmentsToSend
+          }),
           signal: controller.signal
         });
       }
@@ -801,6 +1068,7 @@ export default function AppRoot() {
       setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: id }));
       setOutputItems([]);
       setMessage('');
+      setPendingAttachments([]);
       toast('新規スレッドを開始しました');
     } catch (e) {
       toast(`新規スレッド開始失敗: ${String(e.message || 'unknown_error')}`);
@@ -915,6 +1183,9 @@ export default function AppRoot() {
       outputRef,
       message,
       setMessage,
+      pendingAttachments,
+      addImageAttachments,
+      removePendingAttachment,
       streaming,
       streamingAssistantId,
       navigate,
@@ -941,6 +1212,7 @@ export default function AppRoot() {
       chatVisible,
       outputItems,
       message,
+      pendingAttachments,
       streaming,
       navigate
     ]
