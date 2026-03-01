@@ -236,6 +236,9 @@ function attachWsHandlers(ws) {
       return;
     }
 
+    const clearThreadId = shouldClearRunningTurnByNotification(msg);
+    if (clearThreadId) runningTurnByThreadId.delete(clearThreadId);
+
     if (msg && Object.prototype.hasOwnProperty.call(msg, 'id') && rpcPending.has(msg.id)) {
       const pending = rpcPending.get(msg.id);
       rpcPending.delete(msg.id);
@@ -444,6 +447,27 @@ function isCompletedStatus(status) {
 function isErrorStatus(status) {
   const normalized = String(status || '').toLowerCase();
   return normalized === 'failed' || normalized === 'interrupted' || normalized === 'cancelled';
+}
+
+function shouldClearRunningTurnByNotification(msg) {
+  const v2 = parseV2TurnNotification(msg);
+  if (v2?.threadId) {
+    if (v2.method === 'turn/completed') return v2.threadId;
+    if (v2.method === 'error' && !v2.willRetry) return v2.threadId;
+  }
+
+  const legacy = parseLegacyTurnNotification(msg);
+  if (!legacy?.threadId) return null;
+  const legacyType = String(legacy.type || '').toLowerCase();
+  if (
+    legacyType === 'task_complete' ||
+    legacyType === 'turn_complete' ||
+    legacyType === 'turn_aborted' ||
+    legacyType === 'error'
+  ) {
+    return legacy.threadId;
+  }
+  return null;
 }
 
 function selectTurnStreamUpdate(msg, state) {
@@ -1124,6 +1148,131 @@ function buildServer() {
     return { id, reused: false };
   });
 
+  app.get('/api/turns/running', async (request, reply) => {
+    const threadId = request.query.threadId;
+    if (!threadId) {
+      reply.code(400);
+      return { error: 'threadId is required' };
+    }
+    const turnId = runningTurnByThreadId.get(threadId);
+    if (!turnId) return { running: false, threadId };
+    return { running: true, threadId, turnId };
+  });
+
+  app.get('/api/turns/stream/resume', async (request, reply) => {
+    const threadId = request.query.threadId;
+    const turnId = request.query.turnId;
+    if (!threadId || !turnId) {
+      reply.code(400);
+      return { error: 'threadId and turnId are required' };
+    }
+
+    const currentTurnId = runningTurnByThreadId.get(threadId);
+    if (!currentTurnId || currentTurnId !== turnId) {
+      pushRuntimeLog({
+        level: 'info',
+        event: 'turn_stream_resume_mismatch',
+        threadId,
+        requestedTurnId: turnId,
+        runningTurnId: currentTurnId || null
+      });
+      reply.code(404);
+      return { error: 'running_turn_not_found' };
+    }
+
+    pushRuntimeLog({
+      level: 'info',
+      event: 'turn_stream_resume_start',
+      threadId,
+      turnId
+    });
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive'
+    });
+
+    let aborted = false;
+    let closed = false;
+    let unsubWs = null;
+    let timeoutHandle = null;
+    let preferV2 = false;
+
+    function writeEvent(event) {
+      if (aborted) return;
+      reply.raw.write(`${JSON.stringify(event)}\n`);
+    }
+
+    function closeStream(kind, message = null) {
+      if (closed) return;
+      closed = true;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+      if (typeof unsubWs === 'function') {
+        unsubWs();
+        unsubWs = null;
+      }
+      if (kind === 'done') writeEvent({ type: 'done' });
+      if (kind === 'error') writeEvent({ type: 'error', message: message || 'unknown_error' });
+      if (!aborted) reply.raw.end();
+    }
+
+    writeEvent({ type: 'started' });
+
+    reply.raw.on('close', () => {
+      aborted = true;
+      closeStream('error', 'client_disconnected');
+    });
+
+    timeoutHandle = setTimeout(() => {
+      pushRuntimeLog({
+        level: 'error',
+        event: 'turn_stream_resume_timeout',
+        threadId,
+        turnId
+      });
+      closeStream('error', 'turn_timeout');
+    }, 180000);
+
+    unsubWs = addWsSubscriber((msg) => {
+      if (aborted || closed) return;
+      const update = selectTurnStreamUpdate(msg, { threadId, turnId, preferV2 });
+      preferV2 = update.nextPreferV2;
+      if (!update.matched) return;
+
+      if (update.streamEvent?.type === 'status' && update.streamEvent.phase === 'reconnecting') {
+        pushRuntimeLog({
+          level: 'info',
+          event: 'turn_stream_resume_reconnecting',
+          threadId,
+          turnId,
+          message: String(update.streamEvent.message || 'reconnecting')
+        });
+      }
+
+      if (update.streamEvent) {
+        writeEvent(update.streamEvent);
+        return;
+      }
+
+      if (update.terminal) {
+        pushRuntimeLog({
+          level: update.terminal.kind === 'error' ? 'error' : 'info',
+          event: 'turn_stream_resume_terminal',
+          threadId,
+          turnId,
+          kind: update.terminal.kind,
+          message: update.terminal.message || null
+        });
+        closeStream(update.terminal.kind, update.terminal.message);
+      }
+    });
+  });
+
   app.post('/api/turns/stream', async (request, reply) => {
     const body = request.body || {};
     const threadId = body.thread_id;
@@ -1156,7 +1305,7 @@ function buildServer() {
       reply.raw.write(`${JSON.stringify(event)}\n`);
     }
 
-    function closeStream(kind, message = null) {
+    function closeStream(kind, message = null, clearRunning = true) {
       if (closed) return;
       closed = true;
       if (timeoutHandle) {
@@ -1167,7 +1316,7 @@ function buildServer() {
         unsubWs();
         unsubWs = null;
       }
-      runningTurnByThreadId.delete(threadId);
+      if (clearRunning) runningTurnByThreadId.delete(threadId);
       if (kind === 'done') writeEvent({ type: 'done' });
       if (kind === 'error') writeEvent({ type: 'error', message: message || 'unknown_error' });
       if (!aborted) reply.raw.end();
@@ -1215,7 +1364,7 @@ function buildServer() {
 
     reply.raw.on('close', () => {
       aborted = true;
-      closeStream('error', 'client_disconnected');
+      closeStream('error', 'client_disconnected', false);
     });
 
     timeoutHandle = setTimeout(() => {
@@ -1225,7 +1374,7 @@ function buildServer() {
         threadId,
         turnId
       });
-      closeStream('error', 'turn_timeout');
+      closeStream('error', 'turn_timeout', false);
     }, 180000);
 
     unsubWs = addWsSubscriber((msg) => {

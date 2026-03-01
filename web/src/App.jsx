@@ -795,9 +795,14 @@ export default function AppRoot() {
   const outputRef = useRef(null);
   const autoScrollRef = useRef(true);
   const streamAbortRef = useRef(null);
+  const resumeStreamAbortRef = useRef(null);
+  const resumeStreamingThreadIdRef = useRef('');
+  const resumeStreamingTurnIdRef = useRef('');
   const didBootstrapRef = useRef(false);
   const lastPathRef = useRef(getCurrentPath());
   const activeThreadRef = useRef(activeThreadId);
+  const backgroundInterruptedTurnRef = useRef(false);
+  const shouldResumeOnVisibleRef = useRef(false);
   const pushEndpointRef = useRef(
     typeof window !== 'undefined' ? window.localStorage.getItem(PUSH_ENDPOINT_KEY) || '' : ''
   );
@@ -943,6 +948,134 @@ export default function AppRoot() {
       toast(`通知設定失敗: ${String(e.message || 'unknown_error')}`);
     } finally {
       setPushBusy(false);
+    }
+  }
+
+  async function fetchRunningTurn(threadId) {
+    const res = await fetch(`/api/turns/running?threadId=${encodeURIComponent(threadId)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'running_turn_fetch_failed');
+    return data;
+  }
+
+  async function startResumeStream(threadId, turnId) {
+    if (!threadId || !turnId) return;
+    if (resumeStreamingTurnIdRef.current === turnId && resumeStreamAbortRef.current) return;
+    if (resumeStreamAbortRef.current) resumeStreamAbortRef.current.abort();
+
+    const controller = new AbortController();
+    resumeStreamAbortRef.current = controller;
+    resumeStreamingThreadIdRef.current = threadId;
+    resumeStreamingTurnIdRef.current = turnId;
+    streamAbortRef.current = controller;
+
+    const assistantId = `resume:${turnId}`;
+    setAwaitingFirstStreamChunk(true);
+    setHasReasoningStarted(false);
+    setHasAnswerStarted(false);
+    setStreaming(true);
+    setStreamingAssistantId(assistantId);
+    setLiveReasoningText('');
+
+    setOutputItems((prev) => {
+      if (prev.some((item) => item.id === assistantId)) return prev;
+      return [...prev, { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '', answer: '' }];
+    });
+
+    let answerCommitted = '';
+    let reasoningRaw = '';
+    let lineBuf = '';
+
+    function updateAssistant(patch) {
+      setOutputItems((prev) =>
+        prev.map((item) => {
+          if (item.id !== assistantId) return item;
+          const merged = typeof patch === 'function' ? patch(item) : { ...item, ...patch };
+          return merged;
+        })
+      );
+    }
+
+    try {
+      const res = await fetch(
+        `/api/turns/stream/resume?threadId=${encodeURIComponent(threadId)}&turnId=${encodeURIComponent(turnId)}`,
+        { signal: controller.signal }
+      );
+      if (!res.ok || !res.body) {
+        const err = await res.text();
+        throw new Error(err || 'resume_stream_failed');
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        lineBuf += decoder.decode(value, { stream: true });
+        const lines = lineBuf.split('\n');
+        lineBuf = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const evt = JSON.parse(trimmed);
+            if (evt.type === 'reasoning_delta' && evt.delta) {
+              setAwaitingFirstStreamChunk(false);
+              setHasReasoningStarted(true);
+              reasoningRaw += evt.delta;
+              const displayReasoning = extractDisplayReasoningText(reasoningRaw);
+              if (displayReasoning) setLiveReasoningText(displayReasoning);
+              continue;
+            }
+            if (evt.type === 'answer_delta' && evt.delta) {
+              setAwaitingFirstStreamChunk(false);
+              setHasAnswerStarted(true);
+              answerCommitted += evt.delta;
+              const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
+              updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
+              continue;
+            }
+            if (evt.type === 'started') continue;
+            if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) continue;
+            if (evt.type === 'done') {
+              await restoreOutputForThread(threadId);
+              continue;
+            }
+            if (evt.type === 'error') {
+              throw new Error(String(evt.message || 'unknown_error'));
+            }
+          } catch {
+            setAwaitingFirstStreamChunk(false);
+            setHasAnswerStarted(true);
+            answerCommitted += `${line}\n`;
+            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
+            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
+          }
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        // resume失敗時は履歴再取得で最新化し、失敗トーストは出さない。
+        restoreOutputForThread(threadId);
+      }
+    } finally {
+      if (resumeStreamAbortRef.current === controller) {
+        resumeStreamAbortRef.current = null;
+        resumeStreamingThreadIdRef.current = '';
+        resumeStreamingTurnIdRef.current = '';
+      }
+      if (streamAbortRef.current === controller) {
+        streamAbortRef.current = null;
+      }
+      setStreaming(false);
+      setStreamingAssistantId(null);
+      setLiveReasoningText('');
+      setAwaitingFirstStreamChunk(false);
+      setHasReasoningStarted(false);
+      setHasAnswerStarted(false);
+      setOutputItems((prev) => prev.filter((item) => item.id !== assistantId));
     }
   }
 
@@ -1173,6 +1306,7 @@ export default function AppRoot() {
 
     const controller = new AbortController();
     streamAbortRef.current = controller;
+    backgroundInterruptedTurnRef.current = false;
 
     try {
       async function postTurn(targetThreadId) {
@@ -1304,6 +1438,9 @@ export default function AppRoot() {
         setOutputItems((prev) =>
           prev.map((item) => (item.id === assistantId ? { ...item, text: '(停止しました)' } : item))
         );
+      } else if (backgroundInterruptedTurnRef.current) {
+        // バックグラウンド遷移で切断された場合は失敗表示せず、復帰同期で結果を反映する。
+        setOutputItems((prev) => prev.filter((item) => item.id !== assistantId));
       } else {
         setOutputItems((prev) =>
           prev.map((item) =>
@@ -1322,6 +1459,7 @@ export default function AppRoot() {
       setHasReasoningStarted(false);
       setHasAnswerStarted(false);
       streamAbortRef.current = null;
+      backgroundInterruptedTurnRef.current = false;
     }
   }
 
@@ -1444,7 +1582,56 @@ export default function AppRoot() {
 
   useEffect(() => {
     activeThreadRef.current = activeThreadId;
+    if (
+      resumeStreamAbortRef.current &&
+      resumeStreamingThreadIdRef.current &&
+      (!activeThreadId || resumeStreamingThreadIdRef.current !== activeThreadId)
+    ) {
+      resumeStreamAbortRef.current.abort();
+    }
   }, [activeThreadId]);
+
+  useEffect(() => {
+    return () => {
+      if (resumeStreamAbortRef.current) resumeStreamAbortRef.current.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        if (streaming) {
+          backgroundInterruptedTurnRef.current = true;
+          shouldResumeOnVisibleRef.current = true;
+        }
+        return;
+      }
+
+      if (document.visibilityState !== 'visible') return;
+      const threadId = activeThreadRef.current;
+      if (!threadId) return;
+
+      restoreOutputForThread(threadId);
+
+      if (!shouldResumeOnVisibleRef.current) return;
+      shouldResumeOnVisibleRef.current = false;
+
+      (async () => {
+        try {
+          const running = await fetchRunningTurn(threadId);
+          if (document.visibilityState !== 'visible') return;
+          if (activeThreadRef.current !== threadId) return;
+          if (running?.running && running.turnId) {
+            await startResumeStream(threadId, running.turnId);
+          }
+        } catch {
+          // running turnの取得に失敗した場合は履歴再取得のみ維持。
+        }
+      })();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [streaming]);
 
   useEffect(() => {
     const endpoint = pushEndpointRef.current;
