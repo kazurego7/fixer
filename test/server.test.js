@@ -7,6 +7,7 @@ const {
   repoPathFromFullName,
   parseV2TurnNotification,
   parseLegacyTurnNotification,
+  parseTurnTerminalNotification,
   selectTurnStreamUpdate,
   normalizeThreadMessages
 } = require('../server');
@@ -44,6 +45,45 @@ test('parseLegacyTurnNotification parses codex event', () => {
   assert.equal(parsed.threadId, 't1');
   assert.equal(parsed.turnId, 'u1');
   assert.equal(parsed.delta, 'abc');
+});
+
+test('parseTurnTerminalNotification maps v2 completed to done terminal', () => {
+  const parsed = parseTurnTerminalNotification({
+    method: 'turn/completed',
+    params: { threadId: 't1', turn: { id: 'u1', status: 'Completed' } }
+  });
+  assert.deepEqual(parsed, {
+    threadId: 't1',
+    turnId: 'u1',
+    kind: 'done',
+    message: null
+  });
+});
+
+test('parseTurnTerminalNotification maps v2 error without retry to error terminal', () => {
+  const parsed = parseTurnTerminalNotification({
+    method: 'error',
+    params: { threadId: 't1', turnId: 'u1', willRetry: false, error: { message: 'boom' } }
+  });
+  assert.deepEqual(parsed, {
+    threadId: 't1',
+    turnId: 'u1',
+    kind: 'error',
+    message: 'boom'
+  });
+});
+
+test('parseTurnTerminalNotification maps legacy turn_complete to done terminal', () => {
+  const parsed = parseTurnTerminalNotification({
+    method: 'codex/event/turn_complete',
+    params: { conversationId: 't1', msg: { type: 'turn_complete', turn_id: 'u1' } }
+  });
+  assert.deepEqual(parsed, {
+    threadId: 't1',
+    turnId: 'u1',
+    kind: 'done',
+    message: null
+  });
 });
 
 test('selectTurnStreamUpdate maps v2 answer delta', () => {

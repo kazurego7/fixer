@@ -30,11 +30,13 @@ function resolveWorkspaceRoot() {
 const WORKSPACE_ROOT = resolveWorkspaceRoot();
 const PUSH_SUBSCRIPTIONS_PATH = path.join(WORKSPACE_ROOT, 'push-subscriptions.json');
 const PUSH_VAPID_PATH = path.join(WORKSPACE_ROOT, 'push-vapid.json');
-const DEFAULT_PUSH_SUBJECT = 'mailto:fixer@local.invalid';
+const DEFAULT_PUSH_SUBJECT = 'mailto:fixer@example.com';
 const cloneJobs = new Map();
 const runtimeLogs = [];
 const MAX_RUNTIME_LOGS = 2000;
 const runningTurnByThreadId = new Map();
+const handledTerminalTurnKeys = new Set();
+const handledPushTurnKeys = new Set();
 
 let codexServerProcess = null;
 let codexStartPromise = null;
@@ -51,6 +53,14 @@ let pushEnabled = false;
 function pushRuntimeLog(entry) {
   runtimeLogs.push({ timestamp: new Date().toISOString(), ...entry });
   if (runtimeLogs.length > MAX_RUNTIME_LOGS) runtimeLogs.shift();
+}
+
+function rememberBounded(set, key, max = 5000) {
+  if (!key) return;
+  set.add(key);
+  if (set.size <= max) return;
+  const first = set.values().next().value;
+  if (first !== undefined) set.delete(first);
 }
 
 function loadPushSubscriptions() {
@@ -236,8 +246,8 @@ function attachWsHandlers(ws) {
       return;
     }
 
-    const clearThreadId = shouldClearRunningTurnByNotification(msg);
-    if (clearThreadId) runningTurnByThreadId.delete(clearThreadId);
+    const terminal = parseTurnTerminalNotification(msg);
+    if (terminal) handleTurnTerminalNotification(terminal);
 
     if (msg && Object.prototype.hasOwnProperty.call(msg, 'id') && rpcPending.has(msg.id)) {
       const pending = rpcPending.get(msg.id);
@@ -449,25 +459,95 @@ function isErrorStatus(status) {
   return normalized === 'failed' || normalized === 'interrupted' || normalized === 'cancelled';
 }
 
-function shouldClearRunningTurnByNotification(msg) {
+function parseTurnTerminalNotification(msg) {
   const v2 = parseV2TurnNotification(msg);
   if (v2?.threadId) {
-    if (v2.method === 'turn/completed') return v2.threadId;
-    if (v2.method === 'error' && !v2.willRetry) return v2.threadId;
+    if (v2.method === 'turn/completed') {
+      const normalized = String(v2.status || '').toLowerCase();
+      if (normalized === 'completed' || (!normalized && !v2.errorMessage)) {
+        return { threadId: v2.threadId, turnId: v2.turnId || null, kind: 'done', message: null };
+      }
+      return {
+        threadId: v2.threadId,
+        turnId: v2.turnId || null,
+        kind: 'error',
+        message: v2.errorMessage || `turn_${normalized || 'failed'}`
+      };
+    }
+    if (v2.method === 'error' && !v2.willRetry) {
+      return {
+        threadId: v2.threadId,
+        turnId: v2.turnId || null,
+        kind: 'error',
+        message: v2.errorMessage || 'turn_failed'
+      };
+    }
   }
 
   const legacy = parseLegacyTurnNotification(msg);
   if (!legacy?.threadId) return null;
   const legacyType = String(legacy.type || '').toLowerCase();
-  if (
-    legacyType === 'task_complete' ||
-    legacyType === 'turn_complete' ||
-    legacyType === 'turn_aborted' ||
-    legacyType === 'error'
-  ) {
-    return legacy.threadId;
+  if (legacyType === 'task_complete' || legacyType === 'turn_complete') {
+    return { threadId: legacy.threadId, turnId: legacy.turnId || null, kind: 'done', message: null };
   }
+  if (legacyType === 'turn_aborted' || legacyType === 'error') {
+    return {
+      threadId: legacy.threadId,
+      turnId: legacy.turnId || null,
+      kind: 'error',
+      message: legacy.message || `turn_${legacy.reason || 'aborted'}`
+    };
+  }
+
   return null;
+}
+
+function handleTurnTerminalNotification(terminal) {
+  if (!terminal || !terminal.threadId) return;
+
+  const runningTurnId = runningTurnByThreadId.get(terminal.threadId);
+  if (terminal.turnId && runningTurnId && terminal.turnId !== runningTurnId) return;
+
+  const effectiveTurnId = terminal.turnId || runningTurnId || null;
+  const turnKey = `${terminal.threadId}:${effectiveTurnId || 'unknown'}`;
+
+  runningTurnByThreadId.delete(terminal.threadId);
+
+  if (!handledTerminalTurnKeys.has(turnKey)) {
+    rememberBounded(handledTerminalTurnKeys, turnKey);
+    pushRuntimeLog({
+      level: terminal.kind === 'error' ? 'error' : 'info',
+      event: 'turn_stream_terminal',
+      threadId: terminal.threadId,
+      turnId: effectiveTurnId,
+      kind: terminal.kind,
+      message: terminal.message || null
+    });
+  }
+
+  if (terminal.kind !== 'done') return;
+  if (handledPushTurnKeys.has(turnKey)) return;
+  rememberBounded(handledPushTurnKeys, turnKey);
+
+  notifyPushSubscribersForThread(terminal.threadId)
+    .then((result) => {
+      pushRuntimeLog({
+        level: 'info',
+        event: 'push_notified',
+        threadId: terminal.threadId,
+        sent: result.sent,
+        staleRemoved: result.staleRemoved,
+        skipped: result.skipped || null
+      });
+    })
+    .catch((error) => {
+      pushRuntimeLog({
+        level: 'error',
+        event: 'push_notify_failed',
+        threadId: terminal.threadId,
+        message: String(error?.message || 'unknown_error')
+      });
+    });
 }
 
 function selectTurnStreamUpdate(msg, state) {
@@ -1320,27 +1400,6 @@ function buildServer() {
       if (kind === 'done') writeEvent({ type: 'done' });
       if (kind === 'error') writeEvent({ type: 'error', message: message || 'unknown_error' });
       if (!aborted) reply.raw.end();
-      if (kind === 'done') {
-        notifyPushSubscribersForThread(threadId)
-          .then((result) => {
-            pushRuntimeLog({
-              level: 'info',
-              event: 'push_notified',
-              threadId,
-              sent: result.sent,
-              staleRemoved: result.staleRemoved,
-              skipped: result.skipped || null
-            });
-          })
-          .catch((error) => {
-            pushRuntimeLog({
-              level: 'error',
-              event: 'push_notify_failed',
-              threadId,
-              message: String(error?.message || 'unknown_error')
-            });
-          });
-      }
     }
 
     writeEvent({ type: 'started' });
@@ -1396,14 +1455,6 @@ function buildServer() {
         return;
       }
       if (update.terminal) {
-        pushRuntimeLog({
-          level: update.terminal.kind === 'error' ? 'error' : 'info',
-          event: 'turn_stream_terminal',
-          threadId,
-          turnId,
-          kind: update.terminal.kind,
-          message: update.terminal.message || null
-        });
         closeStream(update.terminal.kind, update.terminal.message);
       }
     });
@@ -1451,6 +1502,7 @@ module.exports = {
   getCloneState,
   parseV2TurnNotification,
   parseLegacyTurnNotification,
+  parseTurnTerminalNotification,
   selectTurnStreamUpdate,
   normalizeThreadMessages
 };
