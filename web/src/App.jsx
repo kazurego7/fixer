@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { marked } from 'marked';
 import { App, Page, PageContent, Button, f7ready, f7 } from 'framework7-react';
 
@@ -8,7 +8,9 @@ const CLONE_TIMEOUT_MS = 180000;
 const LAST_THREAD_ID_KEY = 'fx:lastThreadId';
 const LAST_REPO_FULLNAME_KEY = 'fx:lastRepoFullName';
 const THREAD_BY_REPO_KEY = 'fx:threadByRepo';
+const COLLABORATION_MODE_BY_REPO_KEY = 'fx:collaborationModeByRepo';
 const PUSH_ENDPOINT_KEY = 'fx:pushEndpoint';
+const DEFAULT_COLLABORATION_MODE = 'default';
 const AppCtx = createContext(null);
 
 function formatFileSize(size) {
@@ -195,12 +197,12 @@ function renderAssistant(item, pending = false) {
   if (item.type === 'diff') {
     return <pre className="fx-diff">{answer}</pre>;
   }
-  if (pending && answer) {
-    return <pre className="fx-stream-live">{answer}</pre>;
-  }
   if (pending && !answer && !statusText) return null;
   if (statusText === '・・・') return null;
   if (!answer && statusText) return <div className="fx-stream-status">{statusText}</div>;
+  if (pending && answer) {
+    return <pre className="fx-stream-live">{answer}</pre>;
+  }
   return <div dangerouslySetInnerHTML={{ __html: marked.parse(answer) }} />;
 }
 
@@ -307,19 +309,40 @@ function ChatPage() {
     enablePushNotifications,
     sendTurn,
     cancelTurn,
-    startNewThread
+    startNewThread,
+    activeCollaborationMode,
+    setActiveCollaborationMode,
+    pendingUserInputRequests,
+    selectUserInputOption,
+    pendingUserInputBusy,
+    pendingUserInputDrafts
   } = useContext(AppCtx);
   const canSend = (message.trim().length > 0 || pendingAttachments.length > 0) && !streaming;
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(null);
   const composerInputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const userInputCardRef = useRef(null);
   const swipeStartXRef = useRef(null);
   const swipeStartYRef = useRef(null);
   const displayItems = useMemo(() => withAutoAssistantSeparators(outputItems), [outputItems]);
   const thinkingText = typeof liveReasoningText === 'string' ? liveReasoningText : '';
-  const showInitialLoading = streaming && awaitingFirstStreamChunk;
-  const showThinkingWorking = streaming && hasReasoningStarted;
+  const activeUserInputRequest = pendingUserInputRequests.length > 0 ? pendingUserInputRequests[0] : null;
+  const activeUserInputDraftState = activeUserInputRequest
+    ? pendingUserInputDrafts[String(activeUserInputRequest.requestId)] || { index: 0, answers: {} }
+    : {};
+  const activeUserInputIndex = Number(activeUserInputDraftState.index || 0);
+  const activeUserInputAnswers =
+    activeUserInputDraftState.answers && typeof activeUserInputDraftState.answers === 'object'
+      ? activeUserInputDraftState.answers
+      : {};
+  const activeUserInputQuestion = activeUserInputRequest
+    ? (activeUserInputRequest.questions || [])[activeUserInputIndex] || null
+    : null;
+  const answeredUserInputCount = activeUserInputRequest ? Math.min(activeUserInputIndex, (activeUserInputRequest.questions || []).length) : 0;
+  const hideThinkingWhileUserInput = Boolean(activeUserInputRequest && activeUserInputQuestion);
+  const showInitialLoading = streaming && awaitingFirstStreamChunk && !hideThinkingWhileUserInput;
+  const showThinkingWorking = streaming && hasReasoningStarted && !hideThinkingWhileUserInput;
   const previewAttachment =
     previewIndex !== null && previewIndex >= 0 && previewIndex < pendingAttachments.length
       ? pendingAttachments[previewIndex]
@@ -333,6 +356,11 @@ function ChatPage() {
     if (target.closest('textarea,button,input,select,a,[role="button"]')) return;
     event.preventDefault();
     composerInputRef.current?.focus();
+  };
+  const handleComposerInputBlur = (event) => {
+    const next = event.relatedTarget;
+    if (next instanceof HTMLElement && next.closest('.fx-mode-toggle')) return;
+    setIsInputFocused(false);
   };
   const closePreview = () => setPreviewIndex(null);
   const openPreviewAt = (idx) => {
@@ -403,6 +431,13 @@ function ChatPage() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [previewIndex, pendingAttachments.length]);
+
+  useEffect(() => {
+    if (!activeUserInputRequest || !activeUserInputQuestion) return;
+    const node = userInputCardRef.current;
+    if (!(node instanceof HTMLElement)) return;
+    node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [activeUserInputRequest?.requestId, activeUserInputQuestion?.id]);
 
   if (!chatVisible) {
     return (
@@ -512,28 +547,44 @@ function ChatPage() {
             }
             if (item.role === 'assistant' && streaming && item.id === streamingAssistantId) {
               const currentAnswer = typeof item.answer === 'string' ? item.answer : String(item.text || '');
+              const currentPlan = typeof item.plan === 'string' ? item.plan.trim() : '';
               const currentStatus = !currentAnswer ? String(item.status || item.text || '').trim() : '';
-              if (!currentAnswer.trim() && !currentStatus.trim()) return null;
+              if (!currentAnswer.trim() && !currentStatus.trim() && !currentPlan) return null;
+            }
+            if (item.role === 'assistant') {
+              const planText = typeof item.plan === 'string' ? item.plan.trim() : '';
+              const assistantMain = renderAssistant(item, streaming && item.id === streamingAssistantId);
+              return (
+                <Fragment key={item.id}>
+                  {assistantMain ? (
+                    <div className="fx-msg fx-msg-assistant">
+                      <div className="fx-msg-bubble">{assistantMain}</div>
+                    </div>
+                  ) : null}
+                  {planText ? (
+                    <div className="fx-msg fx-msg-assistant fx-msg-plan">
+                      <div className="fx-msg-bubble">
+                        <div className="fx-plan-bubble-title">プラン</div>
+                        <pre className="fx-plan-bubble-content">{planText}</pre>
+                      </div>
+                    </div>
+                  ) : null}
+                </Fragment>
+              );
             }
             return (
               <div key={item.id} className={`fx-msg fx-msg-${item.role}`}>
                 <div className="fx-msg-bubble">
-                  {item.role === 'assistant'
-                    ? renderAssistant(item, streaming && item.id === streamingAssistantId)
-                    : (
-                      <>
-                        {item.text ? <p className="fx-user-line">{item.text}</p> : null}
-                        {Array.isArray(item.attachments) && item.attachments.length > 0 ? (
-                          <div className="fx-user-attachments">
-                            {item.attachments.map((att, idx) => (
-                              <span key={`${item.id}:att:${idx}`} className="fx-user-attachment-chip">
-                                画像: {String(att?.name || 'image')} ({formatFileSize(att?.size)})
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                      </>
-                    )}
+                  {item.text ? <p className="fx-user-line">{item.text}</p> : null}
+                  {Array.isArray(item.attachments) && item.attachments.length > 0 ? (
+                    <div className="fx-user-attachments">
+                      {item.attachments.map((att, idx) => (
+                        <span key={`${item.id}:att:${idx}`} className="fx-user-attachment-chip">
+                          画像: {String(att?.name || 'image')} ({formatFileSize(att?.size)})
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             );
@@ -557,9 +608,64 @@ function ChatPage() {
               {thinkingText ? <pre className="fx-thinking-live-text" data-testid="thinking-live-content">{thinkingText}</pre> : null}
             </div>
           ) : null}
+          {activeUserInputRequest && activeUserInputQuestion ? (
+            <div className="fx-user-input-requests fx-user-input-requests-inline" data-testid="user-input-requests">
+              <div
+                key={`uir:${activeUserInputRequest.requestId}`}
+                className="fx-user-input-card"
+                ref={userInputCardRef}
+              >
+                <div className="fx-user-input-progress">
+                  {answeredUserInputCount + 1}/{(activeUserInputRequest.questions || []).length}
+                </div>
+                <div key={`q:${activeUserInputRequest.requestId}:${activeUserInputQuestion.id}`} className="fx-user-input-question">
+                  {activeUserInputQuestion.header ? <div className="fx-user-input-header">{activeUserInputQuestion.header}</div> : null}
+                  <div className="fx-user-input-text">{activeUserInputQuestion.question}</div>
+                  <div className="fx-user-input-options">
+                    {(activeUserInputQuestion.options || []).map((opt) => (
+                      <button
+                        key={`opt:${activeUserInputRequest.requestId}:${activeUserInputQuestion.id}:${opt.label}`}
+                        type="button"
+                        className="fx-user-input-option-btn"
+                        onClick={() => selectUserInputOption(activeUserInputRequest, activeUserInputIndex, activeUserInputQuestion.id, opt.label)}
+                        disabled={Boolean(pendingUserInputBusy[String(activeUserInputRequest.requestId)])}
+                        data-testid={`user-input-option-${activeUserInputQuestion.id}`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </article>
 
         <div className="fx-composer" onPointerDownCapture={keepComposerFocus} data-testid="composer">
+          {isInputFocused ? (
+            <div className="fx-mode-toggle" data-testid="mode-toggle">
+              <button
+                type="button"
+                className={`fx-mode-btn is-default${activeCollaborationMode === 'default' ? ' is-active' : ''}`}
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => setActiveCollaborationMode('default')}
+                disabled={streaming}
+                data-testid="mode-default-button"
+              >
+                通常
+              </button>
+              <button
+                type="button"
+                className={`fx-mode-btn is-plan${activeCollaborationMode === 'plan' ? ' is-active' : ''}`}
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => setActiveCollaborationMode('plan')}
+                disabled={streaming}
+                data-testid="mode-plan-button"
+              >
+                プラン
+              </button>
+            </div>
+          ) : null}
           {pendingAttachments.length > 0 ? (
             <div className="fx-attachments-bar" data-testid="attachments-bar">
               <div className="fx-attachments-list" data-testid="attachments-list">
@@ -639,7 +745,7 @@ function ChatPage() {
               rows={1}
               placeholder="指示を入力"
               onFocus={() => setIsInputFocused(true)}
-              onBlur={() => setIsInputFocused(false)}
+              onBlur={handleComposerInputBlur}
               data-testid="composer-textarea"
             />
             <div
@@ -791,6 +897,14 @@ export default function AppRoot() {
     }
     return map;
   });
+  const [collaborationModeByRepo, setCollaborationModeByRepo] = useState(() => {
+    if (typeof window === 'undefined') return {};
+    const map = loadJsonFromStorage(COLLABORATION_MODE_BY_REPO_KEY, {});
+    return map && typeof map === 'object' ? map : {};
+  });
+  const [pendingUserInputRequests, setPendingUserInputRequests] = useState([]);
+  const [pendingUserInputDrafts, setPendingUserInputDrafts] = useState({});
+  const [pendingUserInputBusy, setPendingUserInputBusy] = useState({});
 
   const outputRef = useRef(null);
   const autoScrollRef = useRef(true);
@@ -958,6 +1072,140 @@ export default function AppRoot() {
     return data;
   }
 
+  function sanitizePendingUserInputRequests(items, threadId = activeThreadRef.current) {
+    const list = Array.isArray(items) ? items : [];
+    const keyed = new Map();
+    const normalized = list
+      .filter((item) => item && typeof item === 'object')
+      .filter((item) => !threadId || String(item.threadId || '') === String(threadId))
+      .map((item) => ({
+        requestId: item.requestId,
+        threadId: String(item.threadId || ''),
+        turnId: String(item.turnId || ''),
+        itemId: String(item.itemId || ''),
+        questions: Array.isArray(item.questions) ? item.questions : [],
+        createdAt: String(item.createdAt || '')
+      }));
+    for (const item of normalized) {
+      const key = String(item.requestId || '');
+      if (!key) continue;
+      keyed.set(key, item);
+    }
+    return Array.from(keyed.values()).sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  }
+
+  function mergePendingUserInputRequest(request) {
+    if (!request || !request.requestId) return;
+    setPendingUserInputRequests((prev) => {
+      const next = [
+        ...prev.filter((item) => String(item.requestId) !== String(request.requestId)),
+        request
+      ];
+      next.sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+      return next;
+    });
+  }
+
+  async function fetchPendingUserInputRequests(threadId) {
+    if (!threadId) {
+      setPendingUserInputRequests([]);
+      return [];
+    }
+    const res = await fetch(`/api/approvals/pending?threadId=${encodeURIComponent(threadId)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'pending_user_input_fetch_failed');
+    const requests = sanitizePendingUserInputRequests(data.requests, threadId);
+    setPendingUserInputRequests(requests);
+    return requests;
+  }
+
+  async function respondToUserInput(requestId, answers, requestMeta = null) {
+    const key = String(requestId || '');
+    if (!key) return false;
+    setPendingUserInputBusy((prev) => ({ ...prev, [key]: true }));
+    try {
+      const res = await fetch('/api/approvals/respond', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_id: requestId,
+          answers
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'approval_respond_failed');
+      setPendingUserInputRequests((prev) => prev.filter((item) => String(item.requestId) !== key));
+      toast('入力を送信しました');
+      const metaThreadId = String(requestMeta?.threadId || '');
+      if (metaThreadId) {
+        if (streaming) return true;
+        try {
+          const running = await fetchRunningTurn(metaThreadId);
+          if (running?.running && running.turnId) {
+            await startResumeStream(metaThreadId, running.turnId);
+          } else {
+            restoreOutputForThread(metaThreadId);
+          }
+        } catch {
+          restoreOutputForThread(metaThreadId);
+        }
+      }
+      return true;
+    } catch (e) {
+      toast(`入力送信失敗: ${String(e.message || 'unknown_error')}`);
+      return false;
+    } finally {
+      setPendingUserInputBusy((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }
+  }
+
+  async function selectUserInputOption(request, questionIndex, questionId, optionLabel) {
+    if (!request || !request.requestId || !questionId) return;
+    const requestKey = String(request.requestId);
+    const questions = Array.isArray(request.questions) ? request.questions : [];
+    if (questions.length === 0) return;
+    if (pendingUserInputBusy[requestKey]) return;
+
+    const snapshotState =
+      pendingUserInputDrafts[requestKey] && typeof pendingUserInputDrafts[requestKey] === 'object'
+        ? pendingUserInputDrafts[requestKey]
+        : { index: 0, answers: {} };
+    const snapshotAnswers = snapshotState.answers && typeof snapshotState.answers === 'object' ? snapshotState.answers : {};
+    const nextAnswers = {
+      ...snapshotAnswers,
+      [questionId]: { answers: [String(optionLabel || '')] }
+    };
+    const rawIndex = Number.isInteger(questionIndex) ? questionIndex : Number(snapshotState.index || 0);
+    const currentIndex = Math.min(Math.max(0, rawIndex), Math.max(0, questions.length - 1));
+    const nextIndex = currentIndex + 1;
+    const complete = nextIndex >= questions.length;
+
+    setPendingUserInputDrafts((prev) => ({
+      ...prev,
+      [requestKey]: {
+        // 回答送信中/失敗時に問いが消えないよう、完了時は最終問い位置に留める。
+        index: complete ? Math.max(0, questions.length - 1) : nextIndex,
+        answers: nextAnswers
+      }
+    }));
+    if (!complete) return;
+
+    const ok = await respondToUserInput(request.requestId, nextAnswers, {
+      threadId: request.threadId,
+      turnId: request.turnId
+    });
+    if (!ok) return;
+    setPendingUserInputDrafts((prev) => {
+      const next = { ...prev };
+      delete next[requestKey];
+      return next;
+    });
+  }
+
   async function startResumeStream(threadId, turnId) {
     if (!threadId || !turnId) return;
     if (resumeStreamingTurnIdRef.current === turnId && resumeStreamAbortRef.current) return;
@@ -979,10 +1227,11 @@ export default function AppRoot() {
 
     setOutputItems((prev) => {
       if (prev.some((item) => item.id === assistantId)) return prev;
-      return [...prev, { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '', answer: '' }];
+      return [...prev, { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '', answer: '', plan: '' }];
     });
 
     let answerCommitted = '';
+    let planCommitted = '';
     let reasoningRaw = '';
     let lineBuf = '';
 
@@ -1034,7 +1283,28 @@ export default function AppRoot() {
               setHasAnswerStarted(true);
               answerCommitted += evt.delta;
               const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-              updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
+              updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+              continue;
+            }
+            if (evt.type === 'plan_delta' && evt.delta) {
+              planCommitted += evt.delta;
+              updateAssistant({ plan: planCommitted, status: '' });
+              continue;
+            }
+            if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
+              planCommitted = evt.text;
+              updateAssistant({ plan: planCommitted, status: '' });
+              continue;
+            }
+            if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
+              mergePendingUserInputRequest({
+                requestId: evt.requestId,
+                threadId,
+                turnId,
+                itemId: String(evt.itemId || ''),
+                questions: evt.questions,
+                createdAt: new Date().toISOString()
+              });
               continue;
             }
             if (evt.type === 'started') continue;
@@ -1051,7 +1321,7 @@ export default function AppRoot() {
             setHasAnswerStarted(true);
             answerCommitted += `${line}\n`;
             const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
+            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
           }
         }
       }
@@ -1199,6 +1469,9 @@ export default function AppRoot() {
     activeThreadRef.current = threadId;
     const cached = loadThreadMessages(threadId);
     setOutputItems(cached);
+    fetchPendingUserInputRequests(threadId).catch(() => {
+      // 取得失敗時は既存表示を維持する。
+    });
     fetchThreadMessages(threadId)
       .then((items) => {
         if (activeThreadRef.current !== threadId) return;
@@ -1301,7 +1574,7 @@ export default function AppRoot() {
     setOutputItems((prev) => [
       ...prev,
       { id: userId, role: 'user', type: 'plain', text: prompt, attachments: attachmentMeta },
-      { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '', answer: '' }
+      { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '', answer: '', plan: '' }
     ]);
 
     const controller = new AbortController();
@@ -1316,7 +1589,8 @@ export default function AppRoot() {
           body: JSON.stringify({
             thread_id: targetThreadId,
             input: prompt,
-            attachments: attachmentsToSend
+            attachments: attachmentsToSend,
+            collaboration_mode: activeCollaborationMode
           }),
           signal: controller.signal
         });
@@ -1345,6 +1619,7 @@ export default function AppRoot() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let answerCommitted = '';
+      let planCommitted = '';
       let reasoningRaw = '';
       let lineBuf = '';
 
@@ -1383,7 +1658,28 @@ export default function AppRoot() {
               setHasAnswerStarted(true);
               answerCommitted += evt.delta;
               const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-              updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
+              updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+              continue;
+            }
+            if (evt.type === 'plan_delta' && evt.delta) {
+              planCommitted += evt.delta;
+              updateAssistant({ plan: planCommitted, status: '' });
+              continue;
+            }
+            if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
+              planCommitted = evt.text;
+              updateAssistant({ plan: planCommitted, status: '' });
+              continue;
+            }
+            if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
+              mergePendingUserInputRequest({
+                requestId: evt.requestId,
+                threadId: threadIdToUse,
+                turnId: String(evt.turnId || ''),
+                itemId: String(evt.itemId || ''),
+                questions: evt.questions,
+                createdAt: new Date().toISOString()
+              });
               continue;
             }
             if (evt.type === 'started') {
@@ -1400,7 +1696,7 @@ export default function AppRoot() {
             setHasAnswerStarted(true);
             answerCommitted += `${line}\n`;
             const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
+            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
           }
         }
       }
@@ -1413,7 +1709,15 @@ export default function AppRoot() {
             setHasAnswerStarted(true);
             answerCommitted += evt.delta;
             const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, status: '' });
+            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+          }
+          if (evt.type === 'plan_delta' && evt.delta) {
+            planCommitted += evt.delta;
+            updateAssistant({ plan: planCommitted, status: '' });
+          }
+          if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
+            planCommitted = evt.text;
+            updateAssistant({ plan: planCommitted, status: '' });
           }
         } catch {
           setAwaitingFirstStreamChunk(false);
@@ -1427,7 +1731,7 @@ export default function AppRoot() {
       setOutputItems((prev) => {
         const next = prev.map((item) =>
           item.id === assistantId
-            ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer }
+            ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer, plan: planCommitted }
             : item
         );
         next.push({ id: `${assistantId}:sep`, role: 'system', type: 'separator', text: '' });
@@ -1485,9 +1789,25 @@ export default function AppRoot() {
     }
   }
 
-  function cancelTurn() {
-    if (!streamAbortRef.current) return;
-    streamAbortRef.current.abort();
+  async function cancelTurn() {
+    const controller = streamAbortRef.current;
+    if (controller) controller.abort();
+
+    const threadId = activeThreadRef.current;
+    if (threadId) {
+      try {
+        await fetch('/api/turns/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ thread_id: threadId })
+        });
+      } catch {
+        // 切断時は中断API失敗を無視してUI側を先に整合させる。
+      }
+    }
+
+    setPendingUserInputRequests([]);
+    setPendingUserInputDrafts({});
   }
 
   function navigate(path, replace = false) {
@@ -1669,6 +1989,10 @@ export default function AppRoot() {
   }, [threadByRepo]);
 
   useEffect(() => {
+    window.localStorage.setItem(COLLABORATION_MODE_BY_REPO_KEY, JSON.stringify(collaborationModeByRepo));
+  }, [collaborationModeByRepo]);
+
+  useEffect(() => {
     if (!activeThreadId) return;
     window.localStorage.setItem(threadMessagesKey(activeThreadId), JSON.stringify(outputItems.slice(-200)));
   }, [activeThreadId, outputItems]);
@@ -1683,9 +2007,39 @@ export default function AppRoot() {
     restoreOutputForThread(activeThreadId);
   }, [activeThreadId]);
 
+  useEffect(() => {
+    if (activeThreadId) return;
+    setPendingUserInputRequests([]);
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    const alive = new Set(pendingUserInputRequests.map((item) => String(item.requestId || '')));
+    setPendingUserInputDrafts((prev) => {
+      let changed = false;
+      const next = {};
+      for (const [key, value] of Object.entries(prev)) {
+        if (alive.has(key)) next[key] = value;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [pendingUserInputRequests]);
+
   const clonedRepos = repos.filter((repo) => repo.cloneState?.status === 'cloned');
   const notClonedRepos = repos.filter((repo) => repo.cloneState?.status !== 'cloned');
   const filteredRepos = repoFilter === 'cloned' ? clonedRepos : repoFilter === 'not_cloned' ? notClonedRepos : repos;
+  const activeCollaborationMode =
+    activeRepoFullName &&
+    (collaborationModeByRepo[activeRepoFullName] === 'plan' ||
+      collaborationModeByRepo[activeRepoFullName] === 'default')
+      ? collaborationModeByRepo[activeRepoFullName]
+      : DEFAULT_COLLABORATION_MODE;
+
+  function setActiveCollaborationMode(mode) {
+    if (!activeRepoFullName) return;
+    const next = mode === 'default' ? 'default' : 'plan';
+    setCollaborationModeByRepo((prev) => ({ ...prev, [activeRepoFullName]: next }));
+  }
 
   const ctx = useMemo(
     () => ({
@@ -1729,7 +2083,13 @@ export default function AppRoot() {
       startWithRepo,
       sendTurn,
       cancelTurn,
-      startNewThread
+      startNewThread,
+      activeCollaborationMode,
+      setActiveCollaborationMode,
+      pendingUserInputRequests,
+      selectUserInputOption,
+      pendingUserInputBusy,
+      pendingUserInputDrafts
     }),
     [
       connected,
@@ -1757,7 +2117,11 @@ export default function AppRoot() {
       pushEnabled,
       pushBusy,
       pushLabel,
-      navigate
+      navigate,
+      activeCollaborationMode,
+      pendingUserInputRequests,
+      pendingUserInputBusy,
+      pendingUserInputDrafts
     ]
   );
 

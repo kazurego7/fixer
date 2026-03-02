@@ -3,14 +3,41 @@ const assert = require('node:assert/strict');
 const path = require('path');
 
 const {
+  buildCollaborationMode,
   repoFolderFromFullName,
   repoPathFromFullName,
+  normalizeCollaborationMode,
   parseV2TurnNotification,
   parseLegacyTurnNotification,
   parseTurnTerminalNotification,
   selectTurnStreamUpdate,
   normalizeThreadMessages
 } = require('../server');
+
+test('normalizeCollaborationMode normalizes valid values', () => {
+  assert.equal(normalizeCollaborationMode('plan'), 'plan');
+  assert.equal(normalizeCollaborationMode('default'), 'default');
+  assert.equal(normalizeCollaborationMode('normal'), 'default');
+  assert.equal(normalizeCollaborationMode('  PLAN  '), 'plan');
+});
+
+test('normalizeCollaborationMode rejects unknown values', () => {
+  assert.equal(normalizeCollaborationMode('foo'), null);
+  assert.equal(normalizeCollaborationMode(''), null);
+  assert.equal(normalizeCollaborationMode(null), null);
+});
+
+test('buildCollaborationMode returns turn/start payload shape', () => {
+  const out = buildCollaborationMode('plan', 'gpt-5-codex');
+  assert.deepEqual(out, {
+    mode: 'plan',
+    settings: {
+      model: 'gpt-5-codex',
+      reasoning_effort: null,
+      developer_instructions: null
+    }
+  });
+});
 
 test('repoFolderFromFullName replaces slash', () => {
   assert.equal(repoFolderFromFullName('org/repo'), 'org__repo');
@@ -97,6 +124,86 @@ test('selectTurnStreamUpdate maps v2 answer delta', () => {
   assert.equal(out.matched, true);
   assert.equal(out.nextPreferV2, true);
   assert.deepEqual(out.streamEvent, { type: 'answer_delta', delta: 'A' });
+});
+
+test('selectTurnStreamUpdate maps v2 plan delta', () => {
+  const out = selectTurnStreamUpdate(
+    {
+      method: 'item/plan/delta',
+      params: { threadId: 't1', turnId: 'u1', itemId: 'p1', delta: '計画の差分' }
+    },
+    { threadId: 't1', turnId: 'u1', preferV2: false }
+  );
+  assert.equal(out.matched, true);
+  assert.equal(out.nextPreferV2, true);
+  assert.deepEqual(out.streamEvent, { type: 'plan_delta', delta: '計画の差分' });
+});
+
+test('selectTurnStreamUpdate maps v2 turn plan updated', () => {
+  const out = selectTurnStreamUpdate(
+    {
+      method: 'turn/plan/updated',
+      params: {
+        threadId: 't1',
+        turnId: 'u1',
+        explanation: '方針',
+        plan: [
+          { step: '調査', status: 'completed' },
+          { step: '実装', status: 'inProgress' }
+        ]
+      }
+    },
+    { threadId: 't1', turnId: 'u1', preferV2: true }
+  );
+  assert.equal(out.matched, true);
+  assert.deepEqual(out.streamEvent, {
+    type: 'plan_snapshot',
+    text: '方針\n[x] 調査\n[-] 実装'
+  });
+});
+
+test('selectTurnStreamUpdate maps request user input event', () => {
+  const out = selectTurnStreamUpdate(
+    {
+      jsonrpc: '2.0',
+      id: 77,
+      method: 'item/tool/requestUserInput',
+      params: {
+        threadId: 't1',
+        turnId: 'u1',
+        itemId: 'i1',
+        questions: [
+          {
+            id: 'q1',
+            header: '確認',
+            question: 'どちらにしますか？',
+            isOther: false,
+            isSecret: false,
+            options: [{ label: 'はい', description: '進める' }, { label: 'いいえ', description: '止める' }]
+          }
+        ]
+      }
+    },
+    { threadId: 't1', turnId: 'u1', preferV2: false }
+  );
+  assert.equal(out.matched, true);
+  assert.equal(out.nextPreferV2, true);
+  assert.deepEqual(out.streamEvent, {
+    type: 'request_user_input',
+    requestId: 77,
+    turnId: 'u1',
+    itemId: 'i1',
+    questions: [
+      {
+        id: 'q1',
+        header: '確認',
+        question: 'どちらにしますか？',
+        isOther: false,
+        isSecret: false,
+        options: [{ label: 'はい', description: '進める' }, { label: 'いいえ', description: '止める' }]
+      }
+    ]
+  });
 });
 
 test('selectTurnStreamUpdate maps v2 completed as done', () => {
@@ -223,6 +330,32 @@ test('normalizeThreadMessages keeps single assistant segment when reasoning is a
       ['t2:sep', 'system', 'separator', '']
     ]
   );
+});
+
+test('normalizeThreadMessages keeps plan items in dedicated field', () => {
+  const readResult = {
+    thread: {
+      turns: [
+        {
+          id: 't2p',
+          input: [{ type: 'text', text: 'q' }],
+          items: [{ type: 'plan', text: '手順1' }, { type: 'agentMessage', text: '最終回答' }]
+        }
+      ]
+    }
+  };
+
+  const out = normalizeThreadMessages(readResult);
+  assert.deepEqual(
+    out.map((item) => [item.id, item.role, item.type, item.text]),
+    [
+      ['t2p:user', 'user', 'plain', 'q'],
+      ['t2p:assistant', 'assistant', 'markdown', '最終回答'],
+      ['t2p:sep', 'system', 'separator', '']
+    ]
+  );
+  const assistant = out.find((item) => item.id === 't2p:assistant');
+  assert.equal(assistant.plan, '手順1');
 });
 
 test('normalizeThreadMessages marks diff segment as diff', () => {

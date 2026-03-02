@@ -273,6 +273,7 @@ body {
   background: #f8fafc;
 }
 
+
 .fx-msg {
   margin: 0 0 0.5rem;
 }
@@ -335,6 +336,96 @@ body {
 
 .fx-msg-assistant .fx-msg-bubble p:last-child {
   margin-bottom: 0;
+}
+
+.fx-assistant-rich {
+  display: flex;
+  flex-direction: column;
+  gap: 0.46rem;
+}
+
+.fx-plan-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.38rem;
+}
+
+.fx-plan-card {
+  border: 1px solid #86efac;
+  border-radius: 12px;
+  background: #dcfce7;
+  padding: 0.56rem 0.62rem;
+}
+
+.fx-plan-card.is-in_progress {
+  border-color: #4ade80;
+  background: #bbf7d0;
+}
+
+.fx-plan-card.is-completed {
+  border-color: #22c55e;
+  background: #86efac;
+}
+
+.fx-plan-card-status {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 0.16rem;
+  padding: 0.08rem 0.38rem;
+  border-radius: 999px;
+  background: rgba(22, 101, 52, 0.14);
+  color: #166534;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.fx-plan-card-text {
+  color: #14532d;
+  font-size: 0.89rem;
+  line-height: 1.36;
+}
+
+.fx-plan-card-single {
+  padding: 0.62rem 0.66rem;
+}
+
+.fx-plan-card-title {
+  color: #166534;
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-bottom: 0.24rem;
+}
+
+.fx-plan-card-content {
+  margin: 0;
+  white-space: pre-wrap;
+  color: #14532d;
+  font-size: 0.9rem;
+  line-height: 1.42;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.fx-msg-plan .fx-msg-bubble {
+  border-color: #86efac;
+  background: #dcfce7;
+}
+
+.fx-plan-bubble-title {
+  margin: 0 0 0.28rem;
+  color: #166534;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.fx-plan-bubble-content {
+  margin: 0;
+  white-space: pre-wrap;
+  color: #14532d;
+  font-size: 0.9rem;
+  line-height: 1.42;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 .fx-msg-assistant .fx-msg-bubble ul,
@@ -565,6 +656,116 @@ body {
 
 .fx-file-input {
   display: none;
+}
+
+.fx-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-bottom: 0.34rem;
+  padding: 0.2rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.fx-mode-btn {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.2rem 0.56rem;
+  font-size: 0.76rem;
+  line-height: 1.2;
+  background: transparent;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.fx-mode-btn.is-active {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.fx-mode-btn.is-plan.is-active {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #86efac;
+}
+
+.fx-mode-btn.is-default.is-active {
+  background: #2563eb;
+  color: #ffffff;
+  border: 1px solid #2563eb;
+}
+
+.fx-mode-btn:disabled {
+  opacity: 0.45;
+}
+
+.fx-user-input-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.42rem;
+}
+
+.fx-user-input-requests-inline {
+  margin: 0.2rem 0 0.8rem;
+}
+
+.fx-user-input-card {
+  border: 1px solid #bfdbfe;
+  border-radius: 14px;
+  background: #eff6ff;
+  padding: 0.62rem 0.62rem;
+}
+
+.fx-user-input-progress {
+  font-size: 0.74rem;
+  color: #1d4ed8;
+  font-weight: 700;
+  margin-bottom: 0.28rem;
+}
+
+.fx-user-input-question + .fx-user-input-question {
+  margin-top: 0.45rem;
+}
+
+.fx-user-input-header {
+  font-size: 0.72rem;
+  color: #1d4ed8;
+  font-weight: 700;
+  margin-bottom: 0.14rem;
+}
+
+.fx-user-input-text {
+  font-size: 0.9rem;
+  color: #1e293b;
+  margin-bottom: 0.42rem;
+  line-height: 1.4;
+}
+
+.fx-user-input-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+}
+
+.fx-user-input-option-btn {
+  border: 1px solid #93c5fd;
+  border-radius: 12px;
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.72rem;
+  background: #ffffff;
+  color: #1e40af;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: left;
+}
+
+.fx-user-input-option-btn:disabled {
+  opacity: 0.55;
 }
 
 .fx-attachments-bar {

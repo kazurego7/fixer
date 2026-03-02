@@ -35,8 +35,11 @@ const cloneJobs = new Map();
 const runtimeLogs = [];
 const MAX_RUNTIME_LOGS = 2000;
 const runningTurnByThreadId = new Map();
+const threadModelByThreadId = new Map();
+const pendingUserInputRequestById = new Map();
 const handledTerminalTurnKeys = new Set();
 const handledPushTurnKeys = new Set();
+const DEFAULT_MODEL_FALLBACK = 'gpt-5-codex';
 
 let codexServerProcess = null;
 let codexStartPromise = null;
@@ -248,8 +251,15 @@ function attachWsHandlers(ws) {
 
     const terminal = parseTurnTerminalNotification(msg);
     if (terminal) handleTurnTerminalNotification(terminal);
+    const userInputRequest = parseToolRequestUserInput(msg);
+    if (userInputRequest) rememberPendingUserInputRequest(userInputRequest);
 
-    if (msg && Object.prototype.hasOwnProperty.call(msg, 'id') && rpcPending.has(msg.id)) {
+    if (
+      msg &&
+      Object.prototype.hasOwnProperty.call(msg, 'id') &&
+      !Object.prototype.hasOwnProperty.call(msg, 'method') &&
+      rpcPending.has(msg.id)
+    ) {
       const pending = rpcPending.get(msg.id);
       rpcPending.delete(msg.id);
       if (msg.error) {
@@ -346,6 +356,53 @@ function buildTurnInput(prompt, attachments) {
   return input;
 }
 
+function normalizeCollaborationMode(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'plan') return 'plan';
+  if (normalized === 'default' || normalized === 'normal') return 'default';
+  return null;
+}
+
+function buildCollaborationMode(mode, model) {
+  return {
+    mode,
+    settings: {
+      model: String(model || DEFAULT_MODEL_FALLBACK),
+      reasoning_effort: null,
+      developer_instructions: null
+    }
+  };
+}
+
+async function resolveThreadModel(threadId) {
+  const cached = threadModelByThreadId.get(threadId);
+  if (cached) return cached;
+
+  try {
+    const read = await rpcRequest('thread/read', { threadId, includeTurns: false });
+    const model = typeof read?.thread?.model === 'string' ? read.thread.model : '';
+    if (model) {
+      threadModelByThreadId.set(threadId, model);
+      return model;
+    }
+  } catch {
+    // 取得に失敗した場合は次のフォールバックを試す。
+  }
+
+  try {
+    const config = await rpcRequest('config/read', { includeLayers: false });
+    const model = typeof config?.config?.model === 'string' ? config.config.model : '';
+    if (model) return model;
+  } catch {
+    // 設定読取に失敗した場合は固定モデルにフォールバックする。
+  }
+
+  return DEFAULT_MODEL_FALLBACK;
+}
+
 function isThreadMissingError(error) {
   const message = String(error?.message || '');
   return message.includes('thread not found') || message.includes('thread_not_found') || message.includes('no rollout found for thread id');
@@ -356,11 +413,16 @@ function isThreadWarmupError(error) {
   return message.includes('no rollout found for thread id') || message.includes('thread_not_found') || message.includes('thread not found');
 }
 
-async function startTurnWithRetry(threadId, input, maxAttempts = 20, onRetry = null) {
+async function startTurnWithRetry(threadId, input, maxAttempts = 20, onRetry = null, overrides = null) {
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const turnStart = await rpcRequest('turn/start', { threadId, input });
+      const turnStartParams = {
+        threadId,
+        input,
+        ...(overrides && typeof overrides === 'object' ? overrides : {})
+      };
+      const turnStart = await rpcRequest('turn/start', turnStartParams);
       const turnId = turnStart?.turn?.id;
       if (!turnId) throw new Error('turn_id_missing');
       if (attempt > 1) {
@@ -404,6 +466,116 @@ function asObject(value) {
 
 function asString(value) {
   return typeof value === 'string' ? value : null;
+}
+
+function asRequestId(value) {
+  if (typeof value === 'string' && value) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  return null;
+}
+
+function parseUserInputQuestions(rawQuestions) {
+  const list = Array.isArray(rawQuestions) ? rawQuestions : [];
+  const out = [];
+  for (const question of list) {
+    const id = asString(question?.id);
+    if (!id) continue;
+    const header = asString(question?.header) || '';
+    const text = asString(question?.question) || '';
+    const optionsRaw = Array.isArray(question?.options) ? question.options : [];
+    const options = [];
+    for (const opt of optionsRaw) {
+      const label = asString(opt?.label);
+      if (!label) continue;
+      options.push({
+        label,
+        description: asString(opt?.description) || ''
+      });
+    }
+    out.push({
+      id,
+      header,
+      question: text,
+      isOther: Boolean(question?.isOther),
+      isSecret: Boolean(question?.isSecret),
+      options
+    });
+  }
+  return out;
+}
+
+function parseToolRequestUserInput(msg) {
+  const method = asString(msg?.method);
+  if (method !== 'item/tool/requestUserInput') return null;
+  const requestId = asRequestId(msg?.id);
+  const params = asObject(msg?.params);
+  if (!requestId || !params) return null;
+  const threadId = asString(params.threadId);
+  const turnId = asString(params.turnId);
+  const itemId = asString(params.itemId);
+  if (!threadId || !turnId || !itemId) return null;
+  const questions = parseUserInputQuestions(params.questions);
+  if (questions.length === 0) return null;
+  return {
+    requestId,
+    threadId,
+    turnId,
+    itemId,
+    questions
+  };
+}
+
+function rememberPendingUserInputRequest(request) {
+  if (!request?.requestId) return;
+  pendingUserInputRequestById.set(String(request.requestId), {
+    ...request,
+    createdAt: new Date().toISOString()
+  });
+  pushRuntimeLog({
+    level: 'info',
+    event: 'request_user_input_received',
+    threadId: request.threadId,
+    turnId: request.turnId,
+    itemId: request.itemId,
+    requestId: request.requestId,
+    questionsCount: request.questions.length
+  });
+}
+
+function clearPendingUserInputForThread(threadId) {
+  if (!threadId) return;
+  for (const [key, request] of pendingUserInputRequestById.entries()) {
+    if (request?.threadId === threadId) pendingUserInputRequestById.delete(key);
+  }
+}
+
+function sendJsonRpcResponse(id, result) {
+  if (!appServerWs || appServerWs.readyState !== WebSocket.OPEN) {
+    throw new Error('app_server_not_connected');
+  }
+  const payload = { jsonrpc: '2.0', id, result };
+  appServerWs.send(JSON.stringify(payload));
+}
+
+function buildToolUserInputResponsePayload(answersMap) {
+  const src = answersMap && typeof answersMap === 'object' ? answersMap : {};
+  const answers = {};
+  for (const [questionId, answerValue] of Object.entries(src)) {
+    if (!questionId) continue;
+    if (Array.isArray(answerValue)) {
+      const list = answerValue.map((v) => String(v || '').trim()).filter(Boolean);
+      if (list.length > 0) answers[questionId] = { answers: list };
+      continue;
+    }
+    if (answerValue && typeof answerValue === 'object' && Array.isArray(answerValue.answers)) {
+      const list = answerValue.answers.map((v) => String(v || '').trim()).filter(Boolean);
+      if (list.length > 0) answers[questionId] = { answers: list };
+      continue;
+    }
+    const single = String(answerValue || '').trim();
+    if (single) answers[questionId] = { answers: [single] };
+  }
+  return { answers };
 }
 
 function parseV2TurnNotification(msg) {
@@ -459,6 +631,23 @@ function isErrorStatus(status) {
   return normalized === 'failed' || normalized === 'interrupted' || normalized === 'cancelled';
 }
 
+function buildTurnPlanText(rawExplanation, rawPlan) {
+  const explanation = asString(rawExplanation) || '';
+  const plan = Array.isArray(rawPlan) ? rawPlan : [];
+  const lines = [];
+  if (explanation.trim()) lines.push(explanation.trim());
+  for (const step of plan) {
+    const text = asString(step?.step);
+    if (!text) continue;
+    const status = String(step?.status || '').toLowerCase();
+    let marker = '[ ]';
+    if (status === 'completed') marker = '[x]';
+    else if (status === 'inprogress') marker = '[-]';
+    lines.push(`${marker} ${text}`);
+  }
+  return lines.join('\n').trim();
+}
+
 function parseTurnTerminalNotification(msg) {
   const v2 = parseV2TurnNotification(msg);
   if (v2?.threadId) {
@@ -512,6 +701,7 @@ function handleTurnTerminalNotification(terminal) {
   const turnKey = `${terminal.threadId}:${effectiveTurnId || 'unknown'}`;
 
   runningTurnByThreadId.delete(terminal.threadId);
+  clearPendingUserInputForThread(terminal.threadId);
 
   if (!handledTerminalTurnKeys.has(turnKey)) {
     rememberBounded(handledTerminalTurnKeys, turnKey);
@@ -556,14 +746,38 @@ function selectTurnStreamUpdate(msg, state) {
   const preferV2 = Boolean(state?.preferV2);
   let nextPreferV2 = preferV2;
 
+  const request = parseToolRequestUserInput(msg);
+  if (request && request.threadId === threadId && request.turnId === turnId) {
+    nextPreferV2 = true;
+    return {
+      matched: true,
+      nextPreferV2,
+      streamEvent: {
+        type: 'request_user_input',
+        requestId: request.requestId,
+        turnId: request.turnId,
+        itemId: request.itemId,
+        questions: request.questions
+      }
+    };
+  }
+
   const v2 = parseV2TurnNotification(msg);
   if (v2 && v2.threadId === threadId && (!v2.turnId || v2.turnId === turnId)) {
     nextPreferV2 = true;
     if (v2.method === 'item/agentMessage/delta' && v2.delta) {
       return { matched: true, nextPreferV2, streamEvent: { type: 'answer_delta', delta: v2.delta } };
     }
+    if (v2.method === 'item/plan/delta' && v2.delta) {
+      return { matched: true, nextPreferV2, streamEvent: { type: 'plan_delta', delta: v2.delta } };
+    }
     if ((v2.method === 'item/reasoning/summaryTextDelta' || v2.method === 'item/reasoning/textDelta') && v2.delta) {
       return { matched: true, nextPreferV2, streamEvent: { type: 'reasoning_delta', delta: v2.delta } };
+    }
+    if (v2.method === 'turn/plan/updated') {
+      const params = asObject(msg?.params);
+      const planText = buildTurnPlanText(params?.explanation, params?.plan);
+      return { matched: true, nextPreferV2, streamEvent: { type: 'plan_snapshot', text: planText } };
     }
     if (v2.method === 'turn/completed') {
       if (isCompletedStatus(v2.status)) return { matched: true, nextPreferV2, terminal: { kind: 'done' } };
@@ -663,14 +877,19 @@ function normalizeThreadMessages(readResult) {
       .filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string')
       .map((item) => item.text)
       .join('\n');
+    const planText = items
+      .filter((item) => item?.type === 'plan' && typeof item.text === 'string')
+      .map((item) => item.text)
+      .join('\n');
 
-    if (answerText) {
+    if (answerText || planText) {
       messages.push({
         id: `${turn.id}:assistant`,
         role: 'assistant',
         type: looksLikeDiff(answerText) ? 'diff' : 'markdown',
         text: answerText,
-        answer: answerText
+        answer: answerText,
+        plan: planText
       });
       messages.push({
         id: `${turn.id}:sep`,
@@ -1132,6 +1351,8 @@ function buildServer() {
     try {
       await rpcRequest('thread/resume', { threadId });
       const read = await rpcRequest('thread/read', { threadId, includeTurns: true });
+      const model = typeof read?.thread?.model === 'string' ? read.thread.model : '';
+      if (model) threadModelByThreadId.set(threadId, model);
       const items = normalizeThreadMessages(read);
       pushRuntimeLog({
         level: 'info',
@@ -1161,7 +1382,9 @@ function buildServer() {
       return { error: 'thread_id is required' };
     }
     try {
-      await rpcRequest('thread/resume', { threadId });
+      const result = await rpcRequest('thread/resume', { threadId });
+      const model = typeof result?.thread?.model === 'string' ? result.thread.model : '';
+      if (model) threadModelByThreadId.set(threadId, model);
       pushRuntimeLog({ level: 'info', event: 'thread_resumed', threadId });
       return { ok: true };
     } catch (error) {
@@ -1188,7 +1411,9 @@ function buildServer() {
       sandbox: 'workspace-write'
     });
     const id = result?.thread?.id;
+    const model = typeof result?.thread?.model === 'string' ? result.thread.model : '';
     if (!id) throw new Error('thread_id_missing');
+    if (model) threadModelByThreadId.set(id, model);
     return { id };
   });
 
@@ -1218,7 +1443,9 @@ function buildServer() {
       sandbox: 'workspace-write'
     });
     const id = result?.thread?.id;
+    const model = typeof result?.thread?.model === 'string' ? result.thread.model : '';
     if (!id) throw new Error('thread_id_missing');
+    if (model) threadModelByThreadId.set(id, model);
     pushRuntimeLog({
       level: 'info',
       event: 'thread_ensured_new',
@@ -1357,6 +1584,7 @@ function buildServer() {
     const body = request.body || {};
     const threadId = body.thread_id;
     const prompt = String(body.input || '').trim();
+    const collaborationMode = normalizeCollaborationMode(body.collaboration_mode || body.mode);
     if (!threadId || !prompt) {
       reply.code(400);
       return { error: 'thread_id and input are required' };
@@ -1365,7 +1593,8 @@ function buildServer() {
       level: 'info',
       event: 'turn_stream_start',
       threadId,
-      inputLength: prompt.length
+      inputLength: prompt.length,
+      collaborationMode: collaborationMode || null
     });
     reply.hijack();
     reply.raw.writeHead(200, {
@@ -1379,6 +1608,14 @@ function buildServer() {
     let unsubWs = null;
     let timeoutHandle = null;
     let preferV2 = false;
+    let turnStartOverrides = null;
+
+    if (collaborationMode) {
+      const model = await resolveThreadModel(threadId);
+      turnStartOverrides = {
+        collaborationMode: buildCollaborationMode(collaborationMode, model)
+      };
+    }
 
     function writeEvent(event) {
       if (aborted) return;
@@ -1412,7 +1649,8 @@ function buildServer() {
         20,
         ({ attempt, message }) => {
           writeEvent({ type: 'status', phase: 'starting', attempt, message });
-        }
+        },
+        turnStartOverrides
       );
       runningTurnByThreadId.set(threadId, turnId);
     } catch (error) {
@@ -1476,12 +1714,73 @@ function buildServer() {
 
     await rpcRequest('turn/interrupt', { threadId, turnId });
     runningTurnByThreadId.delete(threadId);
+    clearPendingUserInputForThread(threadId);
     return { cancelled: true };
   });
 
-  app.post('/api/approvals/respond', async (_request, reply) => {
-    reply.code(501);
-    return { error: 'not_implemented_yet' };
+  app.get('/api/approvals/pending', async (request, reply) => {
+    const threadId = asString(request.query?.threadId);
+    if (!threadId) {
+      reply.code(400);
+      return { error: 'threadId is required' };
+    }
+    const requests = [];
+    for (const pending of pendingUserInputRequestById.values()) {
+      if (pending?.threadId !== threadId) continue;
+      requests.push({
+        requestId: pending.requestId,
+        threadId: pending.threadId,
+        turnId: pending.turnId,
+        itemId: pending.itemId,
+        questions: pending.questions,
+        createdAt: pending.createdAt
+      });
+    }
+    requests.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+    return { requests };
+  });
+
+  app.post('/api/approvals/respond', async (request, reply) => {
+    const body = request.body || {};
+    const requestIdRaw = asRequestId(body.request_id);
+    if (!requestIdRaw) {
+      reply.code(400);
+      return { error: 'request_id is required' };
+    }
+
+    const key = String(requestIdRaw);
+    const pending = pendingUserInputRequestById.get(key);
+    if (!pending) {
+      reply.code(404);
+      return { error: 'pending_request_not_found' };
+    }
+
+    let payload = buildToolUserInputResponsePayload(body.answers);
+    if (!payload.answers || Object.keys(payload.answers).length === 0) {
+      const questionId = asString(body.question_id);
+      const answer = asString(body.answer);
+      if (questionId && answer) {
+        payload = { answers: { [questionId]: { answers: [answer] } } };
+      }
+    }
+    if (!payload.answers || Object.keys(payload.answers).length === 0) {
+      reply.code(400);
+      return { error: 'answers is required' };
+    }
+
+    await ensureCodexServerRunning();
+    await connectWs();
+    sendJsonRpcResponse(pending.requestId, payload);
+    pendingUserInputRequestById.delete(key);
+    pushRuntimeLog({
+      level: 'info',
+      event: 'request_user_input_responded',
+      threadId: pending.threadId,
+      turnId: pending.turnId,
+      itemId: pending.itemId,
+      requestId: pending.requestId
+    });
+    return { ok: true };
   });
 
   return app;
@@ -1497,9 +1796,11 @@ if (require.main === module) {
 
 module.exports = {
   buildServer,
+  buildCollaborationMode,
   repoFolderFromFullName,
   repoPathFromFullName,
   getCloneState,
+  normalizeCollaborationMode,
   parseV2TurnNotification,
   parseLegacyTurnNotification,
   parseTurnTerminalNotification,
