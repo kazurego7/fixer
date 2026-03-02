@@ -990,6 +990,25 @@ body {
   font-size: 0.92rem;
 }
 
+.fx-followup-btn {
+  min-width: 2.2rem;
+  padding: 0;
+  border: 1px solid #fdba74;
+  background: #fffbeb;
+  color: #9a3412;
+}
+
+.fx-followup-icon-svg {
+  width: 1.18rem;
+  height: 1.18rem;
+}
+
+.fx-stop-btn {
+  border: 1px solid #fca5a5;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
 .fx-send-icon-svg {
   width: 1.08rem;
   height: 1.08rem;

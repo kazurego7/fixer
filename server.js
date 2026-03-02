@@ -1528,7 +1528,7 @@ function buildServer() {
       if (!aborted) reply.raw.end();
     }
 
-    writeEvent({ type: 'started' });
+    writeEvent({ type: 'started', turnId });
 
     reply.raw.on('close', () => {
       aborted = true;
@@ -1639,8 +1639,6 @@ function buildServer() {
       if (!aborted) reply.raw.end();
     }
 
-    writeEvent({ type: 'started' });
-
     let turnId = null;
     try {
       turnId = await startTurnWithRetry(
@@ -1653,6 +1651,7 @@ function buildServer() {
         turnStartOverrides
       );
       runningTurnByThreadId.set(threadId, turnId);
+      writeEvent({ type: 'started', turnId });
     } catch (error) {
       writeEvent({ type: 'error', message: String(error?.message || 'turn_start_failed') });
       if (!aborted) reply.raw.end();
@@ -1716,6 +1715,39 @@ function buildServer() {
     runningTurnByThreadId.delete(threadId);
     clearPendingUserInputForThread(threadId);
     return { cancelled: true };
+  });
+
+  app.post('/api/turns/steer', async (request, reply) => {
+    const body = request.body || {};
+    const threadId = asString(body.thread_id);
+    const turnId = asString(body.turn_id);
+    const prompt = String(body.input || '').trim();
+    if (!threadId || !turnId || !prompt) {
+      reply.code(400);
+      return { error: 'thread_id, turn_id and input are required' };
+    }
+
+    const runningTurnId = runningTurnByThreadId.get(threadId);
+    if (!runningTurnId) {
+      reply.code(409);
+      return { error: 'no_active_turn' };
+    }
+    if (runningTurnId !== turnId) {
+      reply.code(409);
+      return { error: 'turn_mismatch', runningTurnId };
+    }
+
+    try {
+      await rpcRequest('turn/steer', {
+        threadId,
+        expectedTurnId: turnId,
+        input: buildTurnInput(prompt, body.attachments || [])
+      });
+      return { steered: true, threadId, turnId };
+    } catch (error) {
+      reply.code(500);
+      return { error: String(error?.message || 'steer_failed') };
+    }
   });
 
   app.get('/api/approvals/pending', async (request, reply) => {

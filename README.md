@@ -92,6 +92,7 @@ Codex App Server 側のエンドポイント仕様に差異がある場合は、
 
 - `/api/threads`
 - `/api/turns/stream`
+- `/api/turns/steer`
 - `/api/turns/cancel`
 - `/api/approvals/respond`
 

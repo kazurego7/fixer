@@ -317,7 +317,8 @@ function ChatPage() {
     pendingUserInputBusy,
     pendingUserInputDrafts
   } = useContext(AppCtx);
-  const canSend = (message.trim().length > 0 || pendingAttachments.length > 0) && !streaming;
+  const hasComposerInput = message.trim().length > 0 || pendingAttachments.length > 0;
+  const canSend = hasComposerInput;
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(null);
   const composerInputRef = useRef(null);
@@ -756,15 +757,45 @@ function ChatPage() {
               }`}
             >
               {streaming ? (
-                <Button
-                  tonal
-                  className="fx-icon-btn"
-                  onClick={cancelTurn}
-                  aria-label="停止"
-                  title="停止"
-                >
-                  ■
+                hasComposerInput ? (
+                  <Button
+                    tonal
+                    className="fx-icon-btn fx-followup-btn"
+                    onClick={sendTurn}
+                    disabled={!canSend}
+                    aria-label="追加指示"
+                    title="追加指示"
+                    data-testid="followup-button"
+                  >
+                  <svg
+                    className="fx-followup-icon-svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true"
+                  >
+                      <path d="M10 14l11 -11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      <path
+                        d="M21 3l-6.5 18a.55 .55 0 0 1 -1 0l-3.5 -7l-7 -3.5a.55 .55 0 0 1 0 -1l18 -6.5"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                  </svg>
                 </Button>
+                ) : (
+                  <Button
+                    tonal
+                    className="fx-icon-btn fx-stop-btn"
+                    onClick={cancelTurn}
+                    aria-label="停止"
+                    title="停止"
+                    data-testid="stop-button"
+                  >
+                    ■
+                  </Button>
+                )
               ) : (
                 <Button
                   fill
@@ -775,18 +806,29 @@ function ChatPage() {
                   title="送信"
                   data-testid="send-button"
                 >
-                  <svg
-                    className="fx-send-icon-svg"
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
-                    xmlns="http://www.w3.org/2000/svg"
-                    aria-hidden="true"
-                  >
-                    <path
-                      d="M3.105 3.105a.75.75 0 0 1 .826-.164l17.25 8.25a.75.75 0 0 1 0 1.356l-17.25 8.25a.75.75 0 0 1-1.059-.86L4.56 13.5H12a.75.75 0 0 0 0-1.5H4.56L2.872 4.063a.75.75 0 0 1 .233-.958Z"
-                    />
-                  </svg>
-                </Button>
+                <svg
+                  className="fx-send-icon-svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M4.698 4.034l16.302 7.966l-16.302 7.966a.503 .503 0 0 1 -.546 -.124a.555 .555 0 0 1 -.12 -.568l2.468 -7.274l-2.468 -7.274a.555 .555 0 0 1 .12 -.568a.503 .503 0 0 1 .546 -.124"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M6.5 12h14.5"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </Button>
               )}
             </div>
           </div>
@@ -880,6 +922,7 @@ export default function AppRoot() {
   const [outputItems, setOutputItems] = useState([]);
   const [streaming, setStreaming] = useState(false);
   const [streamingAssistantId, setStreamingAssistantId] = useState(null);
+  const [, setActiveTurnId] = useState('');
   const [liveReasoningText, setLiveReasoningText] = useState('');
   const [awaitingFirstStreamChunk, setAwaitingFirstStreamChunk] = useState(false);
   const [hasReasoningStarted, setHasReasoningStarted] = useState(false);
@@ -915,6 +958,7 @@ export default function AppRoot() {
   const didBootstrapRef = useRef(false);
   const lastPathRef = useRef(getCurrentPath());
   const activeThreadRef = useRef(activeThreadId);
+  const activeTurnIdRef = useRef('');
   const backgroundInterruptedTurnRef = useRef(false);
   const shouldResumeOnVisibleRef = useRef(false);
   const pushEndpointRef = useRef(
@@ -1224,6 +1268,8 @@ export default function AppRoot() {
     setStreaming(true);
     setStreamingAssistantId(assistantId);
     setLiveReasoningText('');
+    setActiveTurnId(String(turnId || ''));
+    activeTurnIdRef.current = String(turnId || '');
 
     setOutputItems((prev) => {
       if (prev.some((item) => item.id === assistantId)) return prev;
@@ -1307,7 +1353,14 @@ export default function AppRoot() {
               });
               continue;
             }
-            if (evt.type === 'started') continue;
+            if (evt.type === 'started') {
+              const nextTurnId = String(evt.turnId || turnId || '');
+              if (nextTurnId) {
+                setActiveTurnId(nextTurnId);
+                activeTurnIdRef.current = nextTurnId;
+              }
+              continue;
+            }
             if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) continue;
             if (evt.type === 'done') {
               await restoreOutputForThread(threadId);
@@ -1339,12 +1392,16 @@ export default function AppRoot() {
       if (streamAbortRef.current === controller) {
         streamAbortRef.current = null;
       }
-      setStreaming(false);
-      setStreamingAssistantId(null);
-      setLiveReasoningText('');
-      setAwaitingFirstStreamChunk(false);
-      setHasReasoningStarted(false);
-      setHasAnswerStarted(false);
+      if (streamAbortRef.current === null || streamAbortRef.current === controller) {
+        setStreaming(false);
+        setStreamingAssistantId(null);
+        setLiveReasoningText('');
+        setAwaitingFirstStreamChunk(false);
+        setHasReasoningStarted(false);
+        setHasAnswerStarted(false);
+        setActiveTurnId('');
+        activeTurnIdRef.current = '';
+      }
       setOutputItems((prev) => prev.filter((item) => item.id !== assistantId));
     }
   }
@@ -1517,43 +1574,42 @@ export default function AppRoot() {
     }
   }
 
-  async function sendTurn() {
-    if (streaming) return;
-    if (!activeRepoFullName) {
-      toast('リポジトリが未選択です');
-      return;
-    }
-    if (!activeThreadId) {
-      try {
-        const created = await ensureThread(activeRepoFullName, null);
-        setActiveThreadId(created);
-        setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: created }));
-        restoreOutputForThread(created);
-      } catch (e) {
-        toast(`Thread準備失敗: ${String(e.message || 'unknown_error')}`);
-        return;
-      }
-    }
-    const prompt = message.trim();
-    if (!prompt && pendingAttachments.length === 0) return;
-    const attachmentsToSend = pendingAttachments;
+  function appendUserMessage(prompt, attachments) {
+    const userId = `u-${Date.now()}`;
+    const attachmentMeta = attachments.map((att) => ({
+      type: 'image',
+      name: att.name,
+      size: att.size,
+      mime: att.mime
+    }));
+    setOutputItems((prev) => [...prev, { id: userId, role: 'user', type: 'plain', text: prompt, attachments: attachmentMeta }]);
+  }
 
-    let threadIdToUse = activeThreadId || threadByRepo[activeRepoFullName];
-    if (!threadIdToUse) return;
-
+  async function postSteerTurn(threadId, turnId, prompt, attachments) {
+    const res = await fetch('/api/turns/steer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        thread_id: threadId,
+        turn_id: turnId,
+        input: prompt,
+        attachments
+      })
+    });
+    let data = {};
     try {
-      const ensured = await ensureThread(activeRepoFullName, threadIdToUse);
-      threadIdToUse = ensured;
-      if (ensured !== activeThreadId) {
-        setActiveThreadId(ensured);
-        setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: ensured }));
-        restoreOutputForThread(ensured);
-      }
-    } catch (e) {
-      toast(`Thread再接続失敗: ${String(e.message || 'unknown_error')}`);
-      return;
+      data = await res.json();
+    } catch {
+      data = {};
     }
+    return {
+      ok: res.ok,
+      status: res.status,
+      error: String(data.error || '')
+    };
+  }
 
+  async function startTurnStream(prompt, attachmentsToSend, threadIdToUse, appendUser = true) {
     setMessage('');
     setPendingAttachments([]);
     setLiveReasoningText('');
@@ -1561,21 +1617,14 @@ export default function AppRoot() {
     setHasReasoningStarted(false);
     setHasAnswerStarted(false);
     setStreaming(true);
+    setActiveTurnId('');
+    activeTurnIdRef.current = '';
 
-    const userId = `u-${Date.now()}`;
+    if (appendUser) appendUserMessage(prompt, attachmentsToSend);
+
     const assistantId = `a-${Date.now() + 1}`;
-    const attachmentMeta = attachmentsToSend.map((att) => ({
-      type: 'image',
-      name: att.name,
-      size: att.size,
-      mime: att.mime
-    }));
     setStreamingAssistantId(assistantId);
-    setOutputItems((prev) => [
-      ...prev,
-      { id: userId, role: 'user', type: 'plain', text: prompt, attachments: attachmentMeta },
-      { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '', answer: '', plan: '' }
-    ]);
+    setOutputItems((prev) => [...prev, { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '', answer: '', plan: '' }]);
 
     const controller = new AbortController();
     streamAbortRef.current = controller;
@@ -1683,6 +1732,11 @@ export default function AppRoot() {
               continue;
             }
             if (evt.type === 'started') {
+              const nextTurnId = String(evt.turnId || '');
+              if (nextTurnId) {
+                setActiveTurnId(nextTurnId);
+                activeTurnIdRef.current = nextTurnId;
+              }
               continue;
             }
             if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) {
@@ -1743,7 +1797,6 @@ export default function AppRoot() {
           prev.map((item) => (item.id === assistantId ? { ...item, text: '(停止しました)' } : item))
         );
       } else if (backgroundInterruptedTurnRef.current) {
-        // バックグラウンド遷移で切断された場合は失敗表示せず、復帰同期で結果を反映する。
         setOutputItems((prev) => prev.filter((item) => item.id !== assistantId));
       } else {
         setOutputItems((prev) =>
@@ -1756,15 +1809,92 @@ export default function AppRoot() {
         toast('送信に失敗しました');
       }
     } finally {
-      setStreaming(false);
-      setStreamingAssistantId(null);
-      setLiveReasoningText('');
-      setAwaitingFirstStreamChunk(false);
-      setHasReasoningStarted(false);
-      setHasAnswerStarted(false);
-      streamAbortRef.current = null;
-      backgroundInterruptedTurnRef.current = false;
+      if (streamAbortRef.current === controller) {
+        setStreaming(false);
+        setStreamingAssistantId(null);
+        setLiveReasoningText('');
+        setAwaitingFirstStreamChunk(false);
+        setHasReasoningStarted(false);
+        setHasAnswerStarted(false);
+        setActiveTurnId('');
+        activeTurnIdRef.current = '';
+        streamAbortRef.current = null;
+        backgroundInterruptedTurnRef.current = false;
+      }
     }
+  }
+
+  async function sendTurn() {
+    if (!activeRepoFullName) {
+      toast('リポジトリが未選択です');
+      return;
+    }
+    if (!activeThreadId) {
+      try {
+        const created = await ensureThread(activeRepoFullName, null);
+        setActiveThreadId(created);
+        setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: created }));
+        restoreOutputForThread(created);
+      } catch (e) {
+        toast(`Thread準備失敗: ${String(e.message || 'unknown_error')}`);
+        return;
+      }
+    }
+    const prompt = message.trim();
+    if (!prompt && pendingAttachments.length === 0) return;
+    const attachmentsToSend = pendingAttachments;
+
+    let threadIdToUse = activeThreadId || threadByRepo[activeRepoFullName];
+    if (!threadIdToUse) return;
+
+    try {
+      const ensured = await ensureThread(activeRepoFullName, threadIdToUse);
+      threadIdToUse = ensured;
+      if (ensured !== activeThreadId) {
+        setActiveThreadId(ensured);
+        setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: ensured }));
+        restoreOutputForThread(ensured);
+      }
+    } catch (e) {
+      toast(`Thread再接続失敗: ${String(e.message || 'unknown_error')}`);
+      return;
+    }
+
+    if (!streaming) {
+      await startTurnStream(prompt, attachmentsToSend, threadIdToUse, true);
+      return;
+    }
+
+    setMessage('');
+    setPendingAttachments([]);
+    appendUserMessage(prompt, attachmentsToSend);
+
+    if (resumeStreamAbortRef.current) resumeStreamAbortRef.current.abort();
+
+    const turnIdToUse = String(activeTurnIdRef.current || '');
+    if (!turnIdToUse) {
+      const controller = streamAbortRef.current;
+      if (controller) controller.abort();
+      await startTurnStream(prompt, attachmentsToSend, threadIdToUse, false);
+      return;
+    }
+
+    const steerResult = await postSteerTurn(threadIdToUse, turnIdToUse, prompt, attachmentsToSend);
+    if (steerResult.ok) return;
+
+    const isRecoverableSteerError =
+      steerResult.status === 409 ||
+      steerResult.error.includes('no_active_turn') ||
+      steerResult.error.includes('turn_mismatch') ||
+      steerResult.error.includes('running_turn_not_found');
+    if (isRecoverableSteerError) {
+      const controller = streamAbortRef.current;
+      if (controller) controller.abort();
+      await startTurnStream(prompt, attachmentsToSend, threadIdToUse, false);
+      return;
+    }
+
+    toast(`追加入力送信失敗: ${steerResult.error || 'steer_failed'}`);
   }
 
   async function startNewThread() {
@@ -1808,6 +1938,8 @@ export default function AppRoot() {
 
     setPendingUserInputRequests([]);
     setPendingUserInputDrafts({});
+    setActiveTurnId('');
+    activeTurnIdRef.current = '';
   }
 
   function navigate(path, replace = false) {
@@ -1902,6 +2034,8 @@ export default function AppRoot() {
 
   useEffect(() => {
     activeThreadRef.current = activeThreadId;
+    setActiveTurnId('');
+    activeTurnIdRef.current = '';
     if (
       resumeStreamAbortRef.current &&
       resumeStreamingThreadIdRef.current &&
