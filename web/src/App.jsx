@@ -326,6 +326,8 @@ function ChatPage() {
     startNewThread,
     canReturnToPreviousThread,
     returnToPreviousThread,
+    canApplyLatestPlan,
+    applyLatestPlanShortcut,
     chatSettingsOpen,
     openChatSettings,
     closeChatSettings,
@@ -352,6 +354,16 @@ function ChatPage() {
   const swipeStartXRef = useRef(null);
   const swipeStartYRef = useRef(null);
   const displayItems = useMemo(() => withAutoAssistantSeparators(outputItems), [outputItems]);
+  const latestPlanItemId = useMemo(() => {
+    for (let idx = displayItems.length - 1; idx >= 0; idx -= 1) {
+      const item = displayItems[idx];
+      if (!item || (item.role !== 'assistant' && item.role !== 'user')) continue;
+      if (item.role !== 'assistant') return '';
+      const planText = typeof item.plan === 'string' ? item.plan.trim() : '';
+      return planText ? String(item.id || '') : '';
+    }
+    return '';
+  }, [displayItems]);
   const thinkingText = typeof liveReasoningText === 'string' ? liveReasoningText : '';
   const activeUserInputRequest = pendingUserInputRequests.length > 0 ? pendingUserInputRequests[0] : null;
   const activeUserInputDraftState = activeUserInputRequest
@@ -615,6 +627,26 @@ function ChatPage() {
                       </div>
                     </div>
                   ) : null}
+                  {planText && canApplyLatestPlan && String(item.id || '') === latestPlanItemId ? (
+                    <>
+                      <div className="fx-plan-apply-row">
+                        <button
+                          className="fx-plan-apply-inline-btn"
+                          type="button"
+                          onClick={applyLatestPlanShortcut}
+                          disabled={busy || streaming}
+                          data-testid="plan-apply-button"
+                          aria-label="プランを実現"
+                          title="プランを実現"
+                        >
+                          プランを実現
+                        </button>
+                      </div>
+                      <div className="fx-plan-apply-help-note" data-testid="plan-edit-help">
+                        ※ プランを修正する場合は、下の入力欄に修正内容や質問を入力して送信してください。
+                      </div>
+                    </>
+                  ) : null}
                 </Fragment>
               );
             }
@@ -682,7 +714,8 @@ function ChatPage() {
                         disabled={Boolean(pendingUserInputBusy[String(activeUserInputRequest.requestId)])}
                         data-testid={`user-input-option-${activeUserInputQuestion.id}`}
                       >
-                        {opt.label}
+                        <span className="fx-user-input-option-label">{opt.label}</span>
+                        {opt.description ? <span className="fx-user-input-option-desc">{opt.description}</span> : null}
                       </button>
                     ))}
                   </div>
@@ -1770,7 +1803,7 @@ export default function AppRoot() {
     };
   }
 
-  async function startTurnStream(prompt, attachmentsToSend, threadIdToUse, appendUser = true) {
+  async function startTurnStream(prompt, attachmentsToSend, threadIdToUse, appendUser = true, forcedCollaborationMode = '') {
     setMessage('');
     setPendingAttachments([]);
     setLiveReasoningText('');
@@ -1801,7 +1834,7 @@ export default function AppRoot() {
             thread_id: targetThreadId,
             input: prompt,
             attachments: attachmentsToSend,
-            collaboration_mode: activeCollaborationMode,
+            collaboration_mode: forcedCollaborationMode || activeCollaborationMode,
             model: model || undefined
           }),
           signal: controller.signal
@@ -1987,11 +2020,13 @@ export default function AppRoot() {
     }
   }
 
-  async function sendTurn() {
+  async function sendTurnWithOverrides({ forcedPrompt = '', forcedCollaborationMode = '' } = {}) {
     if (!activeRepoFullName) {
       toast('リポジトリが未選択です');
       return;
     }
+    const overridePrompt = String(forcedPrompt || '').trim();
+    const forcedMode = String(forcedCollaborationMode || '').trim();
     if (!activeThreadId) {
       try {
         const created = await ensureThread(activeRepoFullName, null, getRepoModel(activeRepoFullName));
@@ -2003,9 +2038,14 @@ export default function AppRoot() {
         return;
       }
     }
-    const prompt = message.trim();
-    if (!prompt && pendingAttachments.length === 0) return;
-    const attachmentsToSend = pendingAttachments;
+    const prompt = overridePrompt || message.trim();
+    const attachmentsToSend = overridePrompt ? [] : pendingAttachments;
+    if (!prompt && attachmentsToSend.length === 0) return;
+
+    if (overridePrompt) {
+      setMessage('');
+      setPendingAttachments([]);
+    }
 
     let threadIdToUse = activeThreadId || threadByRepo[activeRepoFullName];
     if (!threadIdToUse) return;
@@ -2031,7 +2071,7 @@ export default function AppRoot() {
     }
 
     if (!streaming) {
-      await startTurnStream(prompt, attachmentsToSend, threadIdToUse, true);
+      await startTurnStream(prompt, attachmentsToSend, threadIdToUse, true, forcedMode);
       return;
     }
 
@@ -2045,7 +2085,7 @@ export default function AppRoot() {
     if (!turnIdToUse) {
       const controller = streamAbortRef.current;
       if (controller) controller.abort();
-      await startTurnStream(prompt, attachmentsToSend, threadIdToUse, false);
+      await startTurnStream(prompt, attachmentsToSend, threadIdToUse, false, forcedMode);
       return;
     }
 
@@ -2060,11 +2100,15 @@ export default function AppRoot() {
     if (isRecoverableSteerError) {
       const controller = streamAbortRef.current;
       if (controller) controller.abort();
-      await startTurnStream(prompt, attachmentsToSend, threadIdToUse, false);
+      await startTurnStream(prompt, attachmentsToSend, threadIdToUse, false, forcedMode);
       return;
     }
 
     toast(`追加入力送信失敗: ${steerResult.error || 'steer_failed'}`);
+  }
+
+  async function sendTurn() {
+    await sendTurnWithOverrides();
   }
 
   async function startNewThread() {
@@ -2374,6 +2418,15 @@ export default function AppRoot() {
   const notClonedRepos = repos.filter((repo) => repo.cloneState?.status !== 'cloned');
   const filteredRepos = repoFilter === 'cloned' ? clonedRepos : repoFilter === 'not_cloned' ? notClonedRepos : repos;
   const activeRepoModel = activeRepoFullName ? String(modelByRepo[activeRepoFullName] || '').trim() : '';
+  const latestPlanText = useMemo(() => {
+    for (let idx = outputItems.length - 1; idx >= 0; idx -= 1) {
+      const item = outputItems[idx];
+      if (!item || item.role !== 'assistant') continue;
+      const planText = String(item.plan || '').trim();
+      if (planText) return planText;
+    }
+    return '';
+  }, [outputItems]);
   const activeCollaborationMode =
     activeRepoFullName &&
     (collaborationModeByRepo[activeRepoFullName] === 'plan' ||
@@ -2393,6 +2446,19 @@ export default function AppRoot() {
       pendingThreadReturn.toThreadId === activeThreadId &&
       pendingThreadReturn.fromThreadId
   );
+
+  const canApplyLatestPlan = Boolean(
+    latestPlanText && activeThreadId && activeRepoFullName && !streaming
+  );
+
+  async function applyLatestPlanShortcut() {
+    if (!canApplyLatestPlan) return;
+    setActiveCollaborationMode('default');
+    await sendTurnWithOverrides({
+      forcedPrompt: 'このプランを実現して',
+      forcedCollaborationMode: 'default'
+    });
+  }
 
   function returnToPreviousThread() {
     if (!canReturnToPreviousThread || !pendingThreadReturn) return;
@@ -2448,6 +2514,8 @@ export default function AppRoot() {
       startNewThread,
       canReturnToPreviousThread,
       returnToPreviousThread,
+      canApplyLatestPlan,
+      applyLatestPlanShortcut,
       chatSettingsOpen,
       openChatSettings,
       closeChatSettings,
@@ -2490,6 +2558,7 @@ export default function AppRoot() {
       activeCollaborationMode,
       activeRepoModel,
       canReturnToPreviousThread,
+      canApplyLatestPlan,
       chatSettingsOpen,
       availableModels,
       modelsLoading,

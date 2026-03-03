@@ -428,6 +428,43 @@ body {
   color: #0f172a;
 }
 
+.fx-plan-apply-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0.12rem 0 0.18rem;
+  padding-top: 0.42rem;
+  border-top: 1px solid #dbeafe;
+}
+
+.fx-plan-apply-inline-btn {
+  height: 1.8rem;
+  padding: 0 0.62rem;
+  border-radius: 999px;
+  border: 1px solid #2563eb;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.fx-plan-apply-inline-btn:hover {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.fx-plan-apply-inline-btn:disabled {
+  opacity: 0.5;
+}
+
+.fx-plan-apply-help-note {
+  margin: 0 0 0.56rem;
+  color: #334155;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
 .fx-msg-user .fx-msg-bubble {
   background: #dbeafe;
   border-color: #93c5fd;
@@ -887,6 +924,10 @@ body {
 }
 
 .fx-user-input-option-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.16rem;
   border: 1px solid #93c5fd;
   border-radius: 12px;
   width: 100%;
@@ -898,6 +939,17 @@ body {
   font-weight: 600;
   line-height: 1.25;
   text-align: left;
+}
+
+.fx-user-input-option-label {
+  color: #1e40af;
+}
+
+.fx-user-input-option-desc {
+  font-size: 0.76rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #475569;
 }
 
 .fx-user-input-option-btn:disabled {
