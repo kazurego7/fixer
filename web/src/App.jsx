@@ -564,7 +564,12 @@ function ChatPage() {
               );
             }
             return (
-              <div key={item.id} className={`fx-msg fx-msg-${item.role}`}>
+              <div
+                key={item.id}
+                className={`fx-msg fx-msg-${item.role}`}
+                data-msg-id={String(item.id || '')}
+                data-msg-role={item.role}
+              >
                 <div className="fx-msg-bubble">
                   {item.text ? <p className="fx-user-line">{item.text}</p> : null}
                   {Array.isArray(item.attachments) && item.attachments.length > 0 ? (
@@ -945,6 +950,9 @@ export default function AppRoot() {
   const resumeStreamingTurnIdRef = useRef('');
   const didBootstrapRef = useRef(false);
   const lastPathRef = useRef(getCurrentPath());
+  const chatEntryPathRef = useRef(getCurrentPath());
+  const lastChatEntryAlignKeyRef = useRef('');
+  const chatEntryScrollTopRef = useRef(0);
   const activeThreadRef = useRef(activeThreadId);
   const activeTurnIdRef = useRef('');
   const backgroundInterruptedTurnRef = useRef(false);
@@ -1930,6 +1938,34 @@ export default function AppRoot() {
     setCurrentPath(next);
   }
 
+  function scrollLastUserMessageToTopOrKeepPosition() {
+    const container = outputRef.current;
+    if (!(container instanceof HTMLElement)) return false;
+
+    const lastUserItem = [...outputItems].reverse().find((item) => item?.role === 'user');
+    if (!lastUserItem?.id) {
+      if (outputItems.length === 0) return false;
+      container.scrollTop = chatEntryScrollTopRef.current;
+      return true;
+    }
+
+    const userNodes = container.querySelectorAll('[data-msg-role="user"]');
+    let target = null;
+    for (const node of userNodes) {
+      if (node instanceof HTMLElement && node.dataset.msgId === String(lastUserItem.id)) {
+        target = node;
+        break;
+      }
+    }
+    if (!(target instanceof HTMLElement)) return false;
+
+    target.scrollIntoView({ behavior: 'auto', block: 'start' });
+    const containerTop = container.getBoundingClientRect().top;
+    const targetTop = target.getBoundingClientRect().top;
+    container.scrollTop += targetTop - containerTop;
+    return true;
+  }
+
   useEffect(() => {
     if (didBootstrapRef.current) return;
     didBootstrapRef.current = true;
@@ -1963,6 +1999,15 @@ export default function AppRoot() {
     setSelectedRepo(null);
     fetchRepos(query).catch(() => {});
   }, [currentPath, connected, query]);
+
+  useEffect(() => {
+    const prevPath = chatEntryPathRef.current;
+    chatEntryPathRef.current = currentPath;
+    if (currentPath !== '/chat/' || prevPath === '/chat/') return;
+    lastChatEntryAlignKeyRef.current = '';
+    const node = outputRef.current;
+    chatEntryScrollTopRef.current = node instanceof HTMLElement ? node.scrollTop : 0;
+  }, [currentPath]);
 
   useEffect(() => {
     activeThreadRef.current = activeThreadId;
@@ -2072,6 +2117,33 @@ export default function AppRoot() {
     if (!autoScrollRef.current || !outputRef.current) return;
     outputRef.current.scrollTop = outputRef.current.scrollHeight;
   }, [outputItems]);
+
+  useEffect(() => {
+    if (currentPath !== '/chat/' || !chatVisible) return;
+    if (typeof window === 'undefined') return;
+    if (outputItems.length === 0) return;
+    const alignKey = `${String(activeThreadId || '')}:${currentPath}`;
+    if (lastChatEntryAlignKeyRef.current === alignKey) return;
+    let attempts = 0;
+    let rafId = 0;
+    const tick = () => {
+      attempts += 1;
+      const done = scrollLastUserMessageToTopOrKeepPosition();
+      if (done) {
+        lastChatEntryAlignKeyRef.current = alignKey;
+        return;
+      }
+      if (attempts >= 12) return;
+      rafId = window.requestAnimationFrame(tick);
+    };
+    rafId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [currentPath, chatVisible, outputItems, activeThreadId]);
+
+  useEffect(() => {
+    if (currentPath === '/chat/') return;
+    lastChatEntryAlignKeyRef.current = '';
+  }, [currentPath]);
 
   useEffect(() => {
     if (!activeThreadId) return;
