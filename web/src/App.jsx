@@ -302,14 +302,11 @@ function ChatPage() {
     awaitingFirstStreamChunk,
     hasReasoningStarted,
     hasAnswerStarted,
-    pushSupported,
-    pushEnabled,
-    pushBusy,
-    pushLabel,
-    enablePushNotifications,
     sendTurn,
     cancelTurn,
     startNewThread,
+    canReturnToPreviousThread,
+    returnToPreviousThread,
     activeCollaborationMode,
     setActiveCollaborationMode,
     pendingUserInputRequests,
@@ -463,73 +460,45 @@ function ChatPage() {
             ←
           </button>
           <span className="fx-repo-pill">{activeRepoFullName}</span>
-          <button
-            className="fx-push-icon"
-            type="button"
-            onClick={enablePushNotifications}
-            disabled={!pushSupported || pushBusy}
-            aria-label={pushEnabled ? '通知を無効化' : '通知を有効化'}
-            title={pushLabel}
-            data-testid="push-enable-button"
-          >
-            <svg
-              className="fx-push-icon-svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-              aria-hidden="true"
+          {canReturnToPreviousThread ? (
+            <button
+              className="fx-new-thread-icon"
+              type="button"
+              onClick={returnToPreviousThread}
+              disabled={busy || streaming}
+              aria-label="前のスレッドに戻る"
+              title="前のスレッドに戻る"
+              data-testid="return-thread-button"
             >
-              {pushEnabled ? (
-                <>
-                  <path d="M10 18a2 2 0 1 0 4 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  <path
-                    d="M12 3a6 6 0 0 0 -6 6v4.586l-2 2.414h16l-2 -2.414v-4.586a6 6 0 0 0 -6 -6z"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </>
-              ) : (
-                <>
-                  <path d="M10 18a2 2 0 1 0 4 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  <path
-                    d="M12 3a6 6 0 0 0 -6 6v4.586l-2 2.414h16l-2 -2.414v-4.586a6 6 0 0 0 -6 -6z"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <path d="M3 3l18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                </>
-              )}
-            </svg>
-          </button>
-          <button
-            className="fx-new-thread-icon"
-            type="button"
-            onClick={startNewThread}
-            disabled={busy || streaming}
-            aria-label="新規スレッド"
-            title="新規スレッド"
-            data-testid="new-thread-button"
-          >
-            <svg
-              className="fx-new-thread-icon-svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-              aria-hidden="true"
+              ↩
+            </button>
+          ) : (
+            <button
+              className="fx-new-thread-icon"
+              type="button"
+              onClick={startNewThread}
+              disabled={busy || streaming}
+              aria-label="新規スレッド"
+              title="新規スレッド"
+              data-testid="new-thread-button"
             >
-              <path
-                d="M16.8617 4.48667L18.5492 2.79917C19.2814 2.06694 20.4686 2.06694 21.2008 2.79917C21.9331 3.53141 21.9331 4.71859 21.2008 5.45083L10.5822 16.0695C10.0535 16.5981 9.40144 16.9868 8.68489 17.2002L6 18L6.79978 15.3151C7.01323 14.5986 7.40185 13.9465 7.93052 13.4178L16.8617 4.48667ZM16.8617 4.48667L19.5 7.12499M18 14V18.75C18 19.9926 16.9926 21 15.75 21H5.25C4.00736 21 3 19.9926 3 18.75V8.24999C3 7.00735 4.00736 5.99999 5.25 5.99999H10"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
+              <svg
+                className="fx-new-thread-icon-svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path
+                  d="M16.8617 4.48667L18.5492 2.79917C19.2814 2.06694 20.4686 2.06694 21.2008 2.79917C21.9331 3.53141 21.9331 4.71859 21.2008 5.45083L10.5822 16.0695C10.0535 16.5981 9.40144 16.9868 8.68489 17.2002L6 18L6.79978 15.3151C7.01323 14.5986 7.40185 13.9465 7.93052 13.4178L16.8617 4.48667ZM16.8617 4.48667L19.5 7.12499M18 14V18.75C18 19.9926 16.9926 21 15.75 21H5.25C4.00736 21 3 19.9926 3 18.75V8.24999C3 7.00735 4.00736 5.99999 5.25 5.99999H10"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          )}
         </div>
 
         <article className="fx-chat-scroll" ref={outputRef}>
@@ -927,10 +896,7 @@ export default function AppRoot() {
   const [awaitingFirstStreamChunk, setAwaitingFirstStreamChunk] = useState(false);
   const [hasReasoningStarted, setHasReasoningStarted] = useState(false);
   const [hasAnswerStarted, setHasAnswerStarted] = useState(false);
-  const [pushSupported, setPushSupported] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
-  const [pushBusy, setPushBusy] = useState(false);
-  const [pushLabel, setPushLabel] = useState('通知を有効化');
   const [currentPath, setCurrentPath] = useState(getCurrentPath());
   const [threadByRepo, setThreadByRepo] = useState(() => {
     if (typeof window === 'undefined') return {};
@@ -948,6 +914,7 @@ export default function AppRoot() {
   const [pendingUserInputRequests, setPendingUserInputRequests] = useState([]);
   const [pendingUserInputDrafts, setPendingUserInputDrafts] = useState({});
   const [pendingUserInputBusy, setPendingUserInputBusy] = useState({});
+  const [pendingThreadReturn, setPendingThreadReturn] = useState(null);
 
   const outputRef = useRef(null);
   const autoScrollRef = useRef(true);
@@ -1036,76 +1003,54 @@ export default function AppRoot() {
     return data;
   }
 
-  async function disablePushNotifications() {
-    const reg = await ensureServiceWorkerRegistration();
-    const subscription = await reg.pushManager.getSubscription();
-    const endpointFromSub = subscription?.endpoint ? String(subscription.endpoint) : '';
-    const endpoint = endpointFromSub || pushEndpointRef.current || '';
-
-    if (endpoint) {
-      await fetch('/api/push/unsubscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoint })
-      }).catch(() => {});
-    }
-    if (subscription) {
-      await subscription.unsubscribe().catch(() => {});
-    }
-    pushEndpointRef.current = '';
-    window.localStorage.removeItem(PUSH_ENDPOINT_KEY);
-    setPushEnabled(false);
-    setPushLabel('通知を有効化');
-  }
-
-  async function enablePushNotifications() {
-    if (typeof window === 'undefined') return;
-    if (!pushSupported) {
-      return;
-    }
-    if (!window.isSecureContext) {
-      toast('HTTPSでアクセスしてください');
-      return;
-    }
-    if (!pushPublicKeyRef.current) {
-      toast('Push設定が未完了です');
-      return;
+  async function ensurePushNotificationsEnabled(threadId = activeThreadRef.current) {
+    if (typeof window === 'undefined') return false;
+    const supported =
+      window.isSecureContext &&
+      'serviceWorker' in navigator &&
+      'PushManager' in window &&
+      'Notification' in window;
+    if (!supported) {
+      setPushEnabled(false);
+      return false;
     }
 
-    setPushBusy(true);
     try {
-      if (pushEnabled) {
-        await disablePushNotifications();
-        toast('Push通知を無効化しました');
-        return;
+      if (!pushPublicKeyRef.current) {
+        const config = await fetchPushConfig();
+        if (!config.enabled || !config.publicKey) {
+          setPushEnabled(false);
+          return false;
+        }
+        pushPublicKeyRef.current = String(config.publicKey);
       }
 
-      const permission = await Notification.requestPermission();
-      if (permission !== 'granted') {
+      if (Notification.permission === 'denied') {
         setPushEnabled(false);
-        setPushLabel(permission === 'denied' ? '通知が拒否されています' : '通知を有効化');
-        return;
+        return false;
       }
 
       const reg = await ensureServiceWorkerRegistration();
       let subscription = await reg.pushManager.getSubscription();
       if (!subscription) {
+        const permission =
+          Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+        if (permission !== 'granted') {
+          setPushEnabled(false);
+          return false;
+        }
         subscription = await reg.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: decodeBase64UrlToUint8Array(pushPublicKeyRef.current)
         });
       }
 
-      await syncPushSubscription(subscription, activeThreadRef.current);
+      await syncPushSubscription(subscription, threadId);
       setPushEnabled(true);
-      setPushLabel('通知を無効化');
-      toast('Push通知を有効化しました');
-    } catch (e) {
+      return true;
+    } catch {
       setPushEnabled(false);
-      setPushLabel('通知設定に失敗しました');
-      toast(`通知設定失敗: ${String(e.message || 'unknown_error')}`);
-    } finally {
-      setPushBusy(false);
+      return false;
     }
   }
 
@@ -1859,6 +1804,13 @@ export default function AppRoot() {
       toast(`Thread再接続失敗: ${String(e.message || 'unknown_error')}`);
       return;
     }
+    if (
+      pendingThreadReturn &&
+      pendingThreadReturn.repoFullName === activeRepoFullName &&
+      pendingThreadReturn.toThreadId === threadIdToUse
+    ) {
+      setPendingThreadReturn(null);
+    }
 
     if (!streaming) {
       await startTurnStream(prompt, attachmentsToSend, threadIdToUse, true);
@@ -1905,9 +1857,19 @@ export default function AppRoot() {
     }
     setBusy(true);
     try {
+      const previousThreadId = String(activeThreadRef.current || '');
       const id = await createThread(activeRepoFullName);
       setActiveThreadId(id);
       setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: id }));
+      if (previousThreadId && previousThreadId !== id) {
+        setPendingThreadReturn({
+          repoFullName: activeRepoFullName,
+          fromThreadId: previousThreadId,
+          toThreadId: id
+        });
+      } else {
+        setPendingThreadReturn(null);
+      }
       setOutputItems([]);
       setMessage('');
       setPendingAttachments([]);
@@ -1959,58 +1921,7 @@ export default function AppRoot() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-
-    const supported =
-      window.isSecureContext &&
-      'serviceWorker' in navigator &&
-      'PushManager' in window &&
-      'Notification' in window;
-    setPushSupported(supported);
-
-    if (!supported) {
-      setPushEnabled(false);
-      setPushLabel(window.isSecureContext ? 'このブラウザはPush非対応' : 'HTTPSでアクセスしてください');
-      return;
-    }
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const config = await fetchPushConfig();
-        if (cancelled) return;
-        if (!config.enabled || !config.publicKey) {
-          setPushEnabled(false);
-          setPushLabel('サーバーのPush設定が未完了です');
-          return;
-        }
-        pushPublicKeyRef.current = String(config.publicKey);
-        const reg = await ensureServiceWorkerRegistration();
-        if (cancelled) return;
-        if (Notification.permission === 'denied') {
-          setPushEnabled(false);
-          setPushLabel('通知が拒否されています');
-          return;
-        }
-        const subscription = await reg.pushManager.getSubscription();
-        if (!subscription) {
-          setPushEnabled(false);
-          setPushLabel('通知を有効化');
-          return;
-        }
-        await syncPushSubscription(subscription, activeThreadRef.current);
-        if (cancelled) return;
-        setPushEnabled(true);
-        setPushLabel('通知を無効化');
-      } catch {
-        if (cancelled) return;
-        setPushEnabled(false);
-        setPushLabel('通知を有効化');
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    ensurePushNotificationsEnabled(activeThreadRef.current).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -2101,6 +2012,11 @@ export default function AppRoot() {
   }, [activeThreadId, pushEnabled]);
 
   useEffect(() => {
+    if (!activeThreadId) return;
+    ensurePushNotificationsEnabled(activeThreadId).catch(() => {});
+  }, [activeThreadId]);
+
+  useEffect(() => {
     if (activeThreadId && activeRepoFullName) {
       window.localStorage.setItem(LAST_THREAD_ID_KEY, activeThreadId);
       window.localStorage.setItem(LAST_REPO_FULLNAME_KEY, activeRepoFullName);
@@ -2175,6 +2091,27 @@ export default function AppRoot() {
     setCollaborationModeByRepo((prev) => ({ ...prev, [activeRepoFullName]: next }));
   }
 
+  const canReturnToPreviousThread = Boolean(
+    pendingThreadReturn &&
+      pendingThreadReturn.repoFullName === activeRepoFullName &&
+      pendingThreadReturn.toThreadId === activeThreadId &&
+      pendingThreadReturn.fromThreadId
+  );
+
+  function returnToPreviousThread() {
+    if (!canReturnToPreviousThread || !pendingThreadReturn) return;
+    const fallbackThreadId = String(pendingThreadReturn.fromThreadId || '');
+    if (!fallbackThreadId) {
+      setPendingThreadReturn(null);
+      toast('前のスレッドが見つかりません');
+      return;
+    }
+    setActiveThreadId(fallbackThreadId);
+    setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: fallbackThreadId }));
+    restoreOutputForThread(fallbackThreadId);
+    setPendingThreadReturn(null);
+  }
+
   const ctx = useMemo(
     () => ({
       connected,
@@ -2206,11 +2143,6 @@ export default function AppRoot() {
       awaitingFirstStreamChunk,
       hasReasoningStarted,
       hasAnswerStarted,
-      pushSupported,
-      pushEnabled,
-      pushBusy,
-      pushLabel,
-      enablePushNotifications,
       navigate,
       bootstrapConnection,
       fetchRepos,
@@ -2218,6 +2150,8 @@ export default function AppRoot() {
       sendTurn,
       cancelTurn,
       startNewThread,
+      canReturnToPreviousThread,
+      returnToPreviousThread,
       activeCollaborationMode,
       setActiveCollaborationMode,
       pendingUserInputRequests,
@@ -2247,12 +2181,9 @@ export default function AppRoot() {
       awaitingFirstStreamChunk,
       hasReasoningStarted,
       hasAnswerStarted,
-      pushSupported,
-      pushEnabled,
-      pushBusy,
-      pushLabel,
       navigate,
       activeCollaborationMode,
+      canReturnToPreviousThread,
       pendingUserInputRequests,
       pendingUserInputBusy,
       pendingUserInputDrafts
