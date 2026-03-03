@@ -470,7 +470,28 @@ function ChatPage() {
               title="前のスレッドに戻る"
               data-testid="return-thread-button"
             >
-              ↩
+              <svg
+                className="fx-new-thread-icon-svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path
+                  d="M9 14L4 9L9 4"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M4 9H15C17.2091 9 19 10.7909 19 13V13C19 15.2091 17.2091 17 15 17H14"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
             </button>
           ) : (
             <button
