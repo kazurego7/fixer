@@ -9,6 +9,7 @@ const LAST_THREAD_ID_KEY = 'fx:lastThreadId';
 const LAST_REPO_FULLNAME_KEY = 'fx:lastRepoFullName';
 const THREAD_BY_REPO_KEY = 'fx:threadByRepo';
 const COLLABORATION_MODE_BY_REPO_KEY = 'fx:collaborationModeByRepo';
+const MODEL_BY_REPO_KEY = 'fx:modelByRepo';
 const PUSH_ENDPOINT_KEY = 'fx:pushEndpoint';
 const DEFAULT_COLLABORATION_MODE = 'default';
 const AppCtx = createContext(null);
@@ -80,6 +81,24 @@ function loadThreadMessages(threadId) {
   if (!threadId || typeof window === 'undefined') return [];
   const items = loadJsonFromStorage(threadMessagesKey(threadId), []);
   return Array.isArray(items) ? items : [];
+}
+
+function normalizeModelOptions(models) {
+  const src = Array.isArray(models) ? models : [];
+  const out = [];
+  const seen = new Set();
+  for (const item of src) {
+    if (!item || typeof item !== 'object') continue;
+    const id = String(item.id || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      name: String(item.name || id),
+      description: String(item.description || '')
+    });
+  }
+  return out;
 }
 
 function ReposPage() {
@@ -307,6 +326,15 @@ function ChatPage() {
     startNewThread,
     canReturnToPreviousThread,
     returnToPreviousThread,
+    chatSettingsOpen,
+    openChatSettings,
+    closeChatSettings,
+    availableModels,
+    modelsLoading,
+    modelsError,
+    loadAvailableModels,
+    activeRepoModel,
+    setActiveRepoModel,
     activeCollaborationMode,
     setActiveCollaborationMode,
     pendingUserInputRequests,
@@ -347,6 +375,11 @@ function ChatPage() {
       : null;
   const canGoPrev = previewIndex !== null && previewIndex > 0;
   const canGoNext = previewIndex !== null && previewIndex < pendingAttachments.length - 1;
+  const activeModelLabel = useMemo(() => {
+    if (!activeRepoModel) return '未設定';
+    const hit = availableModels.find((item) => item.id === activeRepoModel);
+    return hit?.name || activeRepoModel;
+  }, [availableModels, activeRepoModel]);
   const keepComposerFocus = (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
@@ -459,7 +492,29 @@ function ChatPage() {
           >
             ←
           </button>
-          <span className="fx-repo-pill">{activeRepoFullName}</span>
+          <button
+            className="fx-repo-pill fx-repo-pill-btn"
+            type="button"
+            onClick={openChatSettings}
+            data-testid="chat-settings-trigger"
+            aria-label="チャット設定を開く"
+            title="チャット設定"
+          >
+            <span className="fx-repo-pill-text">{activeRepoFullName}</span>
+            <span className="fx-repo-pill-gear" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+                <path
+                  d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37c.996 -1.636 .04 -2.433 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1.636 .996 2.433 .04 2.572 -1.065z"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" stroke="currentColor" strokeWidth="1.7" />
+              </svg>
+            </span>
+          </button>
           {canReturnToPreviousThread ? (
             <button
               className="fx-new-thread-icon"
@@ -636,6 +691,69 @@ function ChatPage() {
             </div>
           ) : null}
         </article>
+
+        {chatSettingsOpen ? (
+          <div className="fx-chat-settings-overlay" onClick={closeChatSettings} data-testid="chat-settings-modal">
+            <section
+              className="fx-chat-settings-panel"
+              role="dialog"
+              aria-modal="true"
+              aria-label="チャット設定"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <header className="fx-chat-settings-head">
+                <h3>チャット設定</h3>
+                <button
+                  type="button"
+                  className="fx-chat-settings-close"
+                  onClick={closeChatSettings}
+                  data-testid="chat-settings-close"
+                  aria-label="設定を閉じる"
+                >
+                  ×
+                </button>
+              </header>
+              <div className="fx-chat-settings-section">
+                <div className="fx-chat-settings-label">モデル</div>
+                <div className="fx-chat-settings-current">現在: {activeModelLabel}</div>
+                {modelsLoading ? <p className="fx-mini">モデル一覧を読み込み中...</p> : null}
+                {modelsError ? (
+                  <div className="fx-chat-settings-error">
+                    <p className="fx-mini">読み込みに失敗しました</p>
+                    <Button small tonal onClick={() => loadAvailableModels(true)} data-testid="model-reload-button">
+                      再読み込み
+                    </Button>
+                  </div>
+                ) : null}
+                {!modelsLoading && availableModels.length > 0 ? (
+                  <div className="fx-model-list" data-testid="model-list">
+                    {availableModels.map((model) => {
+                      const testIdModel = model.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+                      const selected = model.id === activeRepoModel;
+                      return (
+                        <button
+                          key={model.id}
+                          type="button"
+                          className={`fx-model-option${selected ? ' is-selected' : ''}`}
+                          onClick={() => setActiveRepoModel(model.id)}
+                          disabled={streaming}
+                          data-testid={`model-option-${testIdModel}`}
+                        >
+                          <div className="fx-model-option-title">{model.name}</div>
+                          <div className="fx-model-option-id">{model.id}</div>
+                          {model.description ? <div className="fx-model-option-desc">{model.description}</div> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {!modelsLoading && !modelsError && availableModels.length === 0 ? (
+                  <p className="fx-mini">利用可能なモデルが見つかりませんでした。</p>
+                ) : null}
+              </div>
+            </section>
+          </div>
+        ) : null}
 
         <div className="fx-composer" onPointerDownCapture={keepComposerFocus} data-testid="composer">
           {isInputFocused ? (
@@ -937,6 +1055,15 @@ export default function AppRoot() {
     const map = loadJsonFromStorage(COLLABORATION_MODE_BY_REPO_KEY, {});
     return map && typeof map === 'object' ? map : {};
   });
+  const [modelByRepo, setModelByRepo] = useState(() => {
+    if (typeof window === 'undefined') return {};
+    const map = loadJsonFromStorage(MODEL_BY_REPO_KEY, {});
+    return map && typeof map === 'object' ? map : {};
+  });
+  const [availableModels, setAvailableModels] = useState([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState('');
+  const [chatSettingsOpen, setChatSettingsOpen] = useState(false);
   const [pendingUserInputRequests, setPendingUserInputRequests] = useState([]);
   const [pendingUserInputDrafts, setPendingUserInputDrafts] = useState({});
   const [pendingUserInputBusy, setPendingUserInputBusy] = useState({});
@@ -955,6 +1082,7 @@ export default function AppRoot() {
   const chatEntryScrollTopRef = useRef(0);
   const activeThreadRef = useRef(activeThreadId);
   const activeTurnIdRef = useRef('');
+  const activeRepoRef = useRef(activeRepoFullName);
   const backgroundInterruptedTurnRef = useRef(false);
   const shouldResumeOnVisibleRef = useRef(false);
   const pushEndpointRef = useRef(
@@ -965,6 +1093,58 @@ export default function AppRoot() {
 
   function toast(text) {
     f7?.toast?.create({ text, closeTimeout: 1400, position: 'center' }).open();
+  }
+
+  function getRepoModel(repoFullName = activeRepoRef.current) {
+    if (!repoFullName) return '';
+    return String(modelByRepo[repoFullName] || '').trim();
+  }
+
+  function setRepoModel(repoFullName, modelId) {
+    if (!repoFullName) return;
+    const normalized = String(modelId || '').trim();
+    setModelByRepo((prev) => {
+      const current = String(prev[repoFullName] || '').trim();
+      if (current === normalized) return prev;
+      if (!normalized) {
+        const next = { ...prev };
+        delete next[repoFullName];
+        return next;
+      }
+      return { ...prev, [repoFullName]: normalized };
+    });
+  }
+
+  function setActiveRepoModel(modelId) {
+    setRepoModel(activeRepoRef.current, modelId);
+  }
+
+  async function loadAvailableModels(force = false) {
+    if (modelsLoading) return;
+    if (!force && availableModels.length > 0) return;
+    setModelsLoading(true);
+    setModelsError('');
+    try {
+      const res = await fetch('/api/models');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'models_load_failed');
+      const list = normalizeModelOptions(data.models);
+      setAvailableModels(list);
+    } catch (e) {
+      setModelsError(String(e.message || 'models_load_failed'));
+      setAvailableModels([]);
+    } finally {
+      setModelsLoading(false);
+    }
+  }
+
+  function openChatSettings() {
+    setChatSettingsOpen(true);
+    loadAvailableModels(false).catch(() => {});
+  }
+
+  function closeChatSettings() {
+    setChatSettingsOpen(false);
   }
 
   async function addImageAttachments(fileList) {
@@ -1398,16 +1578,21 @@ export default function AppRoot() {
     const res = await fetch(`/api/threads/messages?threadId=${encodeURIComponent(threadId)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'thread_messages_failed');
-    return expandAssistantItems(Array.isArray(data.items) ? data.items : []);
+    return {
+      items: expandAssistantItems(Array.isArray(data.items) ? data.items : []),
+      model: String(data.model || '').trim()
+    };
   }
 
-  async function ensureThread(repoFullName, preferredThreadId = null) {
+  async function ensureThread(repoFullName, preferredThreadId = null, model = '') {
+    const normalizedModel = String(model || '').trim();
     const res = await fetch('/api/threads/ensure', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         repoFullName,
-        preferred_thread_id: preferredThreadId || undefined
+        preferred_thread_id: preferredThreadId || undefined,
+        model: normalizedModel || undefined
       })
     });
     const data = await res.json();
@@ -1481,11 +1666,12 @@ export default function AppRoot() {
     throw new Error(`clone_timeout_${Math.floor(timeoutMs / 1000)}s`);
   }
 
-  async function createThread(repoFullName) {
+  async function createThread(repoFullName, model = '') {
+    const normalizedModel = String(model || '').trim();
     const res = await fetch('/api/threads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repoFullName, title: `thread-${Date.now()}` })
+      body: JSON.stringify({ repoFullName, title: `thread-${Date.now()}`, model: normalizedModel || undefined })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'thread_create_failed');
@@ -1494,7 +1680,7 @@ export default function AppRoot() {
     return id;
   }
 
-  function restoreOutputForThread(threadId) {
+  function restoreOutputForThread(threadId, repoFullName = activeRepoRef.current) {
     if (!threadId) return;
     // スレッド切替直後でも、到着した履歴を破棄しないよう即時更新する。
     activeThreadRef.current = threadId;
@@ -1504,9 +1690,10 @@ export default function AppRoot() {
       // 取得失敗時は既存表示を維持する。
     });
     fetchThreadMessages(threadId)
-      .then((items) => {
+      .then((payload) => {
         if (activeThreadRef.current !== threadId) return;
-        setOutputItems(items);
+        setOutputItems(payload.items);
+        if (payload.model && repoFullName) setRepoModel(repoFullName, payload.model);
       })
       .catch(() => {
         // API取得に失敗した場合はキャッシュ表示を維持する。
@@ -1530,14 +1717,14 @@ export default function AppRoot() {
         );
       }
       let threadId = threadByRepo[repo.fullName] || null;
-      threadId = await ensureThread(repo.fullName, threadId);
+      threadId = await ensureThread(repo.fullName, threadId, getRepoModel(repo.fullName));
 
       if (!threadId) throw new Error('thread_not_found');
       setActiveThreadId(threadId);
       setActiveRepoFullName(repo.fullName);
       setChatVisible(true);
       setThreadByRepo((prev) => ({ ...prev, [repo.fullName]: threadId }));
-      restoreOutputForThread(threadId);
+      restoreOutputForThread(threadId, repo.fullName);
       toast('接続しました');
       return true;
     } catch (e) {
@@ -1606,6 +1793,7 @@ export default function AppRoot() {
 
     try {
       async function postTurn(targetThreadId) {
+        const model = getRepoModel(activeRepoRef.current);
         return fetch('/api/turns/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1613,7 +1801,8 @@ export default function AppRoot() {
             thread_id: targetThreadId,
             input: prompt,
             attachments: attachmentsToSend,
-            collaboration_mode: activeCollaborationMode
+            collaboration_mode: activeCollaborationMode,
+            model: model || undefined
           }),
           signal: controller.signal
         });
@@ -1623,11 +1812,11 @@ export default function AppRoot() {
       if (!res.ok) {
         const firstErr = await res.text();
         if (isRecoverableThreadError(firstErr)) {
-          const recovered = await ensureThread(activeRepoFullName, null);
+          const recovered = await ensureThread(activeRepoFullName, null, getRepoModel(activeRepoFullName));
           threadIdToUse = recovered;
           setActiveThreadId(recovered);
           setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: recovered }));
-          restoreOutputForThread(recovered);
+          restoreOutputForThread(recovered, activeRepoFullName);
           res = await postTurn(threadIdToUse);
         } else {
           throw new Error(firstErr || 'send_failed');
@@ -1805,10 +1994,10 @@ export default function AppRoot() {
     }
     if (!activeThreadId) {
       try {
-        const created = await ensureThread(activeRepoFullName, null);
+        const created = await ensureThread(activeRepoFullName, null, getRepoModel(activeRepoFullName));
         setActiveThreadId(created);
         setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: created }));
-        restoreOutputForThread(created);
+        restoreOutputForThread(created, activeRepoFullName);
       } catch (e) {
         toast(`Thread準備失敗: ${String(e.message || 'unknown_error')}`);
         return;
@@ -1822,12 +2011,12 @@ export default function AppRoot() {
     if (!threadIdToUse) return;
 
     try {
-      const ensured = await ensureThread(activeRepoFullName, threadIdToUse);
+      const ensured = await ensureThread(activeRepoFullName, threadIdToUse, getRepoModel(activeRepoFullName));
       threadIdToUse = ensured;
       if (ensured !== activeThreadId) {
         setActiveThreadId(ensured);
         setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: ensured }));
-        restoreOutputForThread(ensured);
+        restoreOutputForThread(ensured, activeRepoFullName);
       }
     } catch (e) {
       toast(`Thread再接続失敗: ${String(e.message || 'unknown_error')}`);
@@ -1887,7 +2076,7 @@ export default function AppRoot() {
     setBusy(true);
     try {
       const previousThreadId = String(activeThreadRef.current || '');
-      const id = await createThread(activeRepoFullName);
+      const id = await createThread(activeRepoFullName, getRepoModel(activeRepoFullName));
       setActiveThreadId(id);
       setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: id }));
       if (previousThreadId && previousThreadId !== id) {
@@ -1992,6 +2181,11 @@ export default function AppRoot() {
   }, [currentPath, chatVisible, connected]);
 
   useEffect(() => {
+    if (currentPath === '/chat/' && chatVisible) return;
+    setChatSettingsOpen(false);
+  }, [currentPath, chatVisible]);
+
+  useEffect(() => {
     if (!connected) return;
     const prevPath = lastPathRef.current;
     lastPathRef.current = currentPath;
@@ -2008,6 +2202,10 @@ export default function AppRoot() {
     const node = outputRef.current;
     chatEntryScrollTopRef.current = node instanceof HTMLElement ? node.scrollTop : 0;
   }, [currentPath]);
+
+  useEffect(() => {
+    activeRepoRef.current = activeRepoFullName;
+  }, [activeRepoFullName]);
 
   useEffect(() => {
     activeThreadRef.current = activeThreadId;
@@ -2109,6 +2307,10 @@ export default function AppRoot() {
   }, [collaborationModeByRepo]);
 
   useEffect(() => {
+    window.localStorage.setItem(MODEL_BY_REPO_KEY, JSON.stringify(modelByRepo));
+  }, [modelByRepo]);
+
+  useEffect(() => {
     if (!activeThreadId) return;
     window.localStorage.setItem(threadMessagesKey(activeThreadId), JSON.stringify(outputItems.slice(-200)));
   }, [activeThreadId, outputItems]);
@@ -2147,8 +2349,8 @@ export default function AppRoot() {
 
   useEffect(() => {
     if (!activeThreadId) return;
-    restoreOutputForThread(activeThreadId);
-  }, [activeThreadId]);
+    restoreOutputForThread(activeThreadId, activeRepoFullName);
+  }, [activeThreadId, activeRepoFullName]);
 
   useEffect(() => {
     if (activeThreadId) return;
@@ -2171,6 +2373,7 @@ export default function AppRoot() {
   const clonedRepos = repos.filter((repo) => repo.cloneState?.status === 'cloned');
   const notClonedRepos = repos.filter((repo) => repo.cloneState?.status !== 'cloned');
   const filteredRepos = repoFilter === 'cloned' ? clonedRepos : repoFilter === 'not_cloned' ? notClonedRepos : repos;
+  const activeRepoModel = activeRepoFullName ? String(modelByRepo[activeRepoFullName] || '').trim() : '';
   const activeCollaborationMode =
     activeRepoFullName &&
     (collaborationModeByRepo[activeRepoFullName] === 'plan' ||
@@ -2201,7 +2404,7 @@ export default function AppRoot() {
     }
     setActiveThreadId(fallbackThreadId);
     setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: fallbackThreadId }));
-    restoreOutputForThread(fallbackThreadId);
+    restoreOutputForThread(fallbackThreadId, activeRepoFullName);
     setPendingThreadReturn(null);
   }
 
@@ -2245,6 +2448,15 @@ export default function AppRoot() {
       startNewThread,
       canReturnToPreviousThread,
       returnToPreviousThread,
+      chatSettingsOpen,
+      openChatSettings,
+      closeChatSettings,
+      availableModels,
+      modelsLoading,
+      modelsError,
+      loadAvailableModels,
+      activeRepoModel,
+      setActiveRepoModel,
       activeCollaborationMode,
       setActiveCollaborationMode,
       pendingUserInputRequests,
@@ -2276,7 +2488,12 @@ export default function AppRoot() {
       hasAnswerStarted,
       navigate,
       activeCollaborationMode,
+      activeRepoModel,
       canReturnToPreviousThread,
+      chatSettingsOpen,
+      availableModels,
+      modelsLoading,
+      modelsError,
       pendingUserInputRequests,
       pendingUserInputBusy,
       pendingUserInputDrafts

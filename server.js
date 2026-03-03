@@ -356,6 +356,33 @@ function buildTurnInput(prompt, attachments) {
   return input;
 }
 
+function normalizeModelId(value) {
+  const model = String(value || '').trim();
+  return model || '';
+}
+
+function normalizeModelListResponse(payload) {
+  const src = Array.isArray(payload?.data)
+    ? payload.data
+    : Array.isArray(payload?.models)
+      ? payload.models
+      : [];
+  const out = [];
+  const seen = new Set();
+  for (const item of src) {
+    if (!item || typeof item !== 'object') continue;
+    const id = normalizeModelId(item.id || item.model || item.name);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      name: String(item.name || item.display_name || id),
+      description: String(item.description || item.summary || '')
+    });
+  }
+  return out;
+}
+
 function normalizeCollaborationMode(value) {
   const normalized = String(value || '')
     .trim()
@@ -1342,6 +1369,17 @@ function buildServer() {
     };
   });
 
+  app.get('/api/models', async (_request, _reply) => {
+    const result = await rpcRequest('model/list', {});
+    const models = normalizeModelListResponse(result);
+    pushRuntimeLog({
+      level: 'info',
+      event: 'models_loaded',
+      count: models.length
+    });
+    return { models };
+  });
+
   app.get('/api/threads/messages', async (request, reply) => {
     const threadId = request.query.threadId;
     if (!threadId) {
@@ -1360,7 +1398,7 @@ function buildServer() {
         threadId,
         count: items.length
       });
-      return { items };
+      return { items, model: model || null };
     } catch (error) {
       if (isThreadMissingError(error)) {
         pushRuntimeLog({
@@ -1368,7 +1406,7 @@ function buildServer() {
           event: 'thread_messages_not_ready',
           threadId
         });
-        return { items: [] };
+        return { items: [], model: null };
       }
       throw error;
     }
@@ -1399,21 +1437,24 @@ function buildServer() {
 
   app.post('/api/threads', async (request, reply) => {
     const body = request.body || {};
+    const model = normalizeModelId(body.model);
     if (!body.repoFullName) {
       reply.code(400);
       return { error: 'repoFullName is required' };
     }
 
     const repoPath = repoPathFromFullName(body.repoFullName);
-    const result = await rpcRequest('thread/start', {
+    const params = {
       cwd: repoPath,
       approvalPolicy: 'never',
       sandbox: 'workspace-write'
-    });
+    };
+    if (model) params.model = model;
+    const result = await rpcRequest('thread/start', params);
     const id = result?.thread?.id;
-    const model = typeof result?.thread?.model === 'string' ? result.thread.model : '';
+    const resolvedModel = typeof result?.thread?.model === 'string' ? result.thread.model : model;
     if (!id) throw new Error('thread_id_missing');
-    if (model) threadModelByThreadId.set(id, model);
+    if (resolvedModel) threadModelByThreadId.set(id, resolvedModel);
     return { id };
   });
 
@@ -1421,12 +1462,14 @@ function buildServer() {
     const body = request.body || {};
     const repoFullName = body.repoFullName;
     const preferredThreadId = body.preferred_thread_id;
+    const model = normalizeModelId(body.model);
     if (!repoFullName) {
       reply.code(400);
       return { error: 'repoFullName is required' };
     }
 
     if (preferredThreadId) {
+      if (model) threadModelByThreadId.set(preferredThreadId, model);
       pushRuntimeLog({
         level: 'info',
         event: 'thread_ensured_preferred',
@@ -1437,15 +1480,17 @@ function buildServer() {
     }
 
     const repoPath = repoPathFromFullName(repoFullName);
-    const result = await rpcRequest('thread/start', {
+    const params = {
       cwd: repoPath,
       approvalPolicy: 'never',
       sandbox: 'workspace-write'
-    });
+    };
+    if (model) params.model = model;
+    const result = await rpcRequest('thread/start', params);
     const id = result?.thread?.id;
-    const model = typeof result?.thread?.model === 'string' ? result.thread.model : '';
+    const resolvedModel = typeof result?.thread?.model === 'string' ? result.thread.model : model;
     if (!id) throw new Error('thread_id_missing');
-    if (model) threadModelByThreadId.set(id, model);
+    if (resolvedModel) threadModelByThreadId.set(id, resolvedModel);
     pushRuntimeLog({
       level: 'info',
       event: 'thread_ensured_new',
@@ -1584,6 +1629,7 @@ function buildServer() {
     const body = request.body || {};
     const threadId = body.thread_id;
     const prompt = String(body.input || '').trim();
+    const selectedModel = normalizeModelId(body.model);
     const collaborationMode = normalizeCollaborationMode(body.collaboration_mode || body.mode);
     if (!threadId || !prompt) {
       reply.code(400);
@@ -1610,9 +1656,18 @@ function buildServer() {
     let preferV2 = false;
     let turnStartOverrides = null;
 
-    if (collaborationMode) {
-      const model = await resolveThreadModel(threadId);
+    if (selectedModel) {
       turnStartOverrides = {
+        ...(turnStartOverrides || {}),
+        model: selectedModel
+      };
+      threadModelByThreadId.set(threadId, selectedModel);
+    }
+
+    if (collaborationMode) {
+      const model = selectedModel || (await resolveThreadModel(threadId));
+      turnStartOverrides = {
+        ...(turnStartOverrides || {}),
         collaborationMode: buildCollaborationMode(collaborationMode, model)
       };
     }
