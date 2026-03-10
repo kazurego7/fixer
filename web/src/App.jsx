@@ -1477,67 +1477,134 @@ export default function AppRoot() {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
+          let evt = null;
           try {
-            const evt = JSON.parse(trimmed);
-            if (evt.type === 'reasoning_delta' && evt.delta) {
-              setAwaitingFirstStreamChunk(false);
-              setHasReasoningStarted(true);
-              reasoningRaw += evt.delta;
-              const displayReasoning = extractDisplayReasoningText(reasoningRaw);
-              if (displayReasoning) setLiveReasoningText(displayReasoning);
-              continue;
-            }
-            if (evt.type === 'answer_delta' && evt.delta) {
-              setAwaitingFirstStreamChunk(false);
-              setHasAnswerStarted(true);
-              answerCommitted += evt.delta;
-              const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-              updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
-              continue;
-            }
-            if (evt.type === 'plan_delta' && evt.delta) {
-              planCommitted += evt.delta;
-              updateAssistant({ plan: planCommitted, status: '' });
-              continue;
-            }
-            if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
-              planCommitted = evt.text;
-              updateAssistant({ plan: planCommitted, status: '' });
-              continue;
-            }
-            if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
-              mergePendingUserInputRequest({
-                requestId: evt.requestId,
-                threadId,
-                turnId,
-                itemId: String(evt.itemId || ''),
-                questions: evt.questions,
-                createdAt: new Date().toISOString()
-              });
-              continue;
-            }
-            if (evt.type === 'started') {
-              const nextTurnId = String(evt.turnId || turnId || '');
-              if (nextTurnId) {
-                setActiveTurnId(nextTurnId);
-                activeTurnIdRef.current = nextTurnId;
-              }
-              continue;
-            }
-            if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) continue;
-            if (evt.type === 'done') {
-              await restoreOutputForThread(threadId);
-              continue;
-            }
-            if (evt.type === 'error') {
-              throw new Error(String(evt.message || 'unknown_error'));
-            }
+            evt = JSON.parse(trimmed);
           } catch {
+            evt = null;
+          }
+          if (!evt) {
             setAwaitingFirstStreamChunk(false);
             setHasAnswerStarted(true);
             answerCommitted += `${line}\n`;
             const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
             updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+            continue;
+          }
+          if (evt.type === 'reasoning_delta' && evt.delta) {
+            setAwaitingFirstStreamChunk(false);
+            setHasReasoningStarted(true);
+            reasoningRaw += evt.delta;
+            const displayReasoning = extractDisplayReasoningText(reasoningRaw);
+            if (displayReasoning) setLiveReasoningText(displayReasoning);
+            continue;
+          }
+          if (evt.type === 'answer_delta' && evt.delta) {
+            setAwaitingFirstStreamChunk(false);
+            setHasAnswerStarted(true);
+            answerCommitted += evt.delta;
+            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
+            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+            continue;
+          }
+          if (evt.type === 'plan_delta' && evt.delta) {
+            planCommitted += evt.delta;
+            updateAssistant({ plan: planCommitted, status: '' });
+            continue;
+          }
+          if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
+            planCommitted = evt.text;
+            updateAssistant({ plan: planCommitted, status: '' });
+            continue;
+          }
+          if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
+            mergePendingUserInputRequest({
+              requestId: evt.requestId,
+              threadId,
+              turnId,
+              itemId: String(evt.itemId || ''),
+              questions: evt.questions,
+              createdAt: new Date().toISOString()
+            });
+            continue;
+          }
+          if (evt.type === 'started') {
+            const nextTurnId = String(evt.turnId || turnId || '');
+            if (nextTurnId) {
+              setActiveTurnId(nextTurnId);
+              activeTurnIdRef.current = nextTurnId;
+            }
+            continue;
+          }
+          if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) continue;
+          if (evt.type === 'done') {
+            await restoreOutputForThread(threadId);
+            continue;
+          }
+          if (evt.type === 'error') {
+            throw new Error(String(evt.message || 'unknown_error'));
+          }
+        }
+      }
+
+      if (lineBuf.trim()) {
+        let evt = null;
+        try {
+          evt = JSON.parse(lineBuf.trim());
+        } catch {
+          evt = null;
+        }
+        if (!evt) {
+          setAwaitingFirstStreamChunk(false);
+          setHasAnswerStarted(true);
+          answerCommitted += lineBuf;
+          const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
+          updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+        } else {
+          if (evt.type === 'reasoning_delta' && evt.delta) {
+            setAwaitingFirstStreamChunk(false);
+            setHasReasoningStarted(true);
+            reasoningRaw += evt.delta;
+            const displayReasoning = extractDisplayReasoningText(reasoningRaw);
+            if (displayReasoning) setLiveReasoningText(displayReasoning);
+          }
+          if (evt.type === 'answer_delta' && evt.delta) {
+            setAwaitingFirstStreamChunk(false);
+            setHasAnswerStarted(true);
+            answerCommitted += evt.delta;
+            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
+            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+          }
+          if (evt.type === 'plan_delta' && evt.delta) {
+            planCommitted += evt.delta;
+            updateAssistant({ plan: planCommitted, status: '' });
+          }
+          if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
+            planCommitted = evt.text;
+            updateAssistant({ plan: planCommitted, status: '' });
+          }
+          if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
+            mergePendingUserInputRequest({
+              requestId: evt.requestId,
+              threadId,
+              turnId,
+              itemId: String(evt.itemId || ''),
+              questions: evt.questions,
+              createdAt: new Date().toISOString()
+            });
+          }
+          if (evt.type === 'started') {
+            const nextTurnId = String(evt.turnId || turnId || '');
+            if (nextTurnId) {
+              setActiveTurnId(nextTurnId);
+              activeTurnIdRef.current = nextTurnId;
+            }
+          }
+          if (evt.type === 'done') {
+            await restoreOutputForThread(threadId);
+          }
+          if (evt.type === 'error') {
+            throw new Error(String(evt.message || 'unknown_error'));
           }
         }
       }
@@ -1864,72 +1931,93 @@ export default function AppRoot() {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
+          let evt = null;
           try {
-            const evt = JSON.parse(trimmed);
-            if (evt.type === 'reasoning_delta' && evt.delta) {
-              setAwaitingFirstStreamChunk(false);
-              setHasReasoningStarted(true);
-              reasoningRaw += evt.delta;
-              const displayReasoning = extractDisplayReasoningText(reasoningRaw);
-              if (displayReasoning) setLiveReasoningText(displayReasoning);
-              continue;
-            }
-            if (evt.type === 'answer_delta' && evt.delta) {
-              setAwaitingFirstStreamChunk(false);
-              setHasAnswerStarted(true);
-              answerCommitted += evt.delta;
-              const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-              updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
-              continue;
-            }
-            if (evt.type === 'plan_delta' && evt.delta) {
-              planCommitted += evt.delta;
-              updateAssistant({ plan: planCommitted, status: '' });
-              continue;
-            }
-            if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
-              planCommitted = evt.text;
-              updateAssistant({ plan: planCommitted, status: '' });
-              continue;
-            }
-            if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
-              mergePendingUserInputRequest({
-                requestId: evt.requestId,
-                threadId: threadIdToUse,
-                turnId: String(evt.turnId || ''),
-                itemId: String(evt.itemId || ''),
-                questions: evt.questions,
-                createdAt: new Date().toISOString()
-              });
-              continue;
-            }
-            if (evt.type === 'started') {
-              const nextTurnId = String(evt.turnId || '');
-              if (nextTurnId) {
-                setActiveTurnId(nextTurnId);
-                activeTurnIdRef.current = nextTurnId;
-              }
-              continue;
-            }
-            if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) {
-              continue;
-            }
-            if (evt.type === 'error') {
-              throw new Error(String(evt.message || 'unknown_error'));
-            }
+            evt = JSON.parse(trimmed);
           } catch {
+            evt = null;
+          }
+          if (!evt) {
             setAwaitingFirstStreamChunk(false);
             setHasAnswerStarted(true);
             answerCommitted += `${line}\n`;
             const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
             updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+            continue;
+          }
+          if (evt.type === 'reasoning_delta' && evt.delta) {
+            setAwaitingFirstStreamChunk(false);
+            setHasReasoningStarted(true);
+            reasoningRaw += evt.delta;
+            const displayReasoning = extractDisplayReasoningText(reasoningRaw);
+            if (displayReasoning) setLiveReasoningText(displayReasoning);
+            continue;
+          }
+          if (evt.type === 'answer_delta' && evt.delta) {
+            setAwaitingFirstStreamChunk(false);
+            setHasAnswerStarted(true);
+            answerCommitted += evt.delta;
+            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
+            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+            continue;
+          }
+          if (evt.type === 'plan_delta' && evt.delta) {
+            planCommitted += evt.delta;
+            updateAssistant({ plan: planCommitted, status: '' });
+            continue;
+          }
+          if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
+            planCommitted = evt.text;
+            updateAssistant({ plan: planCommitted, status: '' });
+            continue;
+          }
+          if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
+            mergePendingUserInputRequest({
+              requestId: evt.requestId,
+              threadId: threadIdToUse,
+              turnId: String(evt.turnId || ''),
+              itemId: String(evt.itemId || ''),
+              questions: evt.questions,
+              createdAt: new Date().toISOString()
+            });
+            continue;
+          }
+          if (evt.type === 'started') {
+            const nextTurnId = String(evt.turnId || '');
+            if (nextTurnId) {
+              setActiveTurnId(nextTurnId);
+              activeTurnIdRef.current = nextTurnId;
+            }
+            continue;
+          }
+          if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) {
+            continue;
+          }
+          if (evt.type === 'error') {
+            throw new Error(String(evt.message || 'unknown_error'));
           }
         }
       }
 
       if (lineBuf.trim()) {
+        let evt = null;
         try {
-          const evt = JSON.parse(lineBuf.trim());
+          evt = JSON.parse(lineBuf.trim());
+        } catch {
+          evt = null;
+        }
+        if (!evt) {
+          setAwaitingFirstStreamChunk(false);
+          setHasAnswerStarted(true);
+          answerCommitted += lineBuf;
+        } else {
+          if (evt.type === 'reasoning_delta' && evt.delta) {
+            setAwaitingFirstStreamChunk(false);
+            setHasReasoningStarted(true);
+            reasoningRaw += evt.delta;
+            const displayReasoning = extractDisplayReasoningText(reasoningRaw);
+            if (displayReasoning) setLiveReasoningText(displayReasoning);
+          }
           if (evt.type === 'answer_delta' && evt.delta) {
             setAwaitingFirstStreamChunk(false);
             setHasAnswerStarted(true);
@@ -1945,10 +2033,26 @@ export default function AppRoot() {
             planCommitted = evt.text;
             updateAssistant({ plan: planCommitted, status: '' });
           }
-        } catch {
-          setAwaitingFirstStreamChunk(false);
-          setHasAnswerStarted(true);
-          answerCommitted += lineBuf;
+          if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
+            mergePendingUserInputRequest({
+              requestId: evt.requestId,
+              threadId: threadIdToUse,
+              turnId: String(evt.turnId || ''),
+              itemId: String(evt.itemId || ''),
+              questions: evt.questions,
+              createdAt: new Date().toISOString()
+            });
+          }
+          if (evt.type === 'started') {
+            const nextTurnId = String(evt.turnId || '');
+            if (nextTurnId) {
+              setActiveTurnId(nextTurnId);
+              activeTurnIdRef.current = nextTurnId;
+            }
+          }
+          if (evt.type === 'error') {
+            throw new Error(String(evt.message || 'unknown_error'));
+          }
         }
       }
 

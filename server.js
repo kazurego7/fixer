@@ -1892,6 +1892,7 @@ if (require.main === module) {
 
 module.exports = {
   buildServer,
+  buildToolUserInputResponsePayload,
   buildTurnStartOverrides,
   buildCollaborationMode,
   repoFolderFromFullName,

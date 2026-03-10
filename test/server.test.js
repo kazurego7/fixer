@@ -4,6 +4,7 @@ const path = require('path');
 
 const {
   buildTurnStartOverrides,
+  buildToolUserInputResponsePayload,
   buildCollaborationMode,
   repoFolderFromFullName,
   repoPathFromFullName,
@@ -87,6 +88,14 @@ test('parseV2TurnNotification parses delta notification', () => {
   assert.equal(parsed.delta, 'abc');
 });
 
+test('parseV2TurnNotification falls back to turn.id when turnId is absent', () => {
+  const parsed = parseV2TurnNotification({
+    method: 'turn/completed',
+    params: { threadId: 't1', turn: { id: 'u-from-turn', status: 'Completed' } }
+  });
+  assert.equal(parsed.turnId, 'u-from-turn');
+});
+
 test('parseLegacyTurnNotification parses codex event', () => {
   const parsed = parseLegacyTurnNotification({
     method: 'codex/event/agent_message_delta',
@@ -99,6 +108,21 @@ test('parseLegacyTurnNotification parses codex event', () => {
   assert.equal(parsed.threadId, 't1');
   assert.equal(parsed.turnId, 'u1');
   assert.equal(parsed.delta, 'abc');
+});
+
+test('selectTurnStreamUpdate maps legacy reasoning delta', () => {
+  const out = selectTurnStreamUpdate(
+    {
+      method: 'codex/event/reasoning_delta',
+      params: {
+        conversationId: 't1',
+        msg: { type: 'reasoning_delta', turn_id: 'u1', delta: '**見出し** legacy' }
+      }
+    },
+    { threadId: 't1', turnId: 'u1', preferV2: false }
+  );
+  assert.equal(out.matched, true);
+  assert.deepEqual(out.streamEvent, { type: 'reasoning_delta', delta: '**見出し** legacy' });
 });
 
 test('parseTurnTerminalNotification maps v2 completed to done terminal', () => {
@@ -151,6 +175,44 @@ test('selectTurnStreamUpdate maps v2 answer delta', () => {
   assert.equal(out.matched, true);
   assert.equal(out.nextPreferV2, true);
   assert.deepEqual(out.streamEvent, { type: 'answer_delta', delta: 'A' });
+});
+
+test('selectTurnStreamUpdate maps v2 reasoning summaryTextDelta', () => {
+  const out = selectTurnStreamUpdate(
+    {
+      method: 'item/reasoning/summaryTextDelta',
+      params: { threadId: 't1', turnId: 'u1', itemId: 'r1', delta: '**見出し** 検討中' }
+    },
+    { threadId: 't1', turnId: 'u1', preferV2: false }
+  );
+  assert.equal(out.matched, true);
+  assert.equal(out.nextPreferV2, true);
+  assert.deepEqual(out.streamEvent, { type: 'reasoning_delta', delta: '**見出し** 検討中' });
+});
+
+test('selectTurnStreamUpdate maps v2 reasoning textDelta', () => {
+  const out = selectTurnStreamUpdate(
+    {
+      method: 'item/reasoning/textDelta',
+      params: { threadId: 't1', turnId: 'u1', itemId: 'r1', delta: '補足本文' }
+    },
+    { threadId: 't1', turnId: 'u1', preferV2: false }
+  );
+  assert.equal(out.matched, true);
+  assert.equal(out.nextPreferV2, true);
+  assert.deepEqual(out.streamEvent, { type: 'reasoning_delta', delta: '補足本文' });
+});
+
+test('selectTurnStreamUpdate ignores v2 event for another thread', () => {
+  const out = selectTurnStreamUpdate(
+    {
+      method: 'item/reasoning/summaryTextDelta',
+      params: { threadId: 't-other', turnId: 'u1', itemId: 'r1', delta: '**見出し** 検討中' }
+    },
+    { threadId: 't1', turnId: 'u1', preferV2: false }
+  );
+  assert.equal(out.matched, false);
+  assert.equal(out.nextPreferV2, false);
 });
 
 test('selectTurnStreamUpdate maps v2 plan delta', () => {
@@ -255,6 +317,30 @@ test('selectTurnStreamUpdate maps v2 failed as error', () => {
   );
   assert.equal(out.matched, true);
   assert.deepEqual(out.terminal, { kind: 'error', message: 'turn_failed' });
+});
+
+test('selectTurnStreamUpdate maps v2 interrupted as error', () => {
+  const out = selectTurnStreamUpdate(
+    {
+      method: 'turn/completed',
+      params: { threadId: 't1', turn: { id: 'u1', status: 'Interrupted' } }
+    },
+    { threadId: 't1', turnId: 'u1', preferV2: true }
+  );
+  assert.equal(out.matched, true);
+  assert.deepEqual(out.terminal, { kind: 'error', message: 'turn_interrupted' });
+});
+
+test('selectTurnStreamUpdate maps v2 cancelled as error', () => {
+  const out = selectTurnStreamUpdate(
+    {
+      method: 'turn/completed',
+      params: { threadId: 't1', turn: { id: 'u1', status: 'Cancelled' } }
+    },
+    { threadId: 't1', turnId: 'u1', preferV2: true }
+  );
+  assert.equal(out.matched, true);
+  assert.deepEqual(out.terminal, { kind: 'error', message: 'turn_cancelled' });
 });
 
 test('selectTurnStreamUpdate maps v2 retryable error to reconnect status', () => {
@@ -401,4 +487,28 @@ test('normalizeThreadMessages marks diff segment as diff', () => {
   const assistant = out.find((item) => item.id === 't3:assistant');
   assert.ok(assistant);
   assert.equal(assistant.type, 'diff');
+});
+
+test('buildToolUserInputResponsePayload normalizes single and array answers', () => {
+  const out = buildToolUserInputResponsePayload({
+    q1: '案A',
+    q2: ['x', '', 'y'],
+    q3: { answers: [' one ', ''] }
+  });
+  assert.deepEqual(out, {
+    answers: {
+      q1: { answers: ['案A'] },
+      q2: { answers: ['x', 'y'] },
+      q3: { answers: ['one'] }
+    }
+  });
+});
+
+test('buildToolUserInputResponsePayload drops empty answers', () => {
+  const out = buildToolUserInputResponsePayload({
+    q1: '',
+    q2: [],
+    q3: { answers: [''] }
+  });
+  assert.deepEqual(out, { answers: {} });
 });

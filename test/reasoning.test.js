@@ -13,3 +13,13 @@ test('extractDisplayReasoningText は最新の見出しを表示する', async (
     '見出し2\n確定表示候補です'
   );
 });
+
+test('extractDisplayReasoningText は見出しがなければ本文をそのまま返す', async () => {
+  const { extractDisplayReasoningText } = await import('../web/src/reasoning.mjs');
+  assert.equal(extractDisplayReasoningText('単なる進捗テキストです'), '単なる進捗テキストです');
+});
+
+test('extractDisplayReasoningText は本文が未着でも最新見出しだけを返す', async () => {
+  const { extractDisplayReasoningText } = await import('../web/src/reasoning.mjs');
+  assert.equal(extractDisplayReasoningText('**見出しだけ**'), '見出しだけ');
+});
