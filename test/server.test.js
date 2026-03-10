@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('path');
 
 const {
+  buildTurnStartOverrides,
   buildCollaborationMode,
   repoFolderFromFullName,
   repoPathFromFullName,
@@ -35,6 +36,32 @@ test('buildCollaborationMode returns turn/start payload shape', () => {
       model: 'gpt-5-codex',
       reasoning_effort: null,
       developer_instructions: null
+    }
+  });
+});
+
+test('buildTurnStartOverrides always requests concise reasoning summary', async () => {
+  const out = await buildTurnStartOverrides('thread-1', {});
+  assert.deepEqual(out, {
+    summary: 'concise'
+  });
+});
+
+test('buildTurnStartOverrides includes selected model and collaboration mode', async () => {
+  const out = await buildTurnStartOverrides('thread-1', {
+    selectedModel: 'gpt-5-codex',
+    collaborationMode: 'plan'
+  });
+  assert.deepEqual(out, {
+    summary: 'concise',
+    model: 'gpt-5-codex',
+    collaborationMode: {
+      mode: 'plan',
+      settings: {
+        model: 'gpt-5-codex',
+        reasoning_effort: null,
+        developer_instructions: null
+      }
     }
   });
 });

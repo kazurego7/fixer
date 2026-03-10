@@ -1,6 +1,7 @@
 import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { marked } from 'marked';
 import { App, Page, PageContent, Button, f7ready, f7 } from 'framework7-react';
+import { extractDisplayReasoningText } from './reasoning.mjs';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -223,31 +224,6 @@ function renderAssistant(item, pending = false) {
     return <pre className="fx-stream-live">{answer}</pre>;
   }
   return <div dangerouslySetInnerHTML={{ __html: marked.parse(answer) }} />;
-}
-
-function extractDisplayReasoningText(raw) {
-  const source = String(raw || '');
-  const marker = /\*\*([^*\n][^*\n]*)\*\*/g;
-  const matches = [];
-  let found = marker.exec(source);
-  while (found) {
-    matches.push({
-      index: found.index,
-      markerEnd: marker.lastIndex,
-      title: String(found[1] || '').trim()
-    });
-    found = marker.exec(source);
-  }
-  if (matches.length === 0) return source.trim();
-  if (matches.length === 1) {
-    const current = matches[0];
-    const body = source.slice(current.markerEnd).trim();
-    return [current.title, body].filter(Boolean).join('\n').trim();
-  }
-  const committed = matches[matches.length - 2];
-  const next = matches[matches.length - 1];
-  const body = source.slice(committed.markerEnd, next.index).trim();
-  return [committed.title, body].filter(Boolean).join('\n').trim();
 }
 
 function expandAssistantItems(items) {

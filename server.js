@@ -40,6 +40,7 @@ const pendingUserInputRequestById = new Map();
 const handledTerminalTurnKeys = new Set();
 const handledPushTurnKeys = new Set();
 const DEFAULT_MODEL_FALLBACK = 'gpt-5-codex';
+const DEFAULT_REASONING_SUMMARY = 'concise';
 
 let codexServerProcess = null;
 let codexStartPromise = null;
@@ -402,6 +403,25 @@ function buildCollaborationMode(mode, model) {
       developer_instructions: null
     }
   };
+}
+
+async function buildTurnStartOverrides(threadId, options = {}) {
+  const selectedModel = normalizeModelId(options.selectedModel);
+  const collaborationMode = normalizeCollaborationMode(options.collaborationMode);
+  const overrides = {
+    summary: DEFAULT_REASONING_SUMMARY
+  };
+
+  if (selectedModel) {
+    overrides.model = selectedModel;
+  }
+
+  if (collaborationMode) {
+    const effectiveModel = selectedModel || (await resolveThreadModel(threadId));
+    overrides.collaborationMode = buildCollaborationMode(collaborationMode, effectiveModel);
+  }
+
+  return overrides;
 }
 
 async function resolveThreadModel(threadId) {
@@ -1654,23 +1674,12 @@ function buildServer() {
     let unsubWs = null;
     let timeoutHandle = null;
     let preferV2 = false;
-    let turnStartOverrides = null;
+    const turnStartOverrides = await buildTurnStartOverrides(threadId, {
+      selectedModel,
+      collaborationMode
+    });
 
-    if (selectedModel) {
-      turnStartOverrides = {
-        ...(turnStartOverrides || {}),
-        model: selectedModel
-      };
-      threadModelByThreadId.set(threadId, selectedModel);
-    }
-
-    if (collaborationMode) {
-      const model = selectedModel || (await resolveThreadModel(threadId));
-      turnStartOverrides = {
-        ...(turnStartOverrides || {}),
-        collaborationMode: buildCollaborationMode(collaborationMode, model)
-      };
-    }
+    if (selectedModel) threadModelByThreadId.set(threadId, selectedModel);
 
     function writeEvent(event) {
       if (aborted) return;
@@ -1883,6 +1892,7 @@ if (require.main === module) {
 
 module.exports = {
   buildServer,
+  buildTurnStartOverrides,
   buildCollaborationMode,
   repoFolderFromFullName,
   repoPathFromFullName,
