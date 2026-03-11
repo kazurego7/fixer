@@ -1,5 +1,5 @@
-const { test, expect } = require('@playwright/test');
-const { bootstrapChatState, installApiMocks } = require('./helpers');
+import { expect, test } from '@playwright/test';
+import { bootstrapChatState, installApiMocks } from './helpers';
 
 test('チャットタイトル押下で設定を開き、モデル一覧を表示できる', async ({ page }) => {
   await bootstrapChatState(page);

@@ -1,5 +1,5 @@
-const { test, expect } = require('@playwright/test');
-const { bootstrapChatState, installApiMocks } = require('./helpers');
+import { expect, test } from '@playwright/test';
+import { bootstrapChatState, installApiMocks } from './helpers';
 
 test('プラン実現ボタン下に操作説明を表示し、問UIでは説明を表示しない', async ({ page }) => {
   await bootstrapChatState(page);

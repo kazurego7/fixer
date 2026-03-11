@@ -1,5 +1,5 @@
-const { test, expect } = require('@playwright/test');
-const { bootstrapChatState, installApiMocks, buildImageFile } = require('./helpers');
+import { expect, test } from '@playwright/test';
+import { bootstrapChatState, buildImageFile, installApiMocks } from './helpers';
 
 test('画像プレビューで前後移動でき、端で停止する @smoke', async ({ page }) => {
   await bootstrapChatState(page);

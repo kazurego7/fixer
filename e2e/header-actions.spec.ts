@@ -1,5 +1,5 @@
-const { test, expect } = require('@playwright/test');
-const { bootstrapChatState, installApiMocks } = require('./helpers');
+import { expect, test } from '@playwright/test';
+import { bootstrapChatState, installApiMocks } from './helpers';
 
 test('ヘッダーボタンが表示されクリック可能 @smoke', async ({ page }) => {
   await bootstrapChatState(page);

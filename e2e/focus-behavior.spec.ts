@@ -1,5 +1,5 @@
-const { test, expect } = require('@playwright/test');
-const { bootstrapChatState, installApiMocks, buildImageFile } = require('./helpers');
+import { expect, test } from '@playwright/test';
+import { bootstrapChatState, buildImageFile, installApiMocks } from './helpers';
 
 test('添付バー領域の操作で入力フォーカスが勝手に戻らない @smoke', async ({ page }) => {
   await bootstrapChatState(page);

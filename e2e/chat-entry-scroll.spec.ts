@@ -1,5 +1,5 @@
-const { test, expect } = require('@playwright/test');
-const { bootstrapChatState, installApiMocks } = require('./helpers');
+import { expect, test } from '@playwright/test';
+import { bootstrapChatState, installApiMocks } from './helpers';
 
 test('チャット表示時に最後の自分の指示が先頭に来る', async ({ page }) => {
   await bootstrapChatState(page);

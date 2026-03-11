@@ -1,6 +1,7 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const path = require('path');
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import test from 'node:test';
+import type { OutputItem } from '../shared/types';
 
 const {
   buildTurnStartOverrides,
@@ -14,7 +15,7 @@ const {
   parseTurnTerminalNotification,
   selectTurnStreamUpdate,
   normalizeThreadMessages
-} = require('../server');
+} = require('../server') as typeof import('../server');
 
 test('normalizeCollaborationMode normalizes valid values', () => {
   assert.equal(normalizeCollaborationMode('plan'), 'plan');
@@ -82,6 +83,7 @@ test('parseV2TurnNotification parses delta notification', () => {
     method: 'item/agentMessage/delta',
     params: { threadId: 't1', turnId: 'u1', delta: 'abc' }
   });
+  assert.ok(parsed);
   assert.equal(parsed.method, 'item/agentMessage/delta');
   assert.equal(parsed.threadId, 't1');
   assert.equal(parsed.turnId, 'u1');
@@ -93,6 +95,7 @@ test('parseV2TurnNotification falls back to turn.id when turnId is absent', () =
     method: 'turn/completed',
     params: { threadId: 't1', turn: { id: 'u-from-turn', status: 'Completed' } }
   });
+  assert.ok(parsed);
   assert.equal(parsed.turnId, 'u-from-turn');
 });
 
@@ -104,6 +107,7 @@ test('parseLegacyTurnNotification parses codex event', () => {
       msg: { type: 'agent_message_delta', turn_id: 'u1', delta: 'abc' }
     }
   });
+  assert.ok(parsed);
   assert.equal(parsed.type, 'agent_message_delta');
   assert.equal(parsed.threadId, 't1');
   assert.equal(parsed.turnId, 'u1');
@@ -412,7 +416,7 @@ test('normalizeThreadMessages keeps assistant as single message unit even with r
 
   const out = normalizeThreadMessages(readResult);
   assert.deepEqual(
-    out.map((item) => [item.id, item.role, item.type, item.text]),
+    out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
     [
       ['t1:user', 'user', 'plain', 'ユーザー質問'],
       ['t1:assistant', 'assistant', 'markdown', '本文1\n本文2\n本文3'],
@@ -436,7 +440,7 @@ test('normalizeThreadMessages keeps single assistant segment when reasoning is a
 
   const out = normalizeThreadMessages(readResult);
   assert.deepEqual(
-    out.map((item) => [item.id, item.role, item.type, item.text]),
+    out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
     [
       ['t2:user', 'user', 'plain', 'q'],
       ['t2:assistant', 'assistant', 'markdown', 'a1\na2'],
@@ -460,14 +464,15 @@ test('normalizeThreadMessages keeps plan items in dedicated field', () => {
 
   const out = normalizeThreadMessages(readResult);
   assert.deepEqual(
-    out.map((item) => [item.id, item.role, item.type, item.text]),
+    out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
     [
       ['t2p:user', 'user', 'plain', 'q'],
       ['t2p:assistant', 'assistant', 'markdown', '最終回答'],
       ['t2p:sep', 'system', 'separator', '']
     ]
   );
-  const assistant = out.find((item) => item.id === 't2p:assistant');
+  const assistant = out.find((item: OutputItem) => item.id === 't2p:assistant');
+  assert.ok(assistant && assistant.role === 'assistant');
   assert.equal(assistant.plan, '手順1');
 });
 
@@ -484,7 +489,7 @@ test('normalizeThreadMessages marks diff segment as diff', () => {
     }
   };
   const out = normalizeThreadMessages(readResult);
-  const assistant = out.find((item) => item.id === 't3:assistant');
+  const assistant = out.find((item: OutputItem) => item.id === 't3:assistant');
   assert.ok(assistant);
   assert.equal(assistant.type, 'diff');
 });

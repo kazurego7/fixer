@@ -1,10 +1,28 @@
+import type { Page } from '@playwright/test';
+
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p8dQAAAAASUVORK5CYII=';
 
 const DEFAULT_REPO = 'owner/repo';
 const DEFAULT_THREAD_ID = 'thread-e2e-1';
 
-function buildImageFile(name) {
+interface MockRouteState {
+  lastTurnStreamBody:
+    | {
+        attachments?: Array<{ type?: string; dataUrl?: string }>;
+        input?: string;
+        collaboration_mode?: string;
+        model?: string;
+      }
+    | null;
+}
+
+interface InstallApiMocksOptions {
+  repoFullName?: string;
+  threadId?: string;
+}
+
+function buildImageFile(name: string): { name: string; mimeType: string; buffer: Buffer } {
   return {
     name,
     mimeType: 'image/png',
@@ -12,7 +30,7 @@ function buildImageFile(name) {
   };
 }
 
-async function bootstrapChatState(page, repo = DEFAULT_REPO, threadId = DEFAULT_THREAD_ID) {
+async function bootstrapChatState(page: Page, repo = DEFAULT_REPO, threadId = DEFAULT_THREAD_ID): Promise<void> {
   await page.addInitScript(
     ({ targetRepo, targetThreadId }) => {
       window.localStorage.setItem('fx:lastRepoFullName', targetRepo);
@@ -24,10 +42,10 @@ async function bootstrapChatState(page, repo = DEFAULT_REPO, threadId = DEFAULT_
   );
 }
 
-async function installApiMocks(page, options = {}) {
+async function installApiMocks(page: Page, options: InstallApiMocksOptions = {}): Promise<MockRouteState> {
   const repo = options.repoFullName || DEFAULT_REPO;
   const threadId = options.threadId || DEFAULT_THREAD_ID;
-  const state = { lastTurnStreamBody: null };
+  const state: MockRouteState = { lastTurnStreamBody: null };
 
   await page.route('**/api/github/auth/status', async (route) => {
     await route.fulfill({
@@ -85,7 +103,7 @@ async function installApiMocks(page, options = {}) {
 
   await page.route('**/api/turns/stream', async (route) => {
     const raw = route.request().postData() || '{}';
-    state.lastTurnStreamBody = JSON.parse(raw);
+    state.lastTurnStreamBody = JSON.parse(raw) as MockRouteState['lastTurnStreamBody'];
     const ndjson = [
       JSON.stringify({ type: 'started' }),
       JSON.stringify({ type: 'answer_delta', delta: 'ok' }),
@@ -101,7 +119,7 @@ async function installApiMocks(page, options = {}) {
   return state;
 }
 
-module.exports = {
+export {
   DEFAULT_REPO,
   DEFAULT_THREAD_ID,
   buildImageFile,

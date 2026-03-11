@@ -88,7 +88,7 @@ curl -sS 'http://localhost:3000/api/threads?repoFullName=OWNER%2FREPO'
 
 ## API 仕様差異がある場合
 
-Codex App Server 側のエンドポイント仕様に差異がある場合は、`server.js` の以下を調整してください。
+Codex App Server 側のエンドポイント仕様に差異がある場合は、`server.ts` の以下を調整してください。
 
 - `/api/threads`
 - `/api/turns/stream`

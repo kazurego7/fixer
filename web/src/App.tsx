@@ -1,7 +1,40 @@
-import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FocusEvent,
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject
+} from 'react';
 import { marked } from 'marked';
 import { App, Page, PageContent, Button, f7ready, f7 } from 'framework7-react';
-import { extractDisplayReasoningText } from './reasoning.mjs';
+import { extractDisplayReasoningText } from './reasoning';
+import type {
+  AppErrorState,
+  AssistantOutputItem,
+  CollaborationMode,
+  ImageAttachmentDraft,
+  ImageAttachmentMeta,
+  ModelOption,
+  OutputItem,
+  PendingBusyMap,
+  PendingThreadReturn,
+  PendingUserInputRequest,
+  RepoSummary,
+  RequestId,
+  TurnStreamEvent,
+  UserInputAnswerMap,
+  UserInputDraft,
+  UserInputDraftMap,
+  UserInputQuestion,
+  UserOutputItem
+} from '../../shared/types';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -13,9 +46,158 @@ const COLLABORATION_MODE_BY_REPO_KEY = 'fx:collaborationModeByRepo';
 const MODEL_BY_REPO_KEY = 'fx:modelByRepo';
 const PUSH_ENDPOINT_KEY = 'fx:pushEndpoint';
 const DEFAULT_COLLABORATION_MODE = 'default';
-const AppCtx = createContext(null);
 
-function formatFileSize(size) {
+type RepoFilter = 'all' | 'cloned' | 'not_cloned';
+type ThreadByRepoMap = Record<string, string>;
+type CollaborationModeByRepoMap = Record<string, CollaborationMode>;
+type ModelByRepoMap = Record<string, string>;
+type AssistantPatch = Partial<AssistantOutputItem> | ((item: AssistantOutputItem) => AssistantOutputItem);
+
+interface AppContextValue {
+  connected: boolean;
+  error: AppErrorState | null;
+  busy: boolean;
+  query: string;
+  setQuery: (value: string) => void;
+  repos: RepoSummary[];
+  repoFilter: RepoFilter;
+  setRepoFilter: (value: RepoFilter) => void;
+  selectedRepo: RepoSummary | null;
+  setSelectedRepo: (value: RepoSummary | null) => void;
+  clonedRepos: RepoSummary[];
+  notClonedRepos: RepoSummary[];
+  filteredRepos: RepoSummary[];
+  activeRepoFullName: string | null;
+  activeThreadId: string | null;
+  chatVisible: boolean;
+  outputItems: OutputItem[];
+  outputRef: RefObject<HTMLElement | null>;
+  message: string;
+  setMessage: (value: string) => void;
+  pendingAttachments: ImageAttachmentDraft[];
+  addImageAttachments: (fileList: FileList | null) => Promise<void>;
+  removePendingAttachment: (index: number) => void;
+  streaming: boolean;
+  streamingAssistantId: string | null;
+  liveReasoningText: string;
+  awaitingFirstStreamChunk: boolean;
+  hasReasoningStarted: boolean;
+  hasAnswerStarted: boolean;
+  navigate: (path: string, replace?: boolean) => void;
+  bootstrapConnection: () => Promise<void>;
+  fetchRepos: (nextQuery?: string) => Promise<void>;
+  startWithRepo: (repo: RepoSummary) => Promise<boolean>;
+  sendTurn: () => Promise<void>;
+  cancelTurn: () => Promise<void>;
+  startNewThread: () => Promise<void>;
+  canReturnToPreviousThread: boolean;
+  returnToPreviousThread: () => void;
+  canApplyLatestPlan: boolean;
+  applyLatestPlanShortcut: () => Promise<void>;
+  chatSettingsOpen: boolean;
+  openChatSettings: () => void;
+  closeChatSettings: () => void;
+  availableModels: ModelOption[];
+  modelsLoading: boolean;
+  modelsError: string;
+  loadAvailableModels: (force?: boolean) => Promise<void>;
+  activeRepoModel: string;
+  setActiveRepoModel: (modelId: string) => void;
+  activeCollaborationMode: CollaborationMode;
+  setActiveCollaborationMode: (mode: CollaborationMode) => void;
+  pendingUserInputRequests: PendingUserInputRequest[];
+  selectUserInputOption: (
+    request: PendingUserInputRequest,
+    questionIndex: number,
+    questionId: string,
+    optionLabel: string
+  ) => Promise<void>;
+  pendingUserInputBusy: PendingBusyMap;
+  pendingUserInputDrafts: UserInputDraftMap;
+}
+
+interface PendingUserInputFetchResponse {
+  requests?: PendingUserInputRequest[];
+  error?: string;
+}
+
+interface RunningTurnResponse {
+  running?: boolean;
+  threadId?: string;
+  turnId?: string;
+  error?: string;
+}
+
+interface PushConfigResponse extends JsonErrorResponse {
+  enabled?: boolean;
+  publicKey?: string;
+}
+
+interface ThreadMessagesResponse {
+  items?: OutputItem[];
+  model?: string | null;
+  error?: string;
+}
+
+interface EnsureThreadResponse {
+  id?: string;
+  thread_id?: string;
+  error?: string;
+}
+
+interface JsonErrorResponse {
+  error?: string;
+  hint?: string;
+  [key: string]: unknown;
+}
+
+const AppCtx = createContext<AppContextValue | null>(null);
+
+function useAppCtx(): AppContextValue {
+  const ctx = useContext(AppCtx);
+  if (!ctx) throw new Error('app_context_missing');
+  return ctx;
+}
+
+function getClientErrorMessage(error: unknown, fallback = 'unknown_error'): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+    return error.message;
+  }
+  return fallback;
+}
+
+function isAssistantItem(item: OutputItem): item is AssistantOutputItem {
+  return item.role === 'assistant';
+}
+
+function isUserItem(item: OutputItem): item is UserOutputItem {
+  return item.role === 'user';
+}
+
+function parseTurnStreamEvent(rawLine: string): TurnStreamEvent | null {
+  try {
+    const parsed = JSON.parse(rawLine) as { type?: string } | null;
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.type !== 'string') return null;
+    return parsed as TurnStreamEvent;
+  } catch {
+    return null;
+  }
+}
+
+function createEmptyAssistantItem(id: string): AssistantOutputItem {
+  return {
+    id,
+    role: 'assistant',
+    type: 'markdown',
+    text: '',
+    status: '',
+    answer: '',
+    plan: ''
+  };
+}
+
+function formatFileSize(size: number | string | null | undefined): string {
   const bytes = Number(size || 0);
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
@@ -23,7 +205,7 @@ function formatFileSize(size) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function readFileAsDataUrl(file) {
+function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
@@ -32,7 +214,7 @@ function readFileAsDataUrl(file) {
   });
 }
 
-function decodeBase64UrlToUint8Array(base64Url) {
+function decodeBase64UrlToUint8Array(base64Url: string): Uint8Array {
   const normalized = String(base64Url || '')
     .replace(/-/g, '+')
     .replace(/_/g, '/');
@@ -44,7 +226,7 @@ function decodeBase64UrlToUint8Array(base64Url) {
   return bytes;
 }
 
-function normalizePath(rawPath) {
+function normalizePath(rawPath: string): string {
   if (rawPath === '/chat' || rawPath === '/chat/') return '/chat/';
   return '/repos/';
 }
@@ -56,7 +238,7 @@ function getCurrentPath() {
   return normalizePath(window.location.pathname || '/');
 }
 
-function pushPath(path, replace = false) {
+function pushPath(path: string, replace = false): string {
   const target = normalizePath(path);
   if (typeof window === 'undefined') return target;
   if (replace) window.history.replaceState({}, '', target);
@@ -64,29 +246,29 @@ function pushPath(path, replace = false) {
   return target;
 }
 
-function threadMessagesKey(threadId) {
+function threadMessagesKey(threadId: string): string {
   return `fx:threadMessages:${threadId}`;
 }
 
-function loadJsonFromStorage(key, fallback) {
+function loadJsonFromStorage<T>(key: string, fallback: T): T {
   try {
     const raw = window.localStorage.getItem(key);
     if (!raw) return fallback;
-    return JSON.parse(raw);
+    return JSON.parse(raw) as T;
   } catch {
     return fallback;
   }
 }
 
-function loadThreadMessages(threadId) {
+function loadThreadMessages(threadId: string | null): OutputItem[] {
   if (!threadId || typeof window === 'undefined') return [];
   const items = loadJsonFromStorage(threadMessagesKey(threadId), []);
   return Array.isArray(items) ? items : [];
 }
 
-function normalizeModelOptions(models) {
+function normalizeModelOptions(models: unknown): ModelOption[] {
   const src = Array.isArray(models) ? models : [];
-  const out = [];
+  const out: ModelOption[] = [];
   const seen = new Set();
   for (const item of src) {
     if (!item || typeof item !== 'object') continue;
@@ -124,7 +306,7 @@ function ReposPage() {
     bootstrapConnection,
     fetchRepos,
     startWithRepo
-  } = useContext(AppCtx);
+  } = useAppCtx();
 
   return (
     <Page noNavbar>
@@ -146,11 +328,11 @@ function ReposPage() {
             <div className="fx-repos-toolbar">
               <input
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.currentTarget.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
-                    fetchRepos(e.target.value).catch((err) => {
-                      f7.toast.create({ text: `読み込み失敗: ${err.message}`, closeTimeout: 1400, position: 'center' }).open();
+                    fetchRepos(e.currentTarget.value).catch((err: unknown) => {
+                      f7.toast.create({ text: `読み込み失敗: ${getClientErrorMessage(err)}`, closeTimeout: 1400, position: 'center' }).open();
                     });
                   }
                 }}
@@ -210,7 +392,7 @@ function ReposPage() {
   );
 }
 
-function renderAssistant(item, pending = false) {
+function renderAssistant(item: AssistantOutputItem, pending = false) {
   const answer = typeof item.answer === 'string' ? item.answer : String(item.text || '');
   const statusText = !answer ? String(item.status || item.text || '').trim() : '';
 
@@ -223,14 +405,14 @@ function renderAssistant(item, pending = false) {
   if (pending && answer) {
     return <pre className="fx-stream-live">{answer}</pre>;
   }
-  return <div dangerouslySetInnerHTML={{ __html: marked.parse(answer) }} />;
+  return <div dangerouslySetInnerHTML={{ __html: String(marked.parse(answer)) }} />;
 }
 
-function expandAssistantItems(items) {
+function expandAssistantItems(items: OutputItem[]): OutputItem[] {
   const src = Array.isArray(items) ? items : [];
-  const out = [];
+  const out: OutputItem[] = [];
   for (const item of src) {
-    if (item?.role === 'assistant') {
+    if (isAssistantItem(item)) {
       const answer =
         typeof item.answer === 'string' && item.answer.length > 0
           ? item.answer
@@ -248,10 +430,10 @@ function expandAssistantItems(items) {
   return out;
 }
 
-function withAutoAssistantSeparators(items) {
+function withAutoAssistantSeparators(items: OutputItem[]): OutputItem[] {
   const src = Array.isArray(items) ? items : [];
-  const out = [];
-  let prev = null;
+  const out: OutputItem[] = [];
+  let prev: OutputItem | null = null;
   for (const item of src) {
     const current = item && typeof item === 'object' ? item : null;
     if (!current) continue;
@@ -319,16 +501,16 @@ function ChatPage() {
     selectUserInputOption,
     pendingUserInputBusy,
     pendingUserInputDrafts
-  } = useContext(AppCtx);
+  } = useAppCtx();
   const hasComposerInput = message.trim().length > 0 || pendingAttachments.length > 0;
   const canSend = hasComposerInput;
   const [isInputFocused, setIsInputFocused] = useState(false);
-  const [previewIndex, setPreviewIndex] = useState(null);
-  const composerInputRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const userInputCardRef = useRef(null);
-  const swipeStartXRef = useRef(null);
-  const swipeStartYRef = useRef(null);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const userInputCardRef = useRef<HTMLDivElement | null>(null);
+  const swipeStartXRef = useRef<number | null>(null);
+  const swipeStartYRef = useRef<number | null>(null);
   const displayItems = useMemo(() => withAutoAssistantSeparators(outputItems), [outputItems]);
   const latestPlanItemId = useMemo(() => {
     for (let idx = displayItems.length - 1; idx >= 0; idx -= 1) {
@@ -342,14 +524,10 @@ function ChatPage() {
   }, [displayItems]);
   const thinkingText = typeof liveReasoningText === 'string' ? liveReasoningText : '';
   const activeUserInputRequest = pendingUserInputRequests.length > 0 ? pendingUserInputRequests[0] : null;
-  const activeUserInputDraftState = activeUserInputRequest
+  const activeUserInputDraftState: UserInputDraft = activeUserInputRequest
     ? pendingUserInputDrafts[String(activeUserInputRequest.requestId)] || { index: 0, answers: {} }
-    : {};
+    : { index: 0, answers: {} };
   const activeUserInputIndex = Number(activeUserInputDraftState.index || 0);
-  const activeUserInputAnswers =
-    activeUserInputDraftState.answers && typeof activeUserInputDraftState.answers === 'object'
-      ? activeUserInputDraftState.answers
-      : {};
   const activeUserInputQuestion = activeUserInputRequest
     ? (activeUserInputRequest.questions || [])[activeUserInputIndex] || null
     : null;
@@ -368,7 +546,7 @@ function ChatPage() {
     const hit = availableModels.find((item) => item.id === activeRepoModel);
     return hit?.name || activeRepoModel;
   }, [availableModels, activeRepoModel]);
-  const keepComposerFocus = (event) => {
+  const keepComposerFocus = (event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
     if (target.closest('.fx-attachments-bar')) return;
@@ -376,13 +554,13 @@ function ChatPage() {
     event.preventDefault();
     composerInputRef.current?.focus();
   };
-  const handleComposerInputBlur = (event) => {
+  const handleComposerInputBlur = (event: FocusEvent<HTMLTextAreaElement>) => {
     const next = event.relatedTarget;
     if (next instanceof HTMLElement && next.closest('.fx-mode-toggle')) return;
     setIsInputFocused(false);
   };
   const closePreview = () => setPreviewIndex(null);
-  const openPreviewAt = (idx) => {
+  const openPreviewAt = (idx: number) => {
     if (idx < 0 || idx >= pendingAttachments.length) return;
     setPreviewIndex(idx);
   };
@@ -398,11 +576,11 @@ function ChatPage() {
       return prev + 1;
     });
   };
-  const onPreviewPointerDown = (event) => {
+  const onPreviewPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     swipeStartXRef.current = event.clientX;
     swipeStartYRef.current = event.clientY;
   };
-  const onPreviewPointerUp = (event) => {
+  const onPreviewPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (swipeStartXRef.current === null || swipeStartYRef.current === null) return;
     const dx = event.clientX - swipeStartXRef.current;
     const dy = event.clientY - swipeStartYRef.current;
@@ -434,7 +612,7 @@ function ChatPage() {
 
   useEffect(() => {
     if (previewIndex === null) return undefined;
-    const onKeyDown = (event) => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
         closePreview();
         return;
@@ -856,7 +1034,6 @@ function ChatPage() {
               className="fx-icon-btn fx-attach-btn"
               onClick={() => fileInputRef.current?.click()}
               aria-label="画像を添付"
-              title="画像を添付"
               data-testid="attachment-add-button"
             >
               ＋
@@ -886,7 +1063,6 @@ function ChatPage() {
                     onClick={sendTurn}
                     disabled={!canSend}
                     aria-label="追加指示"
-                    title="追加指示"
                     data-testid="followup-button"
                   >
                   <svg
@@ -912,7 +1088,6 @@ function ChatPage() {
                     className="fx-icon-btn fx-stop-btn"
                     onClick={cancelTurn}
                     aria-label="停止"
-                    title="停止"
                     data-testid="stop-button"
                   >
                     ■
@@ -925,7 +1100,6 @@ function ChatPage() {
                   onClick={sendTurn}
                   disabled={!canSend}
                   aria-label="送信"
-                  title="送信"
                   data-testid="send-button"
                 >
                 <svg
@@ -1012,7 +1186,7 @@ function ChatPage() {
               <div className="fx-image-preview-caption" data-testid="image-preview-caption">
                 <span className="fx-image-preview-name">{previewAttachment.name}</span>
                 <span className="fx-image-preview-index">
-                  {previewIndex + 1} / {pendingAttachments.length}
+                  {(previewIndex ?? 0) + 1} / {pendingAttachments.length}
                 </span>
               </div>
             </div>
@@ -1025,25 +1199,25 @@ function ChatPage() {
 
 export default function AppRoot() {
   const [connected, setConnected] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<AppErrorState | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [query, setQuery] = useState('');
-  const [repos, setRepos] = useState([]);
-  const [repoFilter, setRepoFilter] = useState('all');
-  const [selectedRepo, setSelectedRepo] = useState(null);
+  const [repos, setRepos] = useState<RepoSummary[]>([]);
+  const [repoFilter, setRepoFilter] = useState<RepoFilter>('all');
+  const [selectedRepo, setSelectedRepo] = useState<RepoSummary | null>(null);
 
   const initialThreadId = typeof window !== 'undefined' ? window.localStorage.getItem(LAST_THREAD_ID_KEY) : null;
   const initialRepoFullName = typeof window !== 'undefined' ? window.localStorage.getItem(LAST_REPO_FULLNAME_KEY) : null;
-  const [activeThreadId, setActiveThreadId] = useState(initialThreadId);
-  const [activeRepoFullName, setActiveRepoFullName] = useState(initialRepoFullName);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(initialThreadId);
+  const [activeRepoFullName, setActiveRepoFullName] = useState<string | null>(initialRepoFullName);
   const [chatVisible, setChatVisible] = useState(Boolean(initialThreadId && initialRepoFullName));
 
   const [message, setMessage] = useState('');
-  const [pendingAttachments, setPendingAttachments] = useState([]);
-  const [outputItems, setOutputItems] = useState([]);
+  const [pendingAttachments, setPendingAttachments] = useState<ImageAttachmentDraft[]>([]);
+  const [outputItems, setOutputItems] = useState<OutputItem[]>([]);
   const [streaming, setStreaming] = useState(false);
-  const [streamingAssistantId, setStreamingAssistantId] = useState(null);
+  const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const [, setActiveTurnId] = useState('');
   const [liveReasoningText, setLiveReasoningText] = useState('');
   const [awaitingFirstStreamChunk, setAwaitingFirstStreamChunk] = useState(false);
@@ -1051,37 +1225,37 @@ export default function AppRoot() {
   const [hasAnswerStarted, setHasAnswerStarted] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
   const [currentPath, setCurrentPath] = useState(getCurrentPath());
-  const [threadByRepo, setThreadByRepo] = useState(() => {
+  const [threadByRepo, setThreadByRepo] = useState<ThreadByRepoMap>(() => {
     if (typeof window === 'undefined') return {};
-    const map = loadJsonFromStorage(THREAD_BY_REPO_KEY, {});
+    const map = loadJsonFromStorage<ThreadByRepoMap>(THREAD_BY_REPO_KEY, {});
     if (initialRepoFullName && initialThreadId && !map[initialRepoFullName]) {
       map[initialRepoFullName] = initialThreadId;
     }
     return map;
   });
-  const [collaborationModeByRepo, setCollaborationModeByRepo] = useState(() => {
+  const [collaborationModeByRepo, setCollaborationModeByRepo] = useState<CollaborationModeByRepoMap>(() => {
     if (typeof window === 'undefined') return {};
-    const map = loadJsonFromStorage(COLLABORATION_MODE_BY_REPO_KEY, {});
+    const map = loadJsonFromStorage<CollaborationModeByRepoMap>(COLLABORATION_MODE_BY_REPO_KEY, {});
     return map && typeof map === 'object' ? map : {};
   });
-  const [modelByRepo, setModelByRepo] = useState(() => {
+  const [modelByRepo, setModelByRepo] = useState<ModelByRepoMap>(() => {
     if (typeof window === 'undefined') return {};
-    const map = loadJsonFromStorage(MODEL_BY_REPO_KEY, {});
+    const map = loadJsonFromStorage<ModelByRepoMap>(MODEL_BY_REPO_KEY, {});
     return map && typeof map === 'object' ? map : {};
   });
-  const [availableModels, setAvailableModels] = useState([]);
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
   const [chatSettingsOpen, setChatSettingsOpen] = useState(false);
-  const [pendingUserInputRequests, setPendingUserInputRequests] = useState([]);
-  const [pendingUserInputDrafts, setPendingUserInputDrafts] = useState({});
-  const [pendingUserInputBusy, setPendingUserInputBusy] = useState({});
-  const [pendingThreadReturn, setPendingThreadReturn] = useState(null);
+  const [pendingUserInputRequests, setPendingUserInputRequests] = useState<PendingUserInputRequest[]>([]);
+  const [pendingUserInputDrafts, setPendingUserInputDrafts] = useState<UserInputDraftMap>({});
+  const [pendingUserInputBusy, setPendingUserInputBusy] = useState<PendingBusyMap>({});
+  const [pendingThreadReturn, setPendingThreadReturn] = useState<PendingThreadReturn | null>(null);
 
-  const outputRef = useRef(null);
+  const outputRef = useRef<HTMLElement | null>(null);
   const autoScrollRef = useRef(true);
-  const streamAbortRef = useRef(null);
-  const resumeStreamAbortRef = useRef(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const resumeStreamAbortRef = useRef<AbortController | null>(null);
   const resumeStreamingThreadIdRef = useRef('');
   const resumeStreamingTurnIdRef = useRef('');
   const didBootstrapRef = useRef(false);
@@ -1089,27 +1263,27 @@ export default function AppRoot() {
   const chatEntryPathRef = useRef(getCurrentPath());
   const lastChatEntryAlignKeyRef = useRef('');
   const chatEntryScrollTopRef = useRef(0);
-  const activeThreadRef = useRef(activeThreadId);
+  const activeThreadRef = useRef<string | null>(activeThreadId);
   const activeTurnIdRef = useRef('');
-  const activeRepoRef = useRef(activeRepoFullName);
+  const activeRepoRef = useRef<string | null>(activeRepoFullName);
   const backgroundInterruptedTurnRef = useRef(false);
   const shouldResumeOnVisibleRef = useRef(false);
   const pushEndpointRef = useRef(
     typeof window !== 'undefined' ? window.localStorage.getItem(PUSH_ENDPOINT_KEY) || '' : ''
   );
   const pushPublicKeyRef = useRef('');
-  const serviceWorkerRegRef = useRef(null);
+  const serviceWorkerRegRef = useRef<ServiceWorkerRegistration | null>(null);
 
-  function toast(text) {
+  function toast(text: string): void {
     f7?.toast?.create({ text, closeTimeout: 1400, position: 'center' }).open();
   }
 
-  function getRepoModel(repoFullName = activeRepoRef.current) {
+  function getRepoModel(repoFullName: string | null = activeRepoRef.current): string {
     if (!repoFullName) return '';
     return String(modelByRepo[repoFullName] || '').trim();
   }
 
-  function setRepoModel(repoFullName, modelId) {
+  function setRepoModel(repoFullName: string | null, modelId: string): void {
     if (!repoFullName) return;
     const normalized = String(modelId || '').trim();
     setModelByRepo((prev) => {
@@ -1124,23 +1298,23 @@ export default function AppRoot() {
     });
   }
 
-  function setActiveRepoModel(modelId) {
+  function setActiveRepoModel(modelId: string): void {
     setRepoModel(activeRepoRef.current, modelId);
   }
 
-  async function loadAvailableModels(force = false) {
+  async function loadAvailableModels(force = false): Promise<void> {
     if (modelsLoading) return;
     if (!force && availableModels.length > 0) return;
     setModelsLoading(true);
     setModelsError('');
     try {
       const res = await fetch('/api/models');
-      const data = await res.json();
+      const data = (await res.json()) as JsonErrorResponse & { models?: unknown };
       if (!res.ok) throw new Error(data.error || 'models_load_failed');
       const list = normalizeModelOptions(data.models);
       setAvailableModels(list);
-    } catch (e) {
-      setModelsError(String(e.message || 'models_load_failed'));
+    } catch (e: unknown) {
+      setModelsError(getClientErrorMessage(e, 'models_load_failed'));
       setAvailableModels([]);
     } finally {
       setModelsLoading(false);
@@ -1156,10 +1330,10 @@ export default function AppRoot() {
     setChatSettingsOpen(false);
   }
 
-  async function addImageAttachments(fileList) {
-    const files = Array.from(fileList || []);
+  async function addImageAttachments(fileList: FileList | null): Promise<void> {
+    const files = Array.from(fileList || []) as File[];
     if (files.length === 0) return;
-    const next = [];
+    const next: ImageAttachmentDraft[] = [];
 
     for (const file of files) {
       if (!file.type || !file.type.startsWith('image/')) {
@@ -1184,25 +1358,28 @@ export default function AppRoot() {
     if (next.length > 0) setPendingAttachments((prev) => [...prev, ...next]);
   }
 
-  function removePendingAttachment(index) {
+  function removePendingAttachment(index: number): void {
     setPendingAttachments((prev) => prev.filter((_, idx) => idx !== index));
   }
 
-  async function fetchPushConfig() {
+  async function fetchPushConfig(): Promise<PushConfigResponse> {
     const res = await fetch('/api/push/config');
-    const data = await res.json();
+    const data = (await res.json()) as PushConfigResponse;
     if (!res.ok) throw new Error(data.error || 'push_config_failed');
     return data;
   }
 
-  async function ensureServiceWorkerRegistration() {
+  async function ensureServiceWorkerRegistration(): Promise<ServiceWorkerRegistration> {
     if (serviceWorkerRegRef.current) return serviceWorkerRegRef.current;
     const reg = await navigator.serviceWorker.register('/sw.js');
     serviceWorkerRegRef.current = reg;
     return reg;
   }
 
-  async function syncPushSubscription(subscription, threadId = activeThreadRef.current) {
+  async function syncPushSubscription(
+    subscription: PushSubscription,
+    threadId: string | null = activeThreadRef.current
+  ): Promise<JsonErrorResponse> {
     const json = subscription?.toJSON?.();
     if (!json?.endpoint || !json?.keys?.p256dh || !json?.keys?.auth) throw new Error('push_subscription_invalid');
     const res = await fetch('/api/push/subscribe', {
@@ -1214,14 +1391,14 @@ export default function AppRoot() {
         userAgent: navigator.userAgent
       })
     });
-    const data = await res.json();
+    const data = (await res.json()) as JsonErrorResponse;
     if (!res.ok) throw new Error(data.error || 'push_subscribe_failed');
     pushEndpointRef.current = json.endpoint;
     window.localStorage.setItem(PUSH_ENDPOINT_KEY, json.endpoint);
     return data;
   }
 
-  async function ensurePushNotificationsEnabled(threadId = activeThreadRef.current) {
+  async function ensurePushNotificationsEnabled(threadId: string | null = activeThreadRef.current): Promise<boolean> {
     if (typeof window === 'undefined') return false;
     const supported =
       window.isSecureContext &&
@@ -1259,7 +1436,7 @@ export default function AppRoot() {
         }
         subscription = await reg.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: decodeBase64UrlToUint8Array(pushPublicKeyRef.current)
+          applicationServerKey: decodeBase64UrlToUint8Array(pushPublicKeyRef.current) as BufferSource
         });
       }
 
@@ -1272,25 +1449,29 @@ export default function AppRoot() {
     }
   }
 
-  async function fetchRunningTurn(threadId) {
+  async function fetchRunningTurn(threadId: string): Promise<RunningTurnResponse> {
     const res = await fetch(`/api/turns/running?threadId=${encodeURIComponent(threadId)}`);
-    const data = await res.json();
+    const data = (await res.json()) as RunningTurnResponse;
     if (!res.ok) throw new Error(data.error || 'running_turn_fetch_failed');
     return data;
   }
 
-  function sanitizePendingUserInputRequests(items, threadId = activeThreadRef.current) {
+  function sanitizePendingUserInputRequests(
+    items: unknown,
+    threadId: string | null = activeThreadRef.current
+  ): PendingUserInputRequest[] {
     const list = Array.isArray(items) ? items : [];
-    const keyed = new Map();
+    const keyed = new Map<string, PendingUserInputRequest>();
     const normalized = list
-      .filter((item) => item && typeof item === 'object')
+      .map((item) => (item && typeof item === 'object' ? (item as Partial<PendingUserInputRequest>) : null))
+      .filter((item): item is Partial<PendingUserInputRequest> => Boolean(item))
       .filter((item) => !threadId || String(item.threadId || '') === String(threadId))
       .map((item) => ({
-        requestId: item.requestId,
+        requestId: (item.requestId || '') as RequestId,
         threadId: String(item.threadId || ''),
         turnId: String(item.turnId || ''),
         itemId: String(item.itemId || ''),
-        questions: Array.isArray(item.questions) ? item.questions : [],
+        questions: Array.isArray(item.questions) ? (item.questions as UserInputQuestion[]) : [],
         createdAt: String(item.createdAt || '')
       }));
     for (const item of normalized) {
@@ -1301,7 +1482,7 @@ export default function AppRoot() {
     return Array.from(keyed.values()).sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   }
 
-  function mergePendingUserInputRequest(request) {
+  function mergePendingUserInputRequest(request: PendingUserInputRequest): void {
     if (!request || !request.requestId) return;
     setPendingUserInputRequests((prev) => {
       const next = [
@@ -1313,20 +1494,24 @@ export default function AppRoot() {
     });
   }
 
-  async function fetchPendingUserInputRequests(threadId) {
+  async function fetchPendingUserInputRequests(threadId: string | null): Promise<PendingUserInputRequest[]> {
     if (!threadId) {
       setPendingUserInputRequests([]);
       return [];
     }
     const res = await fetch(`/api/approvals/pending?threadId=${encodeURIComponent(threadId)}`);
-    const data = await res.json();
+    const data = (await res.json()) as PendingUserInputFetchResponse;
     if (!res.ok) throw new Error(data.error || 'pending_user_input_fetch_failed');
     const requests = sanitizePendingUserInputRequests(data.requests, threadId);
     setPendingUserInputRequests(requests);
     return requests;
   }
 
-  async function respondToUserInput(requestId, answers, requestMeta = null) {
+  async function respondToUserInput(
+    requestId: RequestId,
+    answers: UserInputAnswerMap,
+    requestMeta: Pick<PendingUserInputRequest, 'threadId' | 'turnId'> | null = null
+  ): Promise<boolean> {
     const key = String(requestId || '');
     if (!key) return false;
     setPendingUserInputBusy((prev) => ({ ...prev, [key]: true }));
@@ -1339,7 +1524,7 @@ export default function AppRoot() {
           answers
         })
       });
-      const data = await res.json();
+      const data = (await res.json()) as JsonErrorResponse;
       if (!res.ok) throw new Error(data.error || 'approval_respond_failed');
       setPendingUserInputRequests((prev) => prev.filter((item) => String(item.requestId) !== key));
       toast('入力を送信しました');
@@ -1358,8 +1543,8 @@ export default function AppRoot() {
         }
       }
       return true;
-    } catch (e) {
-      toast(`入力送信失敗: ${String(e.message || 'unknown_error')}`);
+    } catch (e: unknown) {
+      toast(`入力送信失敗: ${getClientErrorMessage(e)}`);
       return false;
     } finally {
       setPendingUserInputBusy((prev) => {
@@ -1370,7 +1555,12 @@ export default function AppRoot() {
     }
   }
 
-  async function selectUserInputOption(request, questionIndex, questionId, optionLabel) {
+  async function selectUserInputOption(
+    request: PendingUserInputRequest,
+    questionIndex: number,
+    questionId: string,
+    optionLabel: string
+  ): Promise<void> {
     if (!request || !request.requestId || !questionId) return;
     const requestKey = String(request.requestId);
     const questions = Array.isArray(request.questions) ? request.questions : [];
@@ -1413,7 +1603,7 @@ export default function AppRoot() {
     });
   }
 
-  async function startResumeStream(threadId, turnId) {
+  async function startResumeStream(threadId: string, turnId: string): Promise<void> {
     if (!threadId || !turnId) return;
     if (resumeStreamingTurnIdRef.current === turnId && resumeStreamAbortRef.current) return;
     if (resumeStreamAbortRef.current) resumeStreamAbortRef.current.abort();
@@ -1436,7 +1626,7 @@ export default function AppRoot() {
 
     setOutputItems((prev) => {
       if (prev.some((item) => item.id === assistantId)) return prev;
-      return [...prev, { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '', answer: '', plan: '' }];
+      return [...prev, createEmptyAssistantItem(assistantId)];
     });
 
     let answerCommitted = '';
@@ -1444,10 +1634,10 @@ export default function AppRoot() {
     let reasoningRaw = '';
     let lineBuf = '';
 
-    function updateAssistant(patch) {
+    function updateAssistant(patch: AssistantPatch): void {
       setOutputItems((prev) =>
         prev.map((item) => {
-          if (item.id !== assistantId) return item;
+          if (item.id !== assistantId || !isAssistantItem(item)) return item;
           const merged = typeof patch === 'function' ? patch(item) : { ...item, ...patch };
           return merged;
         })
@@ -1477,12 +1667,7 @@ export default function AppRoot() {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          let evt = null;
-          try {
-            evt = JSON.parse(trimmed);
-          } catch {
-            evt = null;
-          }
+          const evt = parseTurnStreamEvent(trimmed);
           if (!evt) {
             setAwaitingFirstStreamChunk(false);
             setHasAnswerStarted(true);
@@ -1548,12 +1733,7 @@ export default function AppRoot() {
       }
 
       if (lineBuf.trim()) {
-        let evt = null;
-        try {
-          evt = JSON.parse(lineBuf.trim());
-        } catch {
-          evt = null;
-        }
+        const evt = parseTurnStreamEvent(lineBuf.trim());
         if (!evt) {
           setAwaitingFirstStreamChunk(false);
           setHasAnswerStarted(true);
@@ -1608,8 +1788,8 @@ export default function AppRoot() {
           }
         }
       }
-    } catch (e) {
-      if (e.name !== 'AbortError') {
+    } catch (e: unknown) {
+      if (!(e instanceof DOMException && e.name === 'AbortError')) {
         // resume失敗時は履歴再取得で最新化し、失敗トーストは出さない。
         restoreOutputForThread(threadId);
       }
@@ -1636,23 +1816,23 @@ export default function AppRoot() {
     }
   }
 
-  async function checkAuthStatus() {
+  async function checkAuthStatus(): Promise<JsonErrorResponse & { available?: boolean; connected?: boolean; login?: string }> {
     const res = await fetch('/api/github/auth/status');
-    const data = await res.json();
+    const data = (await res.json()) as JsonErrorResponse & { available?: boolean; connected?: boolean; login?: string };
     if (!res.ok) throw new Error(data.error || 'auth_status_failed');
     return data;
   }
 
-  async function fetchRepos(nextQuery = query) {
+  async function fetchRepos(nextQuery = query): Promise<void> {
     const res = await fetch(`/api/github/repos?query=${encodeURIComponent(nextQuery.trim())}`);
-    const data = await res.json();
+    const data = (await res.json()) as JsonErrorResponse & { repos?: RepoSummary[] };
     if (!res.ok) throw new Error(data.hint || data.error || 'repo_load_failed');
-    setRepos(data.repos || []);
+    setRepos(Array.isArray(data.repos) ? data.repos : []);
   }
 
-  async function fetchThreadMessages(threadId) {
+  async function fetchThreadMessages(threadId: string): Promise<{ items: OutputItem[]; model: string }> {
     const res = await fetch(`/api/threads/messages?threadId=${encodeURIComponent(threadId)}`);
-    const data = await res.json();
+    const data = (await res.json()) as ThreadMessagesResponse;
     if (!res.ok) throw new Error(data.error || 'thread_messages_failed');
     return {
       items: expandAssistantItems(Array.isArray(data.items) ? data.items : []),
@@ -1660,7 +1840,7 @@ export default function AppRoot() {
     };
   }
 
-  async function ensureThread(repoFullName, preferredThreadId = null, model = '') {
+  async function ensureThread(repoFullName: string, preferredThreadId: string | null = null, model = ''): Promise<string> {
     const normalizedModel = String(model || '').trim();
     const res = await fetch('/api/threads/ensure', {
       method: 'POST',
@@ -1671,14 +1851,14 @@ export default function AppRoot() {
         model: normalizedModel || undefined
       })
     });
-    const data = await res.json();
+    const data = (await res.json()) as EnsureThreadResponse;
     if (!res.ok) throw new Error(data.error || 'thread_ensure_failed');
     const id = data.id || data.thread_id;
     if (!id) throw new Error('thread_id_missing');
     return id;
   }
 
-  function isRecoverableThreadError(text) {
+  function isRecoverableThreadError(text: string): boolean {
     const raw = String(text || '');
     return (
       raw.includes('thread not found') ||
@@ -1687,11 +1867,11 @@ export default function AppRoot() {
     );
   }
 
-  function looksLikeDiff(text) {
+  function looksLikeDiff(text: string): boolean {
     return /^diff --git/m.test(text) || /^@@/m.test(text) || /^\+\+\+/m.test(text);
   }
 
-  async function bootstrapConnection() {
+  async function bootstrapConnection(): Promise<void> {
     setConnected(false);
     setError(null);
     setRepos([]);
@@ -1708,30 +1888,30 @@ export default function AppRoot() {
       }
       setConnected(true);
       await fetchRepos('');
-    } catch (e) {
-      setError({ title: '接続確認に失敗しました', cause: e.message || 'unknown_error' });
+    } catch (e: unknown) {
+      setError({ title: '接続確認に失敗しました', cause: getClientErrorMessage(e) });
     }
   }
 
-  async function refreshCloneState(fullName) {
+  async function refreshCloneState(fullName: string): Promise<{ status?: string; error?: string }> {
     const res = await fetch(`/api/repos/clone-status?fullName=${encodeURIComponent(fullName)}`);
-    const data = await res.json();
+    const data = (await res.json()) as JsonErrorResponse & { status?: string; error?: string };
     if (!res.ok) throw new Error(data.error || 'clone_status_failed');
     return data;
   }
 
-  async function cloneSelectedRepo(repo) {
+  async function cloneSelectedRepo(repo: RepoSummary): Promise<JsonErrorResponse> {
     const res = await fetch('/api/repos/clone', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fullName: repo.fullName, cloneUrl: repo.cloneUrl })
     });
-    const data = await res.json();
+    const data = (await res.json()) as JsonErrorResponse;
     if (!res.ok) throw new Error(data.error || 'clone_failed');
     return data;
   }
 
-  async function waitForClone(fullName, timeoutMs = CLONE_TIMEOUT_MS) {
+  async function waitForClone(fullName: string, timeoutMs = CLONE_TIMEOUT_MS): Promise<{ status?: string; error?: string }> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       const data = await refreshCloneState(fullName);
@@ -1742,21 +1922,21 @@ export default function AppRoot() {
     throw new Error(`clone_timeout_${Math.floor(timeoutMs / 1000)}s`);
   }
 
-  async function createThread(repoFullName, model = '') {
+  async function createThread(repoFullName: string, model = ''): Promise<string> {
     const normalizedModel = String(model || '').trim();
     const res = await fetch('/api/threads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoFullName, title: `thread-${Date.now()}`, model: normalizedModel || undefined })
     });
-    const data = await res.json();
+    const data = (await res.json()) as EnsureThreadResponse;
     if (!res.ok) throw new Error(data.error || 'thread_create_failed');
     const id = data.id || data.thread_id;
     if (!id) throw new Error('thread_id_missing');
     return id;
   }
 
-  function restoreOutputForThread(threadId, repoFullName = activeRepoRef.current) {
+  function restoreOutputForThread(threadId: string, repoFullName: string | null = activeRepoRef.current): void {
     if (!threadId) return;
     // スレッド切替直後でも、到着した履歴を破棄しないよう即時更新する。
     activeThreadRef.current = threadId;
@@ -1776,7 +1956,7 @@ export default function AppRoot() {
       });
   }
 
-  async function startWithRepo(repo) {
+  async function startWithRepo(repo: RepoSummary): Promise<boolean> {
     setBusy(true);
     try {
       setPendingAttachments([]);
@@ -1803,17 +1983,17 @@ export default function AppRoot() {
       restoreOutputForThread(threadId, repo.fullName);
       toast('接続しました');
       return true;
-    } catch (e) {
-      toast(`接続失敗: ${String(e.message || 'unknown_error')}`);
+    } catch (e: unknown) {
+      toast(`接続失敗: ${getClientErrorMessage(e)}`);
       return false;
     } finally {
       setBusy(false);
     }
   }
 
-  function appendUserMessage(prompt, attachments) {
+  function appendUserMessage(prompt: string, attachments: ImageAttachmentDraft[]): void {
     const userId = `u-${Date.now()}`;
-    const attachmentMeta = attachments.map((att) => ({
+    const attachmentMeta: ImageAttachmentMeta[] = attachments.map((att) => ({
       type: 'image',
       name: att.name,
       size: att.size,
@@ -1822,7 +2002,12 @@ export default function AppRoot() {
     setOutputItems((prev) => [...prev, { id: userId, role: 'user', type: 'plain', text: prompt, attachments: attachmentMeta }]);
   }
 
-  async function postSteerTurn(threadId, turnId, prompt, attachments) {
+  async function postSteerTurn(
+    threadId: string,
+    turnId: string,
+    prompt: string,
+    attachments: ImageAttachmentDraft[]
+  ): Promise<{ ok: boolean; status: number; error: string }> {
     const res = await fetch('/api/turns/steer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1833,9 +2018,9 @@ export default function AppRoot() {
         attachments
       })
     });
-    let data = {};
+    let data: JsonErrorResponse = {};
     try {
-      data = await res.json();
+      data = (await res.json()) as JsonErrorResponse;
     } catch {
       data = {};
     }
@@ -1846,7 +2031,15 @@ export default function AppRoot() {
     };
   }
 
-  async function startTurnStream(prompt, attachmentsToSend, threadIdToUse, appendUser = true, forcedCollaborationMode = '') {
+  async function startTurnStream(
+    prompt: string,
+    attachmentsToSend: ImageAttachmentDraft[],
+    threadIdToUse: string,
+    appendUser = true,
+    forcedCollaborationMode = ''
+  ): Promise<void> {
+    const repoFullName = activeRepoFullName;
+    if (!repoFullName) throw new Error('repo_not_selected');
     setMessage('');
     setPendingAttachments([]);
     setLiveReasoningText('');
@@ -1861,14 +2054,14 @@ export default function AppRoot() {
 
     const assistantId = `a-${Date.now() + 1}`;
     setStreamingAssistantId(assistantId);
-    setOutputItems((prev) => [...prev, { id: assistantId, role: 'assistant', type: 'markdown', text: '', status: '', answer: '', plan: '' }]);
+    setOutputItems((prev) => [...prev, createEmptyAssistantItem(assistantId)]);
 
     const controller = new AbortController();
     streamAbortRef.current = controller;
     backgroundInterruptedTurnRef.current = false;
 
     try {
-      async function postTurn(targetThreadId) {
+      async function postTurn(targetThreadId: string): Promise<Response> {
         const model = getRepoModel(activeRepoRef.current);
         return fetch('/api/turns/stream', {
           method: 'POST',
@@ -1888,11 +2081,11 @@ export default function AppRoot() {
       if (!res.ok) {
         const firstErr = await res.text();
         if (isRecoverableThreadError(firstErr)) {
-          const recovered = await ensureThread(activeRepoFullName, null, getRepoModel(activeRepoFullName));
+          const recovered = await ensureThread(repoFullName, null, getRepoModel(repoFullName));
           threadIdToUse = recovered;
           setActiveThreadId(recovered);
-          setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: recovered }));
-          restoreOutputForThread(recovered, activeRepoFullName);
+          setThreadByRepo((prev) => ({ ...prev, [repoFullName]: recovered }));
+          restoreOutputForThread(recovered, repoFullName);
           res = await postTurn(threadIdToUse);
         } else {
           throw new Error(firstErr || 'send_failed');
@@ -1911,10 +2104,10 @@ export default function AppRoot() {
       let reasoningRaw = '';
       let lineBuf = '';
 
-      function updateAssistant(patch) {
+      function updateAssistant(patch: AssistantPatch): void {
         setOutputItems((prev) =>
           prev.map((item) => {
-            if (item.id !== assistantId) return item;
+            if (item.id !== assistantId || !isAssistantItem(item)) return item;
             const merged = typeof patch === 'function' ? patch(item) : { ...item, ...patch };
             return merged;
           })
@@ -1931,12 +2124,7 @@ export default function AppRoot() {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          let evt = null;
-          try {
-            evt = JSON.parse(trimmed);
-          } catch {
-            evt = null;
-          }
+          const evt = parseTurnStreamEvent(trimmed);
           if (!evt) {
             setAwaitingFirstStreamChunk(false);
             setHasAnswerStarted(true);
@@ -2000,12 +2188,7 @@ export default function AppRoot() {
       }
 
       if (lineBuf.trim()) {
-        let evt = null;
-        try {
-          evt = JSON.parse(lineBuf.trim());
-        } catch {
-          evt = null;
-        }
+        const evt = parseTurnStreamEvent(lineBuf.trim());
         if (!evt) {
           setAwaitingFirstStreamChunk(false);
           setHasAnswerStarted(true);
@@ -2057,28 +2240,28 @@ export default function AppRoot() {
       }
 
       const finalAnswer = answerCommitted.trim() ? answerCommitted : '(応答なし)';
-      const finalType = looksLikeDiff(finalAnswer) ? 'diff' : 'markdown';
-      setOutputItems((prev) => {
+      const finalType: AssistantOutputItem['type'] = looksLikeDiff(finalAnswer) ? 'diff' : 'markdown';
+      setOutputItems((prev): OutputItem[] => {
         const next = prev.map((item) =>
-          item.id === assistantId
+          item.id === assistantId && isAssistantItem(item)
             ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer, plan: planCommitted }
             : item
         );
         next.push({ id: `${assistantId}:sep`, role: 'system', type: 'separator', text: '' });
         return next;
       });
-    } catch (e) {
-      if (e.name === 'AbortError') {
+    } catch (e: unknown) {
+      if (e instanceof DOMException && e.name === 'AbortError') {
         setOutputItems((prev) =>
-          prev.map((item) => (item.id === assistantId ? { ...item, text: '(停止しました)' } : item))
+          prev.map((item) => (item.id === assistantId && isAssistantItem(item) ? { ...item, text: '(停止しました)' } : item))
         );
       } else if (backgroundInterruptedTurnRef.current) {
         setOutputItems((prev) => prev.filter((item) => item.id !== assistantId));
       } else {
         setOutputItems((prev) =>
           prev.map((item) =>
-            item.id === assistantId
-              ? { ...item, text: `送信失敗: ${String(e.message || 'unknown_error')}` }
+            item.id === assistantId && isAssistantItem(item)
+              ? { ...item, text: `送信失敗: ${getClientErrorMessage(e)}` }
               : item
           )
         );
@@ -2100,8 +2283,12 @@ export default function AppRoot() {
     }
   }
 
-  async function sendTurnWithOverrides({ forcedPrompt = '', forcedCollaborationMode = '' } = {}) {
-    if (!activeRepoFullName) {
+  async function sendTurnWithOverrides({
+    forcedPrompt = '',
+    forcedCollaborationMode = ''
+  }: { forcedPrompt?: string; forcedCollaborationMode?: CollaborationMode | string } = {}): Promise<void> {
+    const repoFullName = activeRepoFullName;
+    if (!repoFullName) {
       toast('リポジトリが未選択です');
       return;
     }
@@ -2109,12 +2296,12 @@ export default function AppRoot() {
     const forcedMode = String(forcedCollaborationMode || '').trim();
     if (!activeThreadId) {
       try {
-        const created = await ensureThread(activeRepoFullName, null, getRepoModel(activeRepoFullName));
+        const created = await ensureThread(repoFullName, null, getRepoModel(repoFullName));
         setActiveThreadId(created);
-        setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: created }));
-        restoreOutputForThread(created, activeRepoFullName);
-      } catch (e) {
-        toast(`Thread準備失敗: ${String(e.message || 'unknown_error')}`);
+        setThreadByRepo((prev) => ({ ...prev, [repoFullName]: created }));
+        restoreOutputForThread(created, repoFullName);
+      } catch (e: unknown) {
+        toast(`Thread準備失敗: ${getClientErrorMessage(e)}`);
         return;
       }
     }
@@ -2127,24 +2314,24 @@ export default function AppRoot() {
       setPendingAttachments([]);
     }
 
-    let threadIdToUse = activeThreadId || threadByRepo[activeRepoFullName];
+    let threadIdToUse = activeThreadId || threadByRepo[repoFullName];
     if (!threadIdToUse) return;
 
     try {
-      const ensured = await ensureThread(activeRepoFullName, threadIdToUse, getRepoModel(activeRepoFullName));
+      const ensured = await ensureThread(repoFullName, threadIdToUse, getRepoModel(repoFullName));
       threadIdToUse = ensured;
       if (ensured !== activeThreadId) {
         setActiveThreadId(ensured);
-        setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: ensured }));
-        restoreOutputForThread(ensured, activeRepoFullName);
+        setThreadByRepo((prev) => ({ ...prev, [repoFullName]: ensured }));
+        restoreOutputForThread(ensured, repoFullName);
       }
-    } catch (e) {
-      toast(`Thread再接続失敗: ${String(e.message || 'unknown_error')}`);
+    } catch (e: unknown) {
+      toast(`Thread再接続失敗: ${getClientErrorMessage(e)}`);
       return;
     }
     if (
       pendingThreadReturn &&
-      pendingThreadReturn.repoFullName === activeRepoFullName &&
+      pendingThreadReturn.repoFullName === repoFullName &&
       pendingThreadReturn.toThreadId === threadIdToUse
     ) {
       setPendingThreadReturn(null);
@@ -2187,25 +2374,26 @@ export default function AppRoot() {
     toast(`追加入力送信失敗: ${steerResult.error || 'steer_failed'}`);
   }
 
-  async function sendTurn() {
+  async function sendTurn(): Promise<void> {
     await sendTurnWithOverrides();
   }
 
-  async function startNewThread() {
+  async function startNewThread(): Promise<void> {
     if (streaming) return;
-    if (!activeRepoFullName) {
+    const repoFullName = activeRepoFullName;
+    if (!repoFullName) {
       toast('リポジトリが未選択です');
       return;
     }
     setBusy(true);
     try {
       const previousThreadId = String(activeThreadRef.current || '');
-      const id = await createThread(activeRepoFullName, getRepoModel(activeRepoFullName));
+      const id = await createThread(repoFullName, getRepoModel(repoFullName));
       setActiveThreadId(id);
-      setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: id }));
+      setThreadByRepo((prev) => ({ ...prev, [repoFullName]: id }));
       if (previousThreadId && previousThreadId !== id) {
         setPendingThreadReturn({
-          repoFullName: activeRepoFullName,
+          repoFullName,
           fromThreadId: previousThreadId,
           toThreadId: id
         });
@@ -2216,14 +2404,14 @@ export default function AppRoot() {
       setMessage('');
       setPendingAttachments([]);
       toast('新規スレッドを開始しました');
-    } catch (e) {
-      toast(`新規スレッド開始失敗: ${String(e.message || 'unknown_error')}`);
+    } catch (e: unknown) {
+      toast(`新規スレッド開始失敗: ${getClientErrorMessage(e)}`);
     } finally {
       setBusy(false);
     }
   }
 
-  async function cancelTurn() {
+  async function cancelTurn(): Promise<void> {
     const controller = streamAbortRef.current;
     if (controller) controller.abort();
 
@@ -2246,12 +2434,12 @@ export default function AppRoot() {
     activeTurnIdRef.current = '';
   }
 
-  function navigate(path, replace = false) {
+  function navigate(path: string, replace = false): void {
     const next = pushPath(path, replace);
     setCurrentPath(next);
   }
 
-  function scrollLastUserMessageToTopOrKeepPosition() {
+  function scrollLastUserMessageToTopOrKeepPosition(): boolean {
     const container = outputRef.current;
     if (!(container instanceof HTMLElement)) return false;
 
@@ -2485,7 +2673,7 @@ export default function AppRoot() {
     const alive = new Set(pendingUserInputRequests.map((item) => String(item.requestId || '')));
     setPendingUserInputDrafts((prev) => {
       let changed = false;
-      const next = {};
+      const next: UserInputDraftMap = {};
       for (const [key, value] of Object.entries(prev)) {
         if (alive.has(key)) next[key] = value;
         else changed = true;
@@ -2501,7 +2689,7 @@ export default function AppRoot() {
   const latestPlanText = useMemo(() => {
     for (let idx = outputItems.length - 1; idx >= 0; idx -= 1) {
       const item = outputItems[idx];
-      if (!item || item.role !== 'assistant') continue;
+      if (!item || !isAssistantItem(item)) continue;
       const planText = String(item.plan || '').trim();
       if (planText) return planText;
     }
@@ -2514,10 +2702,11 @@ export default function AppRoot() {
       ? collaborationModeByRepo[activeRepoFullName]
       : DEFAULT_COLLABORATION_MODE;
 
-  function setActiveCollaborationMode(mode) {
-    if (!activeRepoFullName) return;
+  function setActiveCollaborationMode(mode: CollaborationMode): void {
+    const repoFullName = activeRepoFullName;
+    if (!repoFullName) return;
     const next = mode === 'default' ? 'default' : 'plan';
-    setCollaborationModeByRepo((prev) => ({ ...prev, [activeRepoFullName]: next }));
+    setCollaborationModeByRepo((prev) => ({ ...prev, [repoFullName]: next }));
   }
 
   const canReturnToPreviousThread = Boolean(
@@ -2531,7 +2720,7 @@ export default function AppRoot() {
     latestPlanText && activeThreadId && activeRepoFullName && !streaming
   );
 
-  async function applyLatestPlanShortcut() {
+  async function applyLatestPlanShortcut(): Promise<void> {
     if (!canApplyLatestPlan) return;
     setActiveCollaborationMode('default');
     await sendTurnWithOverrides({
@@ -2542,6 +2731,8 @@ export default function AppRoot() {
 
   function returnToPreviousThread() {
     if (!canReturnToPreviousThread || !pendingThreadReturn) return;
+    const repoFullName = activeRepoFullName;
+    if (!repoFullName) return;
     const fallbackThreadId = String(pendingThreadReturn.fromThreadId || '');
     if (!fallbackThreadId) {
       setPendingThreadReturn(null);
@@ -2549,8 +2740,8 @@ export default function AppRoot() {
       return;
     }
     setActiveThreadId(fallbackThreadId);
-    setThreadByRepo((prev) => ({ ...prev, [activeRepoFullName]: fallbackThreadId }));
-    restoreOutputForThread(fallbackThreadId, activeRepoFullName);
+    setThreadByRepo((prev) => ({ ...prev, [repoFullName]: fallbackThreadId }));
+    restoreOutputForThread(fallbackThreadId, repoFullName);
     setPendingThreadReturn(null);
   }
 

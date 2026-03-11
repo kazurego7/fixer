@@ -1,5 +1,5 @@
-const { test, expect } = require('@playwright/test');
-const { bootstrapChatState, installApiMocks } = require('./helpers');
+import { expect, test } from '@playwright/test';
+import { bootstrapChatState, installApiMocks } from './helpers';
 
 test('errorイベント時は送信失敗を表示して思考パネルを消す', async ({ page }) => {
   await bootstrapChatState(page);
@@ -54,7 +54,7 @@ test('停止押下で中断APIを呼び停止表示に切り替える', async ({
   await bootstrapChatState(page);
   await installApiMocks(page);
 
-  const state = { cancelBody: null };
+  const state: { cancelBody: { thread_id?: string } | null } = { cancelBody: null };
 
   await page.unroute('**/api/turns/stream');
   await page.route('**/api/turns/stream', async (route) => {
@@ -96,7 +96,10 @@ test('複数質問の回答送信後にresumeストリームを再開する', as
   await bootstrapChatState(page);
   await installApiMocks(page);
 
-  const state = { approvalBody: null, restored: false };
+  const state: {
+    approvalBody: { answers?: Record<string, { answers: string[] }> } | null;
+    restored: boolean;
+  } = { approvalBody: null, restored: false };
 
   await page.unroute('**/api/threads/messages**');
   await page.route('**/api/threads/messages**', async (route) => {

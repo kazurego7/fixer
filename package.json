@@ -2,17 +2,17 @@
   "name": "codex-mobile-ui",
   "version": "0.1.0",
   "description": "Mobile web UI for local Codex App Server",
-  "main": "server.js",
+  "main": "server.ts",
   "scripts": {
-    "start": "node server.js",
-    "start:watch": "node --watch server.js",
-    "build": "vite build --config vite.config.js",
-    "build:watch": "vite build --watch --config vite.config.js",
+    "start": "tsx server.ts",
+    "start:watch": "tsx watch server.ts",
+    "build": "vite build --config vite.config.ts",
+    "build:watch": "vite build --watch --config vite.config.ts",
     "dev": "bash -lc \"trap 'kill 0' EXIT; npm run build:watch & npm run start:watch\"",
-    "web:dev": "vite --config vite.config.js",
-    "test": "node --test test/*.test.js",
-    "test:e2e": "playwright test",
-    "test:smoke": "playwright test --grep @smoke",
+    "web:dev": "vite --config vite.config.ts",
+    "test": "tsx --test test/*.test.ts",
+    "test:e2e": "playwright test --config playwright.config.ts",
+    "test:smoke": "playwright test --config playwright.config.ts --grep @smoke",
     "test:all": "npm test && npm run test:smoke"
   },
   "dependencies": {
@@ -28,7 +28,14 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@types/node": "^24.7.2",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.1.4",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
     "vite": "^7.3.1"
   }
 }

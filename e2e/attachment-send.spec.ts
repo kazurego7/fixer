@@ -1,5 +1,5 @@
-const { test, expect } = require('@playwright/test');
-const { bootstrapChatState, installApiMocks, buildImageFile } = require('./helpers');
+import { expect, test } from '@playwright/test';
+import { bootstrapChatState, buildImageFile, installApiMocks } from './helpers';
 
 test('画像添付を送信payloadへ含め、送信後に添付バーが消える @smoke', async ({ page }) => {
   await bootstrapChatState(page);

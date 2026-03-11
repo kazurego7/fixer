@@ -1,18 +1,141 @@
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { spawn, spawnSync } = require('child_process');
-const WebSocket = require('ws');
-const webPush = require('web-push');
-const Fastify = require('fastify');
-const fastifyStatic = require('@fastify/static');
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from 'node:child_process';
+import Fastify, {
+  type FastifyBaseLogger,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest
+} from 'fastify';
+import fastifyStatic from '@fastify/static';
+import WebSocket from 'ws';
+import webPush, { type PushSubscription } from 'web-push';
+import type {
+  CloneState,
+  CollaborationMode,
+  CollaborationModeOverride,
+  ModelOption,
+  OutputItem,
+  ParsedLegacyTurnNotification,
+  ParsedV2TurnNotification,
+  PendingUserInputRequest,
+  RepoSummary,
+  RequestId,
+  SelectTurnStreamState,
+  SelectTurnStreamUpdateResult,
+  TurnStartOverrides,
+  TurnStreamEvent,
+  TurnTerminalNotification,
+  UserInputAnswerMap,
+  UserInputQuestion
+} from './shared/types';
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    startTime?: bigint;
+  }
+}
+
+type JsonRecord = Record<string, unknown>;
+type RuntimeLogLevel = 'info' | 'error';
+
+interface RuntimeLogEntry {
+  timestamp: string;
+  level: RuntimeLogLevel;
+  event: string;
+  [key: string]: unknown;
+}
+
+interface PushSubscriptionRecord {
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  currentThreadId: string | null;
+  userAgent: string;
+  updatedAt: string;
+}
+
+interface CloneJobState {
+  status: CloneState['status'];
+  error?: string;
+}
+
+interface RpcPendingEntry {
+  resolve: (value: any) => void;
+  reject: (reason?: unknown) => void;
+}
+
+interface StartTurnRetryPayload {
+  attempt: number;
+  message: string;
+}
+
+interface TurnInputTextItem {
+  type: 'text';
+  text: string;
+}
+
+interface TurnInputImageItem {
+  type: 'image';
+  url: string;
+}
+
+type TurnInputItem = TurnInputTextItem | TurnInputImageItem;
+
+interface ThreadMessageReadResult {
+  thread?: {
+    model?: string;
+    turns?: Array<{
+      id?: string;
+      input?: Array<{ type?: string; text?: string }>;
+      items?: Array<{
+        type?: string;
+        text?: string;
+        summary?: string[];
+        content?: Array<{ type?: string; text?: string }>;
+      }>;
+    }>;
+  };
+}
+
+interface GithubUserResponse {
+  login?: string;
+}
+
+interface GithubRepoApiItem {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  clone_url: string;
+  default_branch: string;
+  updated_at: string;
+}
+
+function getErrorMessage(error: unknown, fallback = 'unknown_error'): string {
+  if (error instanceof Error && error.message) return error.message;
+  const record = asObject(error);
+  const message = asString(record?.message);
+  return message || fallback;
+}
+
+function getErrorCode(error: unknown): string | null {
+  if (error instanceof Error && typeof (error as Error & { code?: unknown }).code === 'string') {
+    return (error as Error & { code?: string }).code || null;
+  }
+  const record = asObject(error);
+  return asString(record?.code);
+}
 
 const PORT = Number(process.env.PORT || 3000);
 const CODEX_APP_SERVER_WS_URL = 'ws://127.0.0.1:39080';
 const CODEX_APP_SERVER_START_CMD = `codex app-server --listen ${CODEX_APP_SERVER_WS_URL}`;
 const CODEX_APP_SERVER_STARTUP_TIMEOUT_MS = 15000;
 
-function resolveWorkspaceRoot() {
+function resolveWorkspaceRoot(): string {
   const preferred = path.join(os.homedir(), '.fixer', 'workspace');
   if (!fs.existsSync(preferred)) {
     try {
@@ -31,35 +154,35 @@ const WORKSPACE_ROOT = resolveWorkspaceRoot();
 const PUSH_SUBSCRIPTIONS_PATH = path.join(WORKSPACE_ROOT, 'push-subscriptions.json');
 const PUSH_VAPID_PATH = path.join(WORKSPACE_ROOT, 'push-vapid.json');
 const DEFAULT_PUSH_SUBJECT = 'mailto:fixer@example.com';
-const cloneJobs = new Map();
-const runtimeLogs = [];
+const cloneJobs = new Map<string, CloneJobState>();
+const runtimeLogs: RuntimeLogEntry[] = [];
 const MAX_RUNTIME_LOGS = 2000;
-const runningTurnByThreadId = new Map();
-const threadModelByThreadId = new Map();
-const pendingUserInputRequestById = new Map();
-const handledTerminalTurnKeys = new Set();
-const handledPushTurnKeys = new Set();
+const runningTurnByThreadId = new Map<string, string>();
+const threadModelByThreadId = new Map<string, string>();
+const pendingUserInputRequestById = new Map<string, PendingUserInputRequest & { createdAt: string }>();
+const handledTerminalTurnKeys = new Set<string>();
+const handledPushTurnKeys = new Set<string>();
 const DEFAULT_MODEL_FALLBACK = 'gpt-5-codex';
 const DEFAULT_REASONING_SUMMARY = 'concise';
 
-let codexServerProcess = null;
-let codexStartPromise = null;
-let appServerWs = null;
-let wsConnectPromise = null;
+let codexServerProcess: ChildProcess | null = null;
+let codexStartPromise: Promise<void> | null = null;
+let appServerWs: WebSocket | null = null;
+let wsConnectPromise: Promise<void> | null = null;
 let rpcSeq = 1;
-const rpcPending = new Map();
-const wsSubscribers = new Set();
-let pushSubscriptions = [];
+const rpcPending = new Map<number, RpcPendingEntry>();
+const wsSubscribers = new Set<(msg: unknown) => void>();
+let pushSubscriptions: PushSubscriptionRecord[] = [];
 let pushPublicKey = '';
 let pushPrivateKey = '';
 let pushEnabled = false;
 
-function pushRuntimeLog(entry) {
+function pushRuntimeLog(entry: { level: RuntimeLogLevel; event: string; [key: string]: unknown }): void {
   runtimeLogs.push({ timestamp: new Date().toISOString(), ...entry });
   if (runtimeLogs.length > MAX_RUNTIME_LOGS) runtimeLogs.shift();
 }
 
-function rememberBounded(set, key, max = 5000) {
+function rememberBounded(set: Set<string>, key: string | null | undefined, max = 5000): void {
   if (!key) return;
   set.add(key);
   if (set.size <= max) return;
@@ -67,7 +190,7 @@ function rememberBounded(set, key, max = 5000) {
   if (first !== undefined) set.delete(first);
 }
 
-function loadPushSubscriptions() {
+function loadPushSubscriptions(): PushSubscriptionRecord[] {
   try {
     if (!fs.existsSync(PUSH_SUBSCRIPTIONS_PATH)) return [];
     const raw = fs.readFileSync(PUSH_SUBSCRIPTIONS_PATH, 'utf8');
@@ -88,13 +211,13 @@ function loadPushSubscriptions() {
   }
 }
 
-function savePushSubscriptions() {
+function savePushSubscriptions(): void {
   const tmp = `${PUSH_SUBSCRIPTIONS_PATH}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(pushSubscriptions, null, 2));
   fs.renameSync(tmp, PUSH_SUBSCRIPTIONS_PATH);
 }
 
-function loadOrCreateVapidKeys() {
+function loadOrCreateVapidKeys(): { publicKey: string; privateKey: string } {
   try {
     if (fs.existsSync(PUSH_VAPID_PATH)) {
       const raw = fs.readFileSync(PUSH_VAPID_PATH, 'utf8');
@@ -132,7 +255,17 @@ function loadOrCreateVapidKeys() {
   };
 }
 
-function upsertPushSubscription({ endpoint, keys, currentThreadId = null, userAgent = '' }) {
+function upsertPushSubscription({
+  endpoint,
+  keys,
+  currentThreadId = null,
+  userAgent = ''
+}: {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  currentThreadId?: string | null;
+  userAgent?: string;
+}): PushSubscriptionRecord {
   const now = new Date().toISOString();
   const record = {
     endpoint,
@@ -151,18 +284,20 @@ function upsertPushSubscription({ endpoint, keys, currentThreadId = null, userAg
   return record;
 }
 
-function removePushSubscription(endpoint) {
+function removePushSubscription(endpoint: string): boolean {
   const before = pushSubscriptions.length;
   pushSubscriptions = pushSubscriptions.filter((item) => item.endpoint !== endpoint);
   if (pushSubscriptions.length !== before) savePushSubscriptions();
   return before !== pushSubscriptions.length;
 }
 
-function setPushContext(endpoint, currentThreadId = null) {
+function setPushContext(endpoint: string, currentThreadId: string | null = null): PushSubscriptionRecord | null {
   const idx = pushSubscriptions.findIndex((item) => item.endpoint === endpoint);
   if (idx < 0) return null;
+  const current = pushSubscriptions[idx];
+  if (!current) return null;
   pushSubscriptions[idx] = {
-    ...pushSubscriptions[idx],
+    ...current,
     currentThreadId: currentThreadId ? String(currentThreadId) : null,
     updatedAt: new Date().toISOString()
   };
@@ -170,7 +305,9 @@ function setPushContext(endpoint, currentThreadId = null) {
   return pushSubscriptions[idx];
 }
 
-async function notifyPushSubscribersForThread(threadId) {
+async function notifyPushSubscribersForThread(
+  threadId: string
+): Promise<{ sent: number; staleRemoved: number; skipped?: string }> {
   if (!pushEnabled) return { sent: 0, staleRemoved: 0, skipped: 'push_not_configured' };
   const targets = pushSubscriptions.filter((sub) => sub.currentThreadId === threadId);
   if (targets.length === 0) return { sent: 0, staleRemoved: 0 };
@@ -200,7 +337,8 @@ async function notifyPushSubscribersForThread(threadId) {
       );
       sent += 1;
     } catch (error) {
-      const statusCode = Number(error?.statusCode || 0);
+      const errorRecord = asObject(error);
+      const statusCode = Number(errorRecord?.statusCode || 0);
       if (statusCode === 404 || statusCode === 410) {
         if (removePushSubscription(sub.endpoint)) staleRemoved += 1;
       }
@@ -210,7 +348,7 @@ async function notifyPushSubscribersForThread(threadId) {
         threadId,
         endpoint: sub.endpoint,
         statusCode: statusCode || null,
-        message: String(error?.message || 'unknown_error')
+        message: getErrorMessage(error)
       });
     }
   }
@@ -218,16 +356,16 @@ async function notifyPushSubscribersForThread(threadId) {
   return { sent, staleRemoved };
 }
 
-function addWsSubscriber(handler) {
+function addWsSubscriber(handler: (msg: unknown) => void): () => boolean {
   wsSubscribers.add(handler);
   return () => wsSubscribers.delete(handler);
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function waitForOpen(ws, timeoutMs) {
+function waitForOpen(ws: WebSocket, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('ws_open_timeout')), timeoutMs);
     ws.once('open', () => {
@@ -241,37 +379,41 @@ function waitForOpen(ws, timeoutMs) {
   });
 }
 
-function attachWsHandlers(ws) {
+function attachWsHandlers(ws: WebSocket): void {
   ws.on('message', (buf) => {
-    let msg = null;
+    let msg: unknown = null;
     try {
       msg = JSON.parse(String(buf));
     } catch {
       return;
     }
+    const record = asObject(msg);
+    if (!record) return;
 
-    const terminal = parseTurnTerminalNotification(msg);
+    const terminal = parseTurnTerminalNotification(record);
     if (terminal) handleTurnTerminalNotification(terminal);
-    const userInputRequest = parseToolRequestUserInput(msg);
+    const userInputRequest = parseToolRequestUserInput(record);
     if (userInputRequest) rememberPendingUserInputRequest(userInputRequest);
 
     if (
-      msg &&
-      Object.prototype.hasOwnProperty.call(msg, 'id') &&
-      !Object.prototype.hasOwnProperty.call(msg, 'method') &&
-      rpcPending.has(msg.id)
+      Object.prototype.hasOwnProperty.call(record, 'id') &&
+      !Object.prototype.hasOwnProperty.call(record, 'method') &&
+      typeof record.id === 'number' &&
+      rpcPending.has(record.id)
     ) {
-      const pending = rpcPending.get(msg.id);
-      rpcPending.delete(msg.id);
-      if (msg.error) {
-        pending.reject(new Error(`app_server_error:${msg.error.code || 'unknown'}:${msg.error.message || 'unknown'}`));
+      const pending = rpcPending.get(record.id);
+      rpcPending.delete(record.id);
+      if (!pending) return;
+      const error = asObject(record.error);
+      if (error) {
+        pending.reject(new Error(`app_server_error:${asString(error.code) || 'unknown'}:${asString(error.message) || 'unknown'}`));
       } else {
-        pending.resolve(msg.result);
+        pending.resolve(record.result);
       }
       return;
     }
 
-    for (const cb of wsSubscribers) cb(msg);
+    for (const cb of wsSubscribers) cb(record);
   });
 
   ws.on('close', () => {
@@ -280,12 +422,12 @@ function attachWsHandlers(ws) {
     rpcPending.clear();
   });
 
-  ws.on('error', (error) => {
+  ws.on('error', (error: Error) => {
     pushRuntimeLog({ level: 'error', event: 'app_server_ws_error', message: error.message });
   });
 }
 
-async function connectWs() {
+async function connectWs(): Promise<void> {
   if (appServerWs && appServerWs.readyState === WebSocket.OPEN) return;
   if (wsConnectPromise) {
     await wsConnectPromise;
@@ -313,17 +455,18 @@ async function connectWs() {
   }
 }
 
-function rpcRequestRaw(method, params) {
-  if (!appServerWs || appServerWs.readyState !== WebSocket.OPEN) {
+function rpcRequestRaw<T = unknown>(method: string, params?: JsonRecord): Promise<T> {
+  const ws = appServerWs;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
     return Promise.reject(new Error('app_server_not_connected'));
   }
 
   const id = rpcSeq++;
   const payload = { jsonrpc: '2.0', id, method, params: params || {} };
 
-  return new Promise((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     rpcPending.set(id, { resolve, reject });
-    appServerWs.send(JSON.stringify(payload), (err) => {
+    ws.send(JSON.stringify(payload), (err) => {
       if (err) {
         rpcPending.delete(id);
         reject(err);
@@ -332,23 +475,23 @@ function rpcRequestRaw(method, params) {
   });
 }
 
-function sendClientNotification(method, params) {
+function sendClientNotification(method: string, params?: JsonRecord): void {
   if (!appServerWs || appServerWs.readyState !== WebSocket.OPEN) {
     throw new Error('app_server_not_connected');
   }
-  const payload = { jsonrpc: '2.0', method };
+  const payload: JsonRecord = { jsonrpc: '2.0', method };
   if (params && typeof params === 'object') payload.params = params;
   appServerWs.send(JSON.stringify(payload));
 }
 
-async function rpcRequest(method, params) {
+async function rpcRequest<T = unknown>(method: string, params?: JsonRecord): Promise<T> {
   await ensureCodexServerRunning();
   await connectWs();
-  return rpcRequestRaw(method, params);
+  return rpcRequestRaw<T>(method, params);
 }
 
-function buildTurnInput(prompt, attachments) {
-  const input = [{ type: 'text', text: String(prompt || '') }];
+function buildTurnInput(prompt: string, attachments: Array<{ type?: string; dataUrl?: string }> | null | undefined): TurnInputItem[] {
+  const input: TurnInputItem[] = [{ type: 'text', text: String(prompt || '') }];
   const list = Array.isArray(attachments) ? attachments : [];
   for (const att of list) {
     if (!att || att.type !== 'image' || !att.dataUrl) continue;
@@ -357,12 +500,12 @@ function buildTurnInput(prompt, attachments) {
   return input;
 }
 
-function normalizeModelId(value) {
+function normalizeModelId(value: unknown): string {
   const model = String(value || '').trim();
   return model || '';
 }
 
-function normalizeModelListResponse(payload) {
+function normalizeModelListResponse(payload: JsonRecord | null | undefined): ModelOption[] {
   const src = Array.isArray(payload?.data)
     ? payload.data
     : Array.isArray(payload?.models)
@@ -384,7 +527,7 @@ function normalizeModelListResponse(payload) {
   return out;
 }
 
-function normalizeCollaborationMode(value) {
+function normalizeCollaborationMode(value: unknown): CollaborationMode | null {
   const normalized = String(value || '')
     .trim()
     .toLowerCase();
@@ -394,7 +537,7 @@ function normalizeCollaborationMode(value) {
   return null;
 }
 
-function buildCollaborationMode(mode, model) {
+function buildCollaborationMode(mode: CollaborationMode, model: string): CollaborationModeOverride {
   return {
     mode,
     settings: {
@@ -405,10 +548,13 @@ function buildCollaborationMode(mode, model) {
   };
 }
 
-async function buildTurnStartOverrides(threadId, options = {}) {
+async function buildTurnStartOverrides(
+  threadId: string,
+  options: { selectedModel?: string; collaborationMode?: CollaborationMode | null } = {}
+): Promise<TurnStartOverrides> {
   const selectedModel = normalizeModelId(options.selectedModel);
   const collaborationMode = normalizeCollaborationMode(options.collaborationMode);
-  const overrides = {
+  const overrides: TurnStartOverrides = {
     summary: DEFAULT_REASONING_SUMMARY
   };
 
@@ -424,12 +570,12 @@ async function buildTurnStartOverrides(threadId, options = {}) {
   return overrides;
 }
 
-async function resolveThreadModel(threadId) {
+async function resolveThreadModel(threadId: string): Promise<string> {
   const cached = threadModelByThreadId.get(threadId);
   if (cached) return cached;
 
   try {
-    const read = await rpcRequest('thread/read', { threadId, includeTurns: false });
+    const read = await rpcRequest<ThreadMessageReadResult>('thread/read', { threadId, includeTurns: false });
     const model = typeof read?.thread?.model === 'string' ? read.thread.model : '';
     if (model) {
       threadModelByThreadId.set(threadId, model);
@@ -440,7 +586,7 @@ async function resolveThreadModel(threadId) {
   }
 
   try {
-    const config = await rpcRequest('config/read', { includeLayers: false });
+    const config = await rpcRequest<{ config?: { model?: string } }>('config/read', { includeLayers: false });
     const model = typeof config?.config?.model === 'string' ? config.config.model : '';
     if (model) return model;
   } catch {
@@ -450,26 +596,32 @@ async function resolveThreadModel(threadId) {
   return DEFAULT_MODEL_FALLBACK;
 }
 
-function isThreadMissingError(error) {
-  const message = String(error?.message || '');
+function isThreadMissingError(error: unknown): boolean {
+  const message = getErrorMessage(error, '');
   return message.includes('thread not found') || message.includes('thread_not_found') || message.includes('no rollout found for thread id');
 }
 
-function isThreadWarmupError(error) {
-  const message = String(error?.message || '');
+function isThreadWarmupError(error: unknown): boolean {
+  const message = getErrorMessage(error, '');
   return message.includes('no rollout found for thread id') || message.includes('thread_not_found') || message.includes('thread not found');
 }
 
-async function startTurnWithRetry(threadId, input, maxAttempts = 20, onRetry = null, overrides = null) {
-  let lastError = null;
+async function startTurnWithRetry(
+  threadId: string,
+  input: TurnInputItem[],
+  maxAttempts = 20,
+  onRetry: ((payload: StartTurnRetryPayload) => void) | null = null,
+  overrides: TurnStartOverrides | null = null
+): Promise<string> {
+  let lastError: unknown = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const turnStartParams = {
+      const turnStartParams: JsonRecord = {
         threadId,
         input,
         ...(overrides && typeof overrides === 'object' ? overrides : {})
       };
-      const turnStart = await rpcRequest('turn/start', turnStartParams);
+      const turnStart = await rpcRequest<{ turn?: { id?: string } }>('turn/start', turnStartParams);
       const turnId = turnStart?.turn?.id;
       if (!turnId) throw new Error('turn_id_missing');
       if (attempt > 1) {
@@ -487,7 +639,7 @@ async function startTurnWithRetry(threadId, input, maxAttempts = 20, onRetry = n
       if (typeof onRetry === 'function') {
         onRetry({
           attempt,
-          message: String(error?.message || 'unknown_error')
+          message: getErrorMessage(error)
         });
       }
       pushRuntimeLog({
@@ -495,7 +647,7 @@ async function startTurnWithRetry(threadId, input, maxAttempts = 20, onRetry = n
         event: 'turn_start_retry',
         threadId,
         attempt,
-        message: String(error?.message || 'unknown_error')
+        message: getErrorMessage(error)
       });
       await sleep(Math.min(700, 100 + attempt * 60));
     }
@@ -503,27 +655,27 @@ async function startTurnWithRetry(threadId, input, maxAttempts = 20, onRetry = n
   throw lastError || new Error('turn_start_failed');
 }
 
-function looksLikeDiff(text) {
+function looksLikeDiff(text: string): boolean {
   return /^diff --git/m.test(text) || /^@@/m.test(text) || /^\+\+\+/m.test(text);
 }
 
-function asObject(value) {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+function asObject(value: unknown): JsonRecord | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonRecord) : null;
 }
 
-function asString(value) {
+function asString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-function asRequestId(value) {
+function asRequestId(value: unknown): RequestId | null {
   if (typeof value === 'string' && value) return value;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   return null;
 }
 
-function parseUserInputQuestions(rawQuestions) {
+function parseUserInputQuestions(rawQuestions: unknown): UserInputQuestion[] {
   const list = Array.isArray(rawQuestions) ? rawQuestions : [];
-  const out = [];
+  const out: UserInputQuestion[] = [];
   for (const question of list) {
     const id = asString(question?.id);
     if (!id) continue;
@@ -551,11 +703,13 @@ function parseUserInputQuestions(rawQuestions) {
   return out;
 }
 
-function parseToolRequestUserInput(msg) {
-  const method = asString(msg?.method);
+function parseToolRequestUserInput(msg: unknown): PendingUserInputRequest | null {
+  const record = asObject(msg);
+  if (!record) return null;
+  const method = asString(record.method);
   if (method !== 'item/tool/requestUserInput') return null;
-  const requestId = asRequestId(msg?.id);
-  const params = asObject(msg?.params);
+  const requestId = asRequestId(record.id);
+  const params = asObject(record.params);
   if (!requestId || !params) return null;
   const threadId = asString(params.threadId);
   const turnId = asString(params.turnId);
@@ -572,7 +726,7 @@ function parseToolRequestUserInput(msg) {
   };
 }
 
-function rememberPendingUserInputRequest(request) {
+function rememberPendingUserInputRequest(request: PendingUserInputRequest): void {
   if (!request?.requestId) return;
   pendingUserInputRequestById.set(String(request.requestId), {
     ...request,
@@ -589,24 +743,24 @@ function rememberPendingUserInputRequest(request) {
   });
 }
 
-function clearPendingUserInputForThread(threadId) {
+function clearPendingUserInputForThread(threadId: string | null | undefined): void {
   if (!threadId) return;
   for (const [key, request] of pendingUserInputRequestById.entries()) {
     if (request?.threadId === threadId) pendingUserInputRequestById.delete(key);
   }
 }
 
-function sendJsonRpcResponse(id, result) {
+function sendJsonRpcResponse(id: RequestId, result: JsonRecord): void {
   if (!appServerWs || appServerWs.readyState !== WebSocket.OPEN) {
     throw new Error('app_server_not_connected');
   }
-  const payload = { jsonrpc: '2.0', id, result };
+  const payload: JsonRecord = { jsonrpc: '2.0', id, result };
   appServerWs.send(JSON.stringify(payload));
 }
 
-function buildToolUserInputResponsePayload(answersMap) {
-  const src = answersMap && typeof answersMap === 'object' ? answersMap : {};
-  const answers = {};
+function buildToolUserInputResponsePayload(answersMap: unknown): { answers: UserInputAnswerMap } {
+  const src = answersMap && typeof answersMap === 'object' ? (answersMap as Record<string, unknown>) : {};
+  const answers: UserInputAnswerMap = {};
   for (const [questionId, answerValue] of Object.entries(src)) {
     if (!questionId) continue;
     if (Array.isArray(answerValue)) {
@@ -614,8 +768,9 @@ function buildToolUserInputResponsePayload(answersMap) {
       if (list.length > 0) answers[questionId] = { answers: list };
       continue;
     }
-    if (answerValue && typeof answerValue === 'object' && Array.isArray(answerValue.answers)) {
-      const list = answerValue.answers.map((v) => String(v || '').trim()).filter(Boolean);
+    const answerRecord = asObject(answerValue);
+    if (answerRecord && Array.isArray(answerRecord.answers)) {
+      const list = answerRecord.answers.map((v: unknown) => String(v || '').trim()).filter(Boolean);
       if (list.length > 0) answers[questionId] = { answers: list };
       continue;
     }
@@ -625,10 +780,12 @@ function buildToolUserInputResponsePayload(answersMap) {
   return { answers };
 }
 
-function parseV2TurnNotification(msg) {
-  const method = asString(msg?.method);
+function parseV2TurnNotification(msg: unknown): ParsedV2TurnNotification | null {
+  const record = asObject(msg);
+  if (!record) return null;
+  const method = asString(record.method);
   if (!method || method.startsWith('codex/event/')) return null;
-  const params = asObject(msg?.params);
+  const params = asObject(record.params);
   if (!params) return null;
   const turnObj = asObject(params.turn);
   const errorObj = asObject(params.error);
@@ -645,10 +802,12 @@ function parseV2TurnNotification(msg) {
   };
 }
 
-function parseLegacyTurnNotification(msg) {
-  const method = asString(msg?.method);
+function parseLegacyTurnNotification(msg: unknown): ParsedLegacyTurnNotification | null {
+  const record = asObject(msg);
+  if (!record) return null;
+  const method = asString(record.method);
   if (!method || !method.startsWith('codex/event/')) return null;
-  const params = asObject(msg?.params);
+  const params = asObject(record.params);
   if (!params) return null;
   const event = asObject(params.msg) || {};
   const type =
@@ -669,16 +828,16 @@ function parseLegacyTurnNotification(msg) {
   };
 }
 
-function isCompletedStatus(status) {
+function isCompletedStatus(status: unknown): boolean {
   return String(status || '').toLowerCase() === 'completed';
 }
 
-function isErrorStatus(status) {
+function isErrorStatus(status: unknown): boolean {
   const normalized = String(status || '').toLowerCase();
   return normalized === 'failed' || normalized === 'interrupted' || normalized === 'cancelled';
 }
 
-function buildTurnPlanText(rawExplanation, rawPlan) {
+function buildTurnPlanText(rawExplanation: unknown, rawPlan: unknown): string {
   const explanation = asString(rawExplanation) || '';
   const plan = Array.isArray(rawPlan) ? rawPlan : [];
   const lines = [];
@@ -695,7 +854,7 @@ function buildTurnPlanText(rawExplanation, rawPlan) {
   return lines.join('\n').trim();
 }
 
-function parseTurnTerminalNotification(msg) {
+function parseTurnTerminalNotification(msg: unknown): TurnTerminalNotification | null {
   const v2 = parseV2TurnNotification(msg);
   if (v2?.threadId) {
     if (v2.method === 'turn/completed') {
@@ -738,7 +897,7 @@ function parseTurnTerminalNotification(msg) {
   return null;
 }
 
-function handleTurnTerminalNotification(terminal) {
+function handleTurnTerminalNotification(terminal: TurnTerminalNotification | null): void {
   if (!terminal || !terminal.threadId) return;
 
   const runningTurnId = runningTurnByThreadId.get(terminal.threadId);
@@ -787,7 +946,7 @@ function handleTurnTerminalNotification(terminal) {
     });
 }
 
-function selectTurnStreamUpdate(msg, state) {
+function selectTurnStreamUpdate(msg: unknown, state: SelectTurnStreamState): SelectTurnStreamUpdateResult {
   const threadId = state?.threadId || null;
   const turnId = state?.turnId || null;
   const preferV2 = Boolean(state?.preferV2);
@@ -822,7 +981,7 @@ function selectTurnStreamUpdate(msg, state) {
       return { matched: true, nextPreferV2, streamEvent: { type: 'reasoning_delta', delta: v2.delta } };
     }
     if (v2.method === 'turn/plan/updated') {
-      const params = asObject(msg?.params);
+      const params = asObject(asObject(msg)?.params);
       const planText = buildTurnPlanText(params?.explanation, params?.plan);
       return { matched: true, nextPreferV2, streamEvent: { type: 'plan_snapshot', text: planText } };
     }
@@ -891,9 +1050,9 @@ function selectTurnStreamUpdate(msg, state) {
   return { matched: true, nextPreferV2 };
 }
 
-function normalizeThreadMessages(readResult) {
+function normalizeThreadMessages(readResult: ThreadMessageReadResult): OutputItem[] {
   const turns = Array.isArray(readResult?.thread?.turns) ? readResult.thread.turns : [];
-  const messages = [];
+  const messages: OutputItem[] = [];
 
   for (const turn of turns) {
     const items = Array.isArray(turn?.items) ? turn.items : [];
@@ -950,7 +1109,7 @@ function normalizeThreadMessages(readResult) {
   return messages;
 }
 
-async function isAppServerReady() {
+async function isAppServerReady(): Promise<boolean> {
   try {
     await connectWs();
     return true;
@@ -959,7 +1118,7 @@ async function isAppServerReady() {
   }
 }
 
-async function waitUntilAppServerReady(timeoutMs) {
+async function waitUntilAppServerReady(timeoutMs: number): Promise<boolean> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     if (await isAppServerReady()) return true;
@@ -968,7 +1127,7 @@ async function waitUntilAppServerReady(timeoutMs) {
   return false;
 }
 
-async function ensureCodexServerRunning() {
+async function ensureCodexServerRunning(): Promise<void> {
   if (await isAppServerReady()) return;
 
   if (codexStartPromise) {
@@ -983,27 +1142,28 @@ async function ensureCodexServerRunning() {
       command: CODEX_APP_SERVER_START_CMD
     });
 
-    codexServerProcess = spawn('bash', ['-lc', CODEX_APP_SERVER_START_CMD], {
+    const child = spawn('bash', ['-lc', CODEX_APP_SERVER_START_CMD], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true
     });
-    codexServerProcess.unref();
+    codexServerProcess = child;
+    child.unref();
 
-    codexServerProcess.stdout.on('data', (chunk) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
       pushRuntimeLog({
         level: 'info',
         event: 'codex_server_stdout',
         message: chunk.toString('utf8').slice(0, 500)
       });
     });
-    codexServerProcess.stderr.on('data', (chunk) => {
+    child.stderr?.on('data', (chunk: Buffer) => {
       pushRuntimeLog({
         level: 'error',
         event: 'codex_server_stderr',
         message: chunk.toString('utf8').slice(0, 500)
       });
     });
-    codexServerProcess.on('exit', (code, signal) => {
+    child.on('exit', (code, signal) => {
       pushRuntimeLog({
         level: code === 0 ? 'info' : 'error',
         event: 'codex_server_exit',
@@ -1029,25 +1189,25 @@ async function ensureCodexServerRunning() {
   }
 }
 
-function repoFolderFromFullName(fullName) {
+function repoFolderFromFullName(fullName: string): string {
   return fullName.replace(/[\\/]/g, '__');
 }
 
-function repoPathFromFullName(fullName) {
+function repoPathFromFullName(fullName: string): string {
   return path.join(WORKSPACE_ROOT, repoFolderFromFullName(fullName));
 }
 
-function getCloneState(fullName) {
+function getCloneState(fullName: string): CloneState {
   const repoPath = repoPathFromFullName(fullName);
   const job = cloneJobs.get(fullName);
 
   if (job?.status === 'cloning') return { status: 'cloning', repoPath };
-  if (job?.status === 'failed') return { status: 'failed', repoPath, error: job.error };
+  if (job?.status === 'failed') return job.error ? { status: 'failed', repoPath, error: job.error } : { status: 'failed', repoPath };
   if (fs.existsSync(path.join(repoPath, '.git'))) return { status: 'cloned', repoPath };
   return { status: 'not_cloned', repoPath };
 }
 
-function runClone(fullName, cloneUrl) {
+function runClone(fullName: string, cloneUrl: string): void {
   const repoPath = repoPathFromFullName(fullName);
   if (fs.existsSync(path.join(repoPath, '.git'))) {
     cloneJobs.set(fullName, { status: 'cloned' });
@@ -1076,14 +1236,14 @@ function runClone(fullName, cloneUrl) {
   });
 }
 
-function runGh(args) {
+function runGh(args: string[]): SpawnSyncReturns<string> {
   return spawnSync('gh', args, { encoding: 'utf8' });
 }
 
-function getGithubTokenFromGh() {
+function getGithubTokenFromGh(): string {
   const tokenResult = runGh(['auth', 'token']);
   if (tokenResult.error) {
-    if (tokenResult.error.code === 'ENOENT') throw new Error('gh_not_installed');
+    if (getErrorCode(tokenResult.error) === 'ENOENT') throw new Error('gh_not_installed');
     throw new Error(`gh_auth_token_error:${tokenResult.error.message}`);
   }
 
@@ -1097,9 +1257,12 @@ function getGithubTokenFromGh() {
   return token;
 }
 
-function getGhStatus() {
+function getGhStatus():
+  | { available: false; connected: false; hint: string }
+  | { available: true; connected: false; hint: string }
+  | { available: true; connected: true; token: string } {
   const versionResult = runGh(['--version']);
-  if (versionResult.error && versionResult.error.code === 'ENOENT') {
+  if (versionResult.error && getErrorCode(versionResult.error) === 'ENOENT') {
     return { available: false, connected: false, hint: 'gh がインストールされていません。' };
   }
   if (versionResult.status !== 0) {
@@ -1110,14 +1273,15 @@ function getGhStatus() {
     const token = getGithubTokenFromGh();
     return { available: true, connected: true, token };
   } catch (error) {
-    if (String(error.message).startsWith('gh_not_logged_in')) {
+    const message = getErrorMessage(error);
+    if (message.startsWith('gh_not_logged_in')) {
       return { available: true, connected: false, hint: '先に `gh auth login` を実行してください。' };
     }
-    return { available: true, connected: false, hint: error.message };
+    return { available: true, connected: false, hint: message };
   }
 }
 
-async function githubUser(token) {
+async function githubUser(token: string): Promise<GithubUserResponse> {
   const response = await fetch('https://api.github.com/user', {
     headers: {
       'User-Agent': 'codex-mobile-ui',
@@ -1129,10 +1293,10 @@ async function githubUser(token) {
     const text = await response.text();
     throw new Error(`github_user_error:${response.status}:${text.slice(0, 200)}`);
   }
-  return response.json();
+  return (await response.json()) as GithubUserResponse;
 }
 
-async function githubRepos(token, query) {
+async function githubRepos(token: string, query: string): Promise<RepoSummary[]> {
   const endpoint = query
     ? `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+user:@me`
     : 'https://api.github.com/user/repos?per_page=100&sort=updated';
@@ -1149,7 +1313,7 @@ async function githubRepos(token, query) {
     throw new Error(`github_error:${response.status}:${text.slice(0, 200)}`);
   }
 
-  const data = await response.json();
+  const data = (await response.json()) as GithubRepoApiItem[] | { items?: GithubRepoApiItem[] };
   const repos = Array.isArray(data) ? data : data.items || [];
   return repos.map((repo) => ({
     id: repo.id,
@@ -1163,7 +1327,7 @@ async function githubRepos(token, query) {
   }));
 }
 
-function buildServer() {
+function buildServer(): FastifyInstance {
   pushSubscriptions = loadPushSubscriptions();
   try {
     const keys = loadOrCreateVapidKeys();
@@ -1176,11 +1340,11 @@ function buildServer() {
     pushRuntimeLog({
       level: 'error',
       event: 'push_vapid_init_failed',
-      message: String(error?.message || 'unknown_error')
+      message: getErrorMessage(error)
     });
   }
 
-  const app = Fastify({ logger: { level: 'info' } });
+  const app = Fastify({ logger: { level: 'info' } }) as FastifyInstance;
 
   app.register(fastifyStatic, {
     root: path.join(process.cwd(), 'public'),
@@ -1193,7 +1357,8 @@ function buildServer() {
 
   app.addHook('onResponse', async (request, reply) => {
     const end = process.hrtime.bigint();
-    const durationMs = Number(end - request.startTime) / 1e6;
+    const start = request.startTime ?? end;
+    const durationMs = Number(end - start) / 1e6;
     const log = {
       requestId: request.id,
       method: request.method,
@@ -1205,17 +1370,17 @@ function buildServer() {
     request.log.info(log, 'request_completed');
   });
 
-  app.setErrorHandler((error, request, reply) => {
+  app.setErrorHandler((error: Error, request, reply) => {
     const log = {
       requestId: request.id,
       path: request.url,
       method: request.method,
-      message: error.message,
+      message: getErrorMessage(error),
       stack: error.stack
     };
     pushRuntimeLog({ level: 'error', event: 'request_failed', ...log });
     request.log.error(log, 'request_failed');
-    reply.code(500).send({ error: error.message || 'internal_error', requestId: request.id });
+    reply.code(500).send({ error: getErrorMessage(error, 'internal_error'), requestId: request.id });
   });
 
   app.get('/', async (_request, reply) => reply.sendFile('index.html'));
@@ -1232,8 +1397,9 @@ function buildServer() {
   }));
 
   app.get('/api/logs', async (request) => {
-    const level = request.query.level;
-    const limitRaw = Number(request.query.limit || 200);
+    const query = asObject(request.query) ?? {};
+    const level = asString(query.level);
+    const limitRaw = Number(query.limit || 200);
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, limitRaw)) : 200;
     let logs = runtimeLogs;
     if (level) logs = logs.filter((entry) => entry.level === level);
@@ -1251,11 +1417,12 @@ function buildServer() {
   });
 
   app.post('/api/push/subscribe', async (request, reply) => {
-    const body = request.body || {};
-    const sub = body.subscription || {};
+    const body = asObject(request.body) ?? {};
+    const sub = asObject(body.subscription) ?? {};
+    const keys = asObject(sub.keys) ?? {};
     const endpoint = typeof sub.endpoint === 'string' ? sub.endpoint.trim() : '';
-    const p256dh = typeof sub?.keys?.p256dh === 'string' ? sub.keys.p256dh.trim() : '';
-    const auth = typeof sub?.keys?.auth === 'string' ? sub.keys.auth.trim() : '';
+    const p256dh = typeof keys.p256dh === 'string' ? keys.p256dh.trim() : '';
+    const auth = typeof keys.auth === 'string' ? keys.auth.trim() : '';
     if (!endpoint || !p256dh || !auth) {
       reply.code(400);
       return { error: 'invalid_subscription' };
@@ -1276,7 +1443,7 @@ function buildServer() {
   });
 
   app.post('/api/push/context', async (request, reply) => {
-    const body = request.body || {};
+    const body = asObject(request.body) ?? {};
     const endpoint = typeof body.endpoint === 'string' ? body.endpoint.trim() : '';
     if (!endpoint) {
       reply.code(400);
@@ -1291,7 +1458,7 @@ function buildServer() {
   });
 
   app.post('/api/push/unsubscribe', async (request, reply) => {
-    const body = request.body || {};
+    const body = asObject(request.body) ?? {};
     const endpoint = typeof body.endpoint === 'string' ? body.endpoint.trim() : '';
     if (!endpoint) {
       reply.code(400);
@@ -1324,6 +1491,7 @@ function buildServer() {
   });
 
   app.get('/api/github/repos', async (request, reply) => {
+    const queryRecord = asObject(request.query) ?? {};
     const status = getGhStatus();
     if (!status.available) {
       reply.code(503);
@@ -1333,24 +1501,27 @@ function buildServer() {
       reply.code(401);
       return { error: 'gh_not_logged_in', hint: status.hint };
     }
-    const query = request.query.query || '';
+    const query = asString(queryRecord.query) || '';
     const repos = await githubRepos(status.token, query);
     return { repos };
   });
 
   app.post('/api/repos/clone', async (request, reply) => {
-    const body = request.body || {};
-    if (!body.fullName || !body.cloneUrl) {
+    const body = asObject(request.body) ?? {};
+    const fullName = asString(body.fullName);
+    const cloneUrl = asString(body.cloneUrl);
+    if (!fullName || !cloneUrl) {
       reply.code(400);
       return { error: 'fullName and cloneUrl are required' };
     }
-    runClone(body.fullName, body.cloneUrl);
+    runClone(fullName, cloneUrl);
     reply.code(202);
-    return getCloneState(body.fullName);
+    return getCloneState(fullName);
   });
 
   app.get('/api/repos/clone-status', async (request, reply) => {
-    const fullName = request.query.fullName;
+    const query = asObject(request.query) ?? {};
+    const fullName = asString(query.fullName);
     if (!fullName) {
       reply.code(400);
       return { error: 'fullName is required' };
@@ -1359,13 +1530,18 @@ function buildServer() {
   });
 
   app.get('/api/threads', async (request, reply) => {
-    const repoFullName = request.query.repoFullName;
+    const query = asObject(request.query) ?? {};
+    const repoFullName = asString(query.repoFullName);
     if (!repoFullName) {
       reply.code(400);
       return { error: 'repoFullName is required' };
     }
     const repoPath = repoPathFromFullName(repoFullName);
-    const result = await rpcRequest('thread/list', { cwd: repoPath, archived: false, limit: 50 });
+    const result = await rpcRequest<{ data?: Array<{ id?: string; name?: string; updatedAt?: number; preview?: string; source?: string | null; status?: { type?: string | null } }> }>('thread/list', {
+      cwd: repoPath,
+      archived: false,
+      limit: 50
+    });
     // Codex app-server v2 returns `data` (not `threads`) for list responses.
     const threads = Array.isArray(result?.data) ? result.data : [];
     const items = threads.map((t) => ({
@@ -1390,7 +1566,7 @@ function buildServer() {
   });
 
   app.get('/api/models', async (_request, _reply) => {
-    const result = await rpcRequest('model/list', {});
+    const result = await rpcRequest<JsonRecord>('model/list', {});
     const models = normalizeModelListResponse(result);
     pushRuntimeLog({
       level: 'info',
@@ -1401,14 +1577,15 @@ function buildServer() {
   });
 
   app.get('/api/threads/messages', async (request, reply) => {
-    const threadId = request.query.threadId;
+    const query = asObject(request.query) ?? {};
+    const threadId = asString(query.threadId);
     if (!threadId) {
       reply.code(400);
       return { error: 'threadId is required' };
     }
     try {
       await rpcRequest('thread/resume', { threadId });
-      const read = await rpcRequest('thread/read', { threadId, includeTurns: true });
+      const read = await rpcRequest<ThreadMessageReadResult>('thread/read', { threadId, includeTurns: true });
       const model = typeof read?.thread?.model === 'string' ? read.thread.model : '';
       if (model) threadModelByThreadId.set(threadId, model);
       const items = normalizeThreadMessages(read);
@@ -1433,14 +1610,14 @@ function buildServer() {
   });
 
   app.post('/api/threads/resume', async (request, reply) => {
-    const body = request.body || {};
-    const threadId = body.thread_id;
+    const body = asObject(request.body) ?? {};
+    const threadId = asString(body.thread_id);
     if (!threadId) {
       reply.code(400);
       return { error: 'thread_id is required' };
     }
     try {
-      const result = await rpcRequest('thread/resume', { threadId });
+      const result = await rpcRequest<{ thread?: { model?: string } }>('thread/resume', { threadId });
       const model = typeof result?.thread?.model === 'string' ? result.thread.model : '';
       if (model) threadModelByThreadId.set(threadId, model);
       pushRuntimeLog({ level: 'info', event: 'thread_resumed', threadId });
@@ -1456,21 +1633,22 @@ function buildServer() {
   });
 
   app.post('/api/threads', async (request, reply) => {
-    const body = request.body || {};
+    const body = asObject(request.body) ?? {};
     const model = normalizeModelId(body.model);
-    if (!body.repoFullName) {
+    const repoFullName = asString(body.repoFullName);
+    if (!repoFullName) {
       reply.code(400);
       return { error: 'repoFullName is required' };
     }
 
-    const repoPath = repoPathFromFullName(body.repoFullName);
-    const params = {
+    const repoPath = repoPathFromFullName(repoFullName);
+    const params: JsonRecord = {
       cwd: repoPath,
       approvalPolicy: 'never',
       sandbox: 'workspace-write'
     };
     if (model) params.model = model;
-    const result = await rpcRequest('thread/start', params);
+    const result = await rpcRequest<{ thread?: { id?: string; model?: string } }>('thread/start', params);
     const id = result?.thread?.id;
     const resolvedModel = typeof result?.thread?.model === 'string' ? result.thread.model : model;
     if (!id) throw new Error('thread_id_missing');
@@ -1479,9 +1657,9 @@ function buildServer() {
   });
 
   app.post('/api/threads/ensure', async (request, reply) => {
-    const body = request.body || {};
-    const repoFullName = body.repoFullName;
-    const preferredThreadId = body.preferred_thread_id;
+    const body = asObject(request.body) ?? {};
+    const repoFullName = asString(body.repoFullName);
+    const preferredThreadId = asString(body.preferred_thread_id);
     const model = normalizeModelId(body.model);
     if (!repoFullName) {
       reply.code(400);
@@ -1500,13 +1678,13 @@ function buildServer() {
     }
 
     const repoPath = repoPathFromFullName(repoFullName);
-    const params = {
+    const params: JsonRecord = {
       cwd: repoPath,
       approvalPolicy: 'never',
       sandbox: 'workspace-write'
     };
     if (model) params.model = model;
-    const result = await rpcRequest('thread/start', params);
+    const result = await rpcRequest<{ thread?: { id?: string; model?: string } }>('thread/start', params);
     const id = result?.thread?.id;
     const resolvedModel = typeof result?.thread?.model === 'string' ? result.thread.model : model;
     if (!id) throw new Error('thread_id_missing');
@@ -1521,7 +1699,8 @@ function buildServer() {
   });
 
   app.get('/api/turns/running', async (request, reply) => {
-    const threadId = request.query.threadId;
+    const query = asObject(request.query) ?? {};
+    const threadId = asString(query.threadId);
     if (!threadId) {
       reply.code(400);
       return { error: 'threadId is required' };
@@ -1532,8 +1711,9 @@ function buildServer() {
   });
 
   app.get('/api/turns/stream/resume', async (request, reply) => {
-    const threadId = request.query.threadId;
-    const turnId = request.query.turnId;
+    const query = asObject(request.query) ?? {};
+    const threadId = asString(query.threadId);
+    const turnId = asString(query.turnId);
     if (!threadId || !turnId) {
       reply.code(400);
       return { error: 'threadId and turnId are required' };
@@ -1568,16 +1748,16 @@ function buildServer() {
 
     let aborted = false;
     let closed = false;
-    let unsubWs = null;
-    let timeoutHandle = null;
+    let unsubWs: (() => boolean) | null = null;
+    let timeoutHandle: NodeJS.Timeout | null = null;
     let preferV2 = false;
 
-    function writeEvent(event) {
+    function writeEvent(event: TurnStreamEvent): void {
       if (aborted) return;
       reply.raw.write(`${JSON.stringify(event)}\n`);
     }
 
-    function closeStream(kind, message = null) {
+    function closeStream(kind: 'done' | 'error', message: string | null = null): void {
       if (closed) return;
       closed = true;
       if (timeoutHandle) {
@@ -1646,19 +1826,21 @@ function buildServer() {
   });
 
   app.post('/api/turns/stream', async (request, reply) => {
-    const body = request.body || {};
-    const threadId = body.thread_id;
+    const body = asObject(request.body) ?? {};
+    const threadId = asString(body.thread_id);
     const prompt = String(body.input || '').trim();
+    const attachments = Array.isArray(body.attachments) ? body.attachments : [];
     const selectedModel = normalizeModelId(body.model);
     const collaborationMode = normalizeCollaborationMode(body.collaboration_mode || body.mode);
     if (!threadId || !prompt) {
       reply.code(400);
       return { error: 'thread_id and input are required' };
     }
+    const activeThreadId = threadId;
     pushRuntimeLog({
       level: 'info',
       event: 'turn_stream_start',
-      threadId,
+      threadId: activeThreadId,
       inputLength: prompt.length,
       collaborationMode: collaborationMode || null
     });
@@ -1671,22 +1853,22 @@ function buildServer() {
 
     let aborted = false;
     let closed = false;
-    let unsubWs = null;
-    let timeoutHandle = null;
+    let unsubWs: (() => boolean) | null = null;
+    let timeoutHandle: NodeJS.Timeout | null = null;
     let preferV2 = false;
-    const turnStartOverrides = await buildTurnStartOverrides(threadId, {
+    const turnStartOverrides = await buildTurnStartOverrides(activeThreadId, {
       selectedModel,
       collaborationMode
     });
 
-    if (selectedModel) threadModelByThreadId.set(threadId, selectedModel);
+    if (selectedModel) threadModelByThreadId.set(activeThreadId, selectedModel);
 
-    function writeEvent(event) {
+    function writeEvent(event: TurnStreamEvent): void {
       if (aborted) return;
       reply.raw.write(`${JSON.stringify(event)}\n`);
     }
 
-    function closeStream(kind, message = null, clearRunning = true) {
+    function closeStream(kind: 'done' | 'error', message: string | null = null, clearRunning = true): void {
       if (closed) return;
       closed = true;
       if (timeoutHandle) {
@@ -1697,27 +1879,27 @@ function buildServer() {
         unsubWs();
         unsubWs = null;
       }
-      if (clearRunning) runningTurnByThreadId.delete(threadId);
+      if (clearRunning) runningTurnByThreadId.delete(activeThreadId);
       if (kind === 'done') writeEvent({ type: 'done' });
       if (kind === 'error') writeEvent({ type: 'error', message: message || 'unknown_error' });
       if (!aborted) reply.raw.end();
     }
 
-    let turnId = null;
+    let turnId: string | null = null;
     try {
-      turnId = await startTurnWithRetry(
-        threadId,
-        buildTurnInput(prompt, body.attachments || []),
+        turnId = await startTurnWithRetry(
+        activeThreadId,
+        buildTurnInput(prompt, attachments),
         20,
         ({ attempt, message }) => {
           writeEvent({ type: 'status', phase: 'starting', attempt, message });
         },
         turnStartOverrides
       );
-      runningTurnByThreadId.set(threadId, turnId);
+      runningTurnByThreadId.set(activeThreadId, turnId);
       writeEvent({ type: 'started', turnId });
     } catch (error) {
-      writeEvent({ type: 'error', message: String(error?.message || 'turn_start_failed') });
+      writeEvent({ type: 'error', message: getErrorMessage(error, 'turn_start_failed') });
       if (!aborted) reply.raw.end();
       return;
     }
@@ -1731,7 +1913,7 @@ function buildServer() {
       pushRuntimeLog({
         level: 'error',
         event: 'turn_stream_timeout',
-        threadId,
+        threadId: activeThreadId,
         turnId
       });
       closeStream('error', 'turn_timeout', false);
@@ -1739,14 +1921,14 @@ function buildServer() {
 
     unsubWs = addWsSubscriber((msg) => {
       if (aborted || closed) return;
-      const update = selectTurnStreamUpdate(msg, { threadId, turnId, preferV2 });
+      const update = selectTurnStreamUpdate(msg, { threadId: activeThreadId, turnId, preferV2 });
       preferV2 = update.nextPreferV2;
       if (!update.matched) return;
       if (update.streamEvent?.type === 'status' && update.streamEvent.phase === 'reconnecting') {
         pushRuntimeLog({
           level: 'info',
           event: 'turn_stream_reconnecting',
-          threadId,
+          threadId: activeThreadId,
           turnId,
           message: String(update.streamEvent.message || 'reconnecting')
         });
@@ -1762,8 +1944,8 @@ function buildServer() {
   });
 
   app.post('/api/turns/cancel', async (request, reply) => {
-    const body = request.body || {};
-    const threadId = body.thread_id;
+    const body = asObject(request.body) ?? {};
+    const threadId = asString(body.thread_id);
     if (!threadId) {
       reply.code(400);
       return { error: 'thread_id is required' };
@@ -1782,10 +1964,11 @@ function buildServer() {
   });
 
   app.post('/api/turns/steer', async (request, reply) => {
-    const body = request.body || {};
+    const body = asObject(request.body) ?? {};
     const threadId = asString(body.thread_id);
     const turnId = asString(body.turn_id);
     const prompt = String(body.input || '').trim();
+    const attachments = Array.isArray(body.attachments) ? body.attachments : [];
     if (!threadId || !turnId || !prompt) {
       reply.code(400);
       return { error: 'thread_id, turn_id and input are required' };
@@ -1805,22 +1988,23 @@ function buildServer() {
       await rpcRequest('turn/steer', {
         threadId,
         expectedTurnId: turnId,
-        input: buildTurnInput(prompt, body.attachments || [])
+        input: buildTurnInput(prompt, attachments)
       });
       return { steered: true, threadId, turnId };
     } catch (error) {
       reply.code(500);
-      return { error: String(error?.message || 'steer_failed') };
+      return { error: getErrorMessage(error, 'steer_failed') };
     }
   });
 
   app.get('/api/approvals/pending', async (request, reply) => {
-    const threadId = asString(request.query?.threadId);
+    const query = asObject(request.query) ?? {};
+    const threadId = asString(query.threadId);
     if (!threadId) {
       reply.code(400);
       return { error: 'threadId is required' };
     }
-    const requests = [];
+    const requests: Array<PendingUserInputRequest & { createdAt: string }> = [];
     for (const pending of pendingUserInputRequestById.values()) {
       if (pending?.threadId !== threadId) continue;
       requests.push({
@@ -1837,7 +2021,7 @@ function buildServer() {
   });
 
   app.post('/api/approvals/respond', async (request, reply) => {
-    const body = request.body || {};
+    const body = asObject(request.body) ?? {};
     const requestIdRaw = asRequestId(body.request_id);
     if (!requestIdRaw) {
       reply.code(400);
@@ -1890,7 +2074,7 @@ if (require.main === module) {
   });
 }
 
-module.exports = {
+export {
   buildServer,
   buildToolUserInputResponsePayload,
   buildTurnStartOverrides,

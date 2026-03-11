@@ -8,7 +8,10 @@ import AppRoot from './App';
 
 Framework7.use(Framework7React);
 
-createRoot(document.getElementById('root')).render(
+const root = document.getElementById('root');
+if (!root) throw new Error('root_element_missing');
+
+createRoot(root).render(
   <React.StrictMode>
     <AppRoot />
   </React.StrictMode>
