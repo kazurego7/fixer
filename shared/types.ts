@@ -133,6 +133,7 @@ export interface StartedTurnStreamEvent {
 export interface AnswerDeltaTurnStreamEvent {
   type: 'answer_delta';
   delta: string;
+  itemId?: string;
 }
 
 export interface ReasoningDeltaTurnStreamEvent {
@@ -143,11 +144,13 @@ export interface ReasoningDeltaTurnStreamEvent {
 export interface PlanDeltaTurnStreamEvent {
   type: 'plan_delta';
   delta: string;
+  itemId?: string;
 }
 
 export interface PlanSnapshotTurnStreamEvent {
   type: 'plan_snapshot';
   text: string;
+  itemId?: string;
 }
 
 export interface RequestUserInputTurnStreamEvent {
@@ -190,6 +193,7 @@ export interface ParsedV2TurnNotification {
   method: string;
   threadId: string | null;
   turnId: string | null;
+  itemId: string | null;
   delta: string | null;
   status: string | null;
   errorMessage: string | null;

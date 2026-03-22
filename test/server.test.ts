@@ -81,12 +81,13 @@ test('repoPathFromFullName resolves under workspace root', () => {
 test('parseV2TurnNotification parses delta notification', () => {
   const parsed = parseV2TurnNotification({
     method: 'item/agentMessage/delta',
-    params: { threadId: 't1', turnId: 'u1', delta: 'abc' }
+    params: { threadId: 't1', turnId: 'u1', itemId: 'm1', delta: 'abc' }
   });
   assert.ok(parsed);
   assert.equal(parsed.method, 'item/agentMessage/delta');
   assert.equal(parsed.threadId, 't1');
   assert.equal(parsed.turnId, 'u1');
+  assert.equal(parsed.itemId, 'm1');
   assert.equal(parsed.delta, 'abc');
 });
 
@@ -172,13 +173,13 @@ test('selectTurnStreamUpdate maps v2 answer delta', () => {
   const out = selectTurnStreamUpdate(
     {
       method: 'item/agentMessage/delta',
-      params: { threadId: 't1', turnId: 'u1', delta: 'A' }
+      params: { threadId: 't1', turnId: 'u1', itemId: 'm1', delta: 'A' }
     },
     { threadId: 't1', turnId: 'u1', preferV2: false }
   );
   assert.equal(out.matched, true);
   assert.equal(out.nextPreferV2, true);
-  assert.deepEqual(out.streamEvent, { type: 'answer_delta', delta: 'A' });
+  assert.deepEqual(out.streamEvent, { type: 'answer_delta', delta: 'A', itemId: 'm1' });
 });
 
 test('selectTurnStreamUpdate maps v2 reasoning summaryTextDelta', () => {
@@ -229,7 +230,7 @@ test('selectTurnStreamUpdate maps v2 plan delta', () => {
   );
   assert.equal(out.matched, true);
   assert.equal(out.nextPreferV2, true);
-  assert.deepEqual(out.streamEvent, { type: 'plan_delta', delta: '計画の差分' });
+  assert.deepEqual(out.streamEvent, { type: 'plan_delta', delta: '計画の差分', itemId: 'p1' });
 });
 
 test('selectTurnStreamUpdate maps v2 turn plan updated', () => {
@@ -418,9 +419,9 @@ test('normalizeThreadMessages keeps assistant as single message unit even with r
   assert.deepEqual(
     out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
     [
-      ['t1:user', 'user', 'plain', 'ユーザー質問'],
-      ['t1:assistant', 'assistant', 'markdown', '本文1\n本文2\n本文3'],
-      ['t1:sep', 'system', 'separator', '']
+      ['t1:user:0', 'user', 'plain', 'ユーザー質問'],
+      ['t1:assistant:0', 'assistant', 'markdown', '本文1\n本文2\n本文3'],
+      ['t1:sep:0', 'system', 'separator', '']
     ]
   );
 });
@@ -442,9 +443,9 @@ test('normalizeThreadMessages keeps single assistant segment when reasoning is a
   assert.deepEqual(
     out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
     [
-      ['t2:user', 'user', 'plain', 'q'],
-      ['t2:assistant', 'assistant', 'markdown', 'a1\na2'],
-      ['t2:sep', 'system', 'separator', '']
+      ['t2:user:0', 'user', 'plain', 'q'],
+      ['t2:assistant:0', 'assistant', 'markdown', 'a1\na2'],
+      ['t2:sep:0', 'system', 'separator', '']
     ]
   );
 });
@@ -466,12 +467,12 @@ test('normalizeThreadMessages keeps plan items in dedicated field', () => {
   assert.deepEqual(
     out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
     [
-      ['t2p:user', 'user', 'plain', 'q'],
-      ['t2p:assistant', 'assistant', 'markdown', '最終回答'],
-      ['t2p:sep', 'system', 'separator', '']
+      ['t2p:user:0', 'user', 'plain', 'q'],
+      ['t2p:assistant:0', 'assistant', 'markdown', '最終回答'],
+      ['t2p:sep:0', 'system', 'separator', '']
     ]
   );
-  const assistant = out.find((item: OutputItem) => item.id === 't2p:assistant');
+  const assistant = out.find((item: OutputItem) => item.id === 't2p:assistant:0');
   assert.ok(assistant && assistant.role === 'assistant');
   assert.equal(assistant.plan, '手順1');
 });
@@ -489,9 +490,71 @@ test('normalizeThreadMessages marks diff segment as diff', () => {
     }
   };
   const out = normalizeThreadMessages(readResult);
-  const assistant = out.find((item: OutputItem) => item.id === 't3:assistant');
+  const assistant = out.find((item: OutputItem) => item.id === 't3:assistant:0');
   assert.ok(assistant);
   assert.equal(assistant.type, 'diff');
+});
+
+test('normalizeThreadMessages splits assistant segments around request user input item', () => {
+  const readResult = {
+    thread: {
+      turns: [
+        {
+          id: 't4',
+          input: [{ type: 'text', text: 'q' }],
+          items: [
+            { type: 'agentMessage', text: '確認前の回答' },
+            { type: 'request_user_input', text: '' },
+            { type: 'agentMessage', text: '確認後の回答' }
+          ]
+        }
+      ]
+    }
+  };
+
+  const out = normalizeThreadMessages(readResult);
+  assert.deepEqual(
+    out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
+    [
+      ['t4:user:0', 'user', 'plain', 'q'],
+      ['t4:assistant:0', 'assistant', 'markdown', '確認前の回答'],
+      ['t4:sep:0', 'system', 'separator', ''],
+      ['t4:assistant:1', 'assistant', 'markdown', '確認後の回答'],
+      ['t4:sep:1', 'system', 'separator', '']
+    ]
+  );
+});
+
+test('normalizeThreadMessages splits same turn when app server history contains multiple userMessage items', () => {
+  const readResult = {
+    thread: {
+      turns: [
+        {
+          id: 't5',
+          input: [{ type: 'text', text: '最初の質問' }],
+          items: [
+            { type: 'userMessage', content: [{ type: 'text', text: '最初の質問' }] },
+            { type: 'agentMessage', text: '最初の途中回答' },
+            { type: 'userMessage', content: [{ type: 'text', text: '追加の入力' }] },
+            { type: 'agentMessage', text: '追加入力を踏まえた最終回答' }
+          ]
+        }
+      ]
+    }
+  };
+
+  const out = normalizeThreadMessages(readResult);
+  assert.deepEqual(
+    out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
+    [
+      ['t5:user:0', 'user', 'plain', '最初の質問'],
+      ['t5:assistant:0', 'assistant', 'markdown', '最初の途中回答'],
+      ['t5:sep:0', 'system', 'separator', ''],
+      ['t5:user:1', 'user', 'plain', '追加の入力'],
+      ['t5:assistant:1', 'assistant', 'markdown', '追加入力を踏まえた最終回答'],
+      ['t5:sep:1', 'system', 'separator', '']
+    ]
+  );
 });
 
 test('buildToolUserInputResponsePayload normalizes single and array answers', () => {

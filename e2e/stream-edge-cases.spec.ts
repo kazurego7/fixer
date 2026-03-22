@@ -127,6 +127,7 @@ test('複数質問の回答送信後にresumeストリームを再開する', as
     const ndjson =
       [
         JSON.stringify({ type: 'started', turnId: 'turn-question-1' }),
+        JSON.stringify({ type: 'answer_delta', delta: '確認前の回答です' }),
         JSON.stringify({
           type: 'request_user_input',
           requestId: 'req-2',
@@ -213,7 +214,9 @@ test('複数質問の回答送信後にresumeストリームを再開する', as
       q2: { answers: ['案C'] }
     })
   );
-  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble')).toContainText('再開後の回答です');
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble')).toHaveCount(2);
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble').nth(0)).toContainText('確認前の回答です');
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble').nth(1)).toContainText('再開後の回答です');
   await expect(page.getByTestId('thinking-live-panel')).toHaveCount(0);
 });
 

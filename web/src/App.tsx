@@ -1266,6 +1266,11 @@ export default function AppRoot() {
   const activeThreadRef = useRef<string | null>(activeThreadId);
   const activeTurnIdRef = useRef('');
   const activeRepoRef = useRef<string | null>(activeRepoFullName);
+  const streamingAssistantIdRef = useRef<string | null>(null);
+  const streamingAssistantMessageItemIdRef = useRef('');
+  const streamingAnswerBufferRef = useRef('');
+  const streamingPlanBufferRef = useRef('');
+  const pendingFollowupSplitRef = useRef(false);
   const backgroundInterruptedTurnRef = useRef(false);
   const shouldResumeOnVisibleRef = useRef(false);
   const pushEndpointRef = useRef(
@@ -1276,6 +1281,55 @@ export default function AppRoot() {
 
   function toast(text: string): void {
     f7?.toast?.create({ text, closeTimeout: 1400, position: 'center' }).open();
+  }
+
+  function setStreamingAssistantTarget(id: string | null): void {
+    streamingAssistantIdRef.current = id;
+    setStreamingAssistantId(id);
+  }
+
+  function appendStreamingAssistantCard(): string {
+    const assistantId = `a-${Date.now() + 1}`;
+    setStreamingAssistantTarget(assistantId);
+    setOutputItems((prev) => [...prev, createEmptyAssistantItem(assistantId)]);
+    return assistantId;
+  }
+
+  function finalizeStreamingAssistantCard(id: string, answer: string, plan: string, appendSeparator = false): void {
+    if (!id) return;
+    const finalAnswer = answer.trim() ? answer : '(応答なし)';
+    const finalType: AssistantOutputItem['type'] = looksLikeDiff(finalAnswer) ? 'diff' : 'markdown';
+    setOutputItems((prev): OutputItem[] => {
+      const next = prev.map((item) =>
+        item.id === id && isAssistantItem(item)
+          ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer, plan }
+          : item
+      );
+      if (appendSeparator) {
+        next.push({ id: `${id}:sep`, role: 'system', type: 'separator', text: '' });
+      }
+      return next;
+    });
+  }
+
+  function ensureStreamingAssistantCardForItem(itemId: string): void {
+    const nextItemId = String(itemId || '').trim();
+    if (!nextItemId) return;
+    const currentItemId = String(streamingAssistantMessageItemIdRef.current || '');
+    if (!currentItemId) {
+      streamingAssistantMessageItemIdRef.current = nextItemId;
+      return;
+    }
+    if (currentItemId === nextItemId) return;
+    if (pendingFollowupSplitRef.current) {
+      const previousAssistantId = String(streamingAssistantIdRef.current || '');
+      finalizeStreamingAssistantCard(previousAssistantId, streamingAnswerBufferRef.current, streamingPlanBufferRef.current, false);
+      streamingAnswerBufferRef.current = '';
+      streamingPlanBufferRef.current = '';
+      appendStreamingAssistantCard();
+      pendingFollowupSplitRef.current = false;
+    }
+    streamingAssistantMessageItemIdRef.current = nextItemId;
   }
 
   function getRepoModel(repoFullName: string | null = activeRepoRef.current): string {
@@ -1614,20 +1668,18 @@ export default function AppRoot() {
     resumeStreamingTurnIdRef.current = turnId;
     streamAbortRef.current = controller;
 
-    const assistantId = `resume:${turnId}`;
+    const assistantId = `resume:${turnId}:${Date.now()}`;
     setAwaitingFirstStreamChunk(true);
     setHasReasoningStarted(false);
     setHasAnswerStarted(false);
     setStreaming(true);
-    setStreamingAssistantId(assistantId);
+    setStreamingAssistantTarget(assistantId);
+    streamingAssistantMessageItemIdRef.current = '';
     setLiveReasoningText('');
     setActiveTurnId(String(turnId || ''));
     activeTurnIdRef.current = String(turnId || '');
 
-    setOutputItems((prev) => {
-      if (prev.some((item) => item.id === assistantId)) return prev;
-      return [...prev, createEmptyAssistantItem(assistantId)];
-    });
+    setOutputItems((prev) => [...prev, createEmptyAssistantItem(assistantId)]);
 
     let answerCommitted = '';
     let planCommitted = '';
@@ -1722,10 +1774,7 @@ export default function AppRoot() {
             continue;
           }
           if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) continue;
-          if (evt.type === 'done') {
-            await restoreOutputForThread(threadId);
-            continue;
-          }
+          if (evt.type === 'done') continue;
           if (evt.type === 'error') {
             throw new Error(String(evt.message || 'unknown_error'));
           }
@@ -1781,13 +1830,25 @@ export default function AppRoot() {
             }
           }
           if (evt.type === 'done') {
-            await restoreOutputForThread(threadId);
+            // no-op: 最終確定はストリーム読了後に行う。
           }
           if (evt.type === 'error') {
             throw new Error(String(evt.message || 'unknown_error'));
           }
         }
       }
+
+      const finalAnswer = answerCommitted.trim() ? answerCommitted : '(応答なし)';
+      const finalType: AssistantOutputItem['type'] = looksLikeDiff(finalAnswer) ? 'diff' : 'markdown';
+      setOutputItems((prev): OutputItem[] => {
+        const next = prev.map((item) =>
+          item.id === assistantId && isAssistantItem(item)
+            ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer, plan: planCommitted }
+            : item
+        );
+        next.push({ id: `${assistantId}:sep`, role: 'system', type: 'separator', text: '' });
+        return next;
+      });
     } catch (e: unknown) {
       if (!(e instanceof DOMException && e.name === 'AbortError')) {
         // resume失敗時は履歴再取得で最新化し、失敗トーストは出さない。
@@ -1804,7 +1865,8 @@ export default function AppRoot() {
       }
       if (streamAbortRef.current === null || streamAbortRef.current === controller) {
         setStreaming(false);
-        setStreamingAssistantId(null);
+        setStreamingAssistantTarget(null);
+        streamingAssistantMessageItemIdRef.current = '';
         setLiveReasoningText('');
         setAwaitingFirstStreamChunk(false);
         setHasReasoningStarted(false);
@@ -1812,7 +1874,6 @@ export default function AppRoot() {
         setActiveTurnId('');
         activeTurnIdRef.current = '';
       }
-      setOutputItems((prev) => prev.filter((item) => item.id !== assistantId));
     }
   }
 
@@ -2052,9 +2113,11 @@ export default function AppRoot() {
 
     if (appendUser) appendUserMessage(prompt, attachmentsToSend);
 
-    const assistantId = `a-${Date.now() + 1}`;
-    setStreamingAssistantId(assistantId);
-    setOutputItems((prev) => [...prev, createEmptyAssistantItem(assistantId)]);
+    const assistantId = appendStreamingAssistantCard();
+    streamingAssistantMessageItemIdRef.current = '';
+    streamingAnswerBufferRef.current = '';
+    streamingPlanBufferRef.current = '';
+    pendingFollowupSplitRef.current = false;
 
     const controller = new AbortController();
     streamAbortRef.current = controller;
@@ -2099,15 +2162,15 @@ export default function AppRoot() {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder('utf-8');
-      let answerCommitted = '';
-      let planCommitted = '';
       let reasoningRaw = '';
       let lineBuf = '';
 
       function updateAssistant(patch: AssistantPatch): void {
+        const targetId = String(streamingAssistantIdRef.current || assistantId || '');
+        if (!targetId) return;
         setOutputItems((prev) =>
           prev.map((item) => {
-            if (item.id !== assistantId || !isAssistantItem(item)) return item;
+            if (item.id !== targetId || !isAssistantItem(item)) return item;
             const merged = typeof patch === 'function' ? patch(item) : { ...item, ...patch };
             return merged;
           })
@@ -2128,9 +2191,15 @@ export default function AppRoot() {
           if (!evt) {
             setAwaitingFirstStreamChunk(false);
             setHasAnswerStarted(true);
-            answerCommitted += `${line}\n`;
-            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+            streamingAnswerBufferRef.current += `${line}\n`;
+            const nextType = looksLikeDiff(streamingAnswerBufferRef.current) ? 'diff' : 'plain';
+            updateAssistant({
+              type: nextType,
+              answer: streamingAnswerBufferRef.current,
+              text: streamingAnswerBufferRef.current,
+              plan: streamingPlanBufferRef.current,
+              status: ''
+            });
             continue;
           }
           if (evt.type === 'reasoning_delta' && evt.delta) {
@@ -2144,19 +2213,28 @@ export default function AppRoot() {
           if (evt.type === 'answer_delta' && evt.delta) {
             setAwaitingFirstStreamChunk(false);
             setHasAnswerStarted(true);
-            answerCommitted += evt.delta;
-            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
+            streamingAnswerBufferRef.current += evt.delta;
+            const nextType = looksLikeDiff(streamingAnswerBufferRef.current) ? 'diff' : 'plain';
+            updateAssistant({
+              type: nextType,
+              answer: streamingAnswerBufferRef.current,
+              text: streamingAnswerBufferRef.current,
+              plan: streamingPlanBufferRef.current,
+              status: ''
+            });
             continue;
           }
           if (evt.type === 'plan_delta' && evt.delta) {
-            planCommitted += evt.delta;
-            updateAssistant({ plan: planCommitted, status: '' });
+            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
+            streamingPlanBufferRef.current += evt.delta;
+            updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
             continue;
           }
           if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
-            planCommitted = evt.text;
-            updateAssistant({ plan: planCommitted, status: '' });
+            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
+            streamingPlanBufferRef.current = evt.text;
+            updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
             continue;
           }
           if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
@@ -2192,7 +2270,7 @@ export default function AppRoot() {
         if (!evt) {
           setAwaitingFirstStreamChunk(false);
           setHasAnswerStarted(true);
-          answerCommitted += lineBuf;
+          streamingAnswerBufferRef.current += lineBuf;
         } else {
           if (evt.type === 'reasoning_delta' && evt.delta) {
             setAwaitingFirstStreamChunk(false);
@@ -2204,17 +2282,26 @@ export default function AppRoot() {
           if (evt.type === 'answer_delta' && evt.delta) {
             setAwaitingFirstStreamChunk(false);
             setHasAnswerStarted(true);
-            answerCommitted += evt.delta;
-            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
+            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
+            streamingAnswerBufferRef.current += evt.delta;
+            const nextType = looksLikeDiff(streamingAnswerBufferRef.current) ? 'diff' : 'plain';
+            updateAssistant({
+              type: nextType,
+              answer: streamingAnswerBufferRef.current,
+              text: streamingAnswerBufferRef.current,
+              plan: streamingPlanBufferRef.current,
+              status: ''
+            });
           }
           if (evt.type === 'plan_delta' && evt.delta) {
-            planCommitted += evt.delta;
-            updateAssistant({ plan: planCommitted, status: '' });
+            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
+            streamingPlanBufferRef.current += evt.delta;
+            updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
           }
           if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
-            planCommitted = evt.text;
-            updateAssistant({ plan: planCommitted, status: '' });
+            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
+            streamingPlanBufferRef.current = evt.text;
+            updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
           }
           if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
             mergePendingUserInputRequest({
@@ -2239,28 +2326,26 @@ export default function AppRoot() {
         }
       }
 
-      const finalAnswer = answerCommitted.trim() ? answerCommitted : '(応答なし)';
-      const finalType: AssistantOutputItem['type'] = looksLikeDiff(finalAnswer) ? 'diff' : 'markdown';
-      setOutputItems((prev): OutputItem[] => {
-        const next = prev.map((item) =>
-          item.id === assistantId && isAssistantItem(item)
-            ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer, plan: planCommitted }
-            : item
-        );
-        next.push({ id: `${assistantId}:sep`, role: 'system', type: 'separator', text: '' });
-        return next;
-      });
+      finalizeStreamingAssistantCard(
+        String(streamingAssistantIdRef.current || assistantId || ''),
+        streamingAnswerBufferRef.current,
+        streamingPlanBufferRef.current,
+        true
+      );
     } catch (e: unknown) {
       if (e instanceof DOMException && e.name === 'AbortError') {
+        const currentAssistantId = String(streamingAssistantIdRef.current || assistantId || '');
         setOutputItems((prev) =>
-          prev.map((item) => (item.id === assistantId && isAssistantItem(item) ? { ...item, text: '(停止しました)' } : item))
+          prev.map((item) => (item.id === currentAssistantId && isAssistantItem(item) ? { ...item, text: '(停止しました)' } : item))
         );
       } else if (backgroundInterruptedTurnRef.current) {
-        setOutputItems((prev) => prev.filter((item) => item.id !== assistantId));
+        const currentAssistantId = String(streamingAssistantIdRef.current || assistantId || '');
+        setOutputItems((prev) => prev.filter((item) => item.id !== currentAssistantId));
       } else {
+        const currentAssistantId = String(streamingAssistantIdRef.current || assistantId || '');
         setOutputItems((prev) =>
           prev.map((item) =>
-            item.id === assistantId && isAssistantItem(item)
+            item.id === currentAssistantId && isAssistantItem(item)
               ? { ...item, text: `送信失敗: ${getClientErrorMessage(e)}` }
               : item
           )
@@ -2270,13 +2355,17 @@ export default function AppRoot() {
     } finally {
       if (streamAbortRef.current === controller) {
         setStreaming(false);
-        setStreamingAssistantId(null);
+        setStreamingAssistantTarget(null);
         setLiveReasoningText('');
         setAwaitingFirstStreamChunk(false);
         setHasReasoningStarted(false);
         setHasAnswerStarted(false);
         setActiveTurnId('');
         activeTurnIdRef.current = '';
+        streamingAssistantMessageItemIdRef.current = '';
+        streamingAnswerBufferRef.current = '';
+        streamingPlanBufferRef.current = '';
+        pendingFollowupSplitRef.current = false;
         streamAbortRef.current = null;
         backgroundInterruptedTurnRef.current = false;
       }
@@ -2356,6 +2445,7 @@ export default function AppRoot() {
       return;
     }
 
+    pendingFollowupSplitRef.current = true;
     const steerResult = await postSteerTurn(threadIdToUse, turnIdToUse, prompt, attachmentsToSend);
     if (steerResult.ok) return;
 
@@ -2365,12 +2455,14 @@ export default function AppRoot() {
       steerResult.error.includes('turn_mismatch') ||
       steerResult.error.includes('running_turn_not_found');
     if (isRecoverableSteerError) {
+      pendingFollowupSplitRef.current = false;
       const controller = streamAbortRef.current;
       if (controller) controller.abort();
       await startTurnStream(prompt, attachmentsToSend, threadIdToUse, false, forcedMode);
       return;
     }
 
+    pendingFollowupSplitRef.current = false;
     toast(`追加入力送信失敗: ${steerResult.error || 'steer_failed'}`);
   }
 

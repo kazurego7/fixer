@@ -795,6 +795,7 @@ function parseV2TurnNotification(msg: unknown): ParsedV2TurnNotification | null 
     method,
     threadId: asString(params.threadId),
     turnId: asString(params.turnId) || asString(turnObj?.id),
+    itemId: asString(params.itemId) || asString(asObject(params.item)?.id),
     delta: asString(params.delta),
     status: asString(turnObj?.status),
     errorMessage: asString(turnErrorObj?.message) || asString(errorObj?.message),
@@ -972,10 +973,22 @@ function selectTurnStreamUpdate(msg: unknown, state: SelectTurnStreamState): Sel
   if (v2 && v2.threadId === threadId && (!v2.turnId || v2.turnId === turnId)) {
     nextPreferV2 = true;
     if (v2.method === 'item/agentMessage/delta' && v2.delta) {
-      return { matched: true, nextPreferV2, streamEvent: { type: 'answer_delta', delta: v2.delta } };
+      return {
+        matched: true,
+        nextPreferV2,
+        streamEvent: v2.itemId
+          ? { type: 'answer_delta', delta: v2.delta, itemId: v2.itemId }
+          : { type: 'answer_delta', delta: v2.delta }
+      };
     }
     if (v2.method === 'item/plan/delta' && v2.delta) {
-      return { matched: true, nextPreferV2, streamEvent: { type: 'plan_delta', delta: v2.delta } };
+      return {
+        matched: true,
+        nextPreferV2,
+        streamEvent: v2.itemId
+          ? { type: 'plan_delta', delta: v2.delta, itemId: v2.itemId }
+          : { type: 'plan_delta', delta: v2.delta }
+      };
     }
     if ((v2.method === 'item/reasoning/summaryTextDelta' || v2.method === 'item/reasoning/textDelta') && v2.delta) {
       return { matched: true, nextPreferV2, streamEvent: { type: 'reasoning_delta', delta: v2.delta } };
@@ -983,7 +996,13 @@ function selectTurnStreamUpdate(msg: unknown, state: SelectTurnStreamState): Sel
     if (v2.method === 'turn/plan/updated') {
       const params = asObject(asObject(msg)?.params);
       const planText = buildTurnPlanText(params?.explanation, params?.plan);
-      return { matched: true, nextPreferV2, streamEvent: { type: 'plan_snapshot', text: planText } };
+      return {
+        matched: true,
+        nextPreferV2,
+        streamEvent: asString(params?.itemId)
+          ? { type: 'plan_snapshot', text: planText, itemId: asString(params?.itemId) as string }
+          : { type: 'plan_snapshot', text: planText }
+      };
     }
     if (v2.method === 'turn/completed') {
       if (isCompletedStatus(v2.status)) return { matched: true, nextPreferV2, terminal: { kind: 'done' } };
@@ -1057,40 +1076,29 @@ function normalizeThreadMessages(readResult: ThreadMessageReadResult): OutputIte
   for (const turn of turns) {
     const items = Array.isArray(turn?.items) ? turn.items : [];
     const input = Array.isArray(turn?.input) ? turn.input : [];
-    const userTextFromInput = input
-      .filter((item) => item?.type === 'text' && typeof item.text === 'string')
-      .map((item) => item.text)
-      .join('\n')
-      .trim();
-    const userTextFromItems = items
-      .filter((item) => item?.type === 'userMessage')
-      .flatMap((item) => (Array.isArray(item.content) ? item.content : []))
-      .filter((part) => part?.type === 'text' && typeof part.text === 'string')
-      .map((part) => part.text)
-      .join('\n')
-      .trim();
-    const userText = userTextFromInput || userTextFromItems;
-    if (userText) {
+    let userIndex = 0;
+    let assistantIndex = 0;
+    let currentAnswerParts: string[] = [];
+    let currentPlanParts: string[] = [];
+
+    function pushUserMessage(text: string): void {
+      const normalized = String(text || '').trim();
+      if (!normalized) return;
       messages.push({
-        id: `${turn.id}:user`,
+        id: `${turn.id}:user:${userIndex}`,
         role: 'user',
         type: 'plain',
-        text: userText
+        text: normalized
       });
+      userIndex += 1;
     }
 
-    const answerText = items
-      .filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string')
-      .map((item) => item.text)
-      .join('\n');
-    const planText = items
-      .filter((item) => item?.type === 'plan' && typeof item.text === 'string')
-      .map((item) => item.text)
-      .join('\n');
-
-    if (answerText || planText) {
+    function flushAssistantSegment(): void {
+      const answerText = currentAnswerParts.join('\n');
+      const planText = currentPlanParts.join('\n');
+      if (!answerText && !planText) return;
       messages.push({
-        id: `${turn.id}:assistant`,
+        id: `${turn.id}:assistant:${assistantIndex}`,
         role: 'assistant',
         type: looksLikeDiff(answerText) ? 'diff' : 'markdown',
         text: answerText,
@@ -1098,12 +1106,75 @@ function normalizeThreadMessages(readResult: ThreadMessageReadResult): OutputIte
         plan: planText
       });
       messages.push({
-        id: `${turn.id}:sep`,
+        id: `${turn.id}:sep:${assistantIndex}`,
         role: 'system',
         type: 'separator',
         text: ''
       });
+      assistantIndex += 1;
+      currentAnswerParts = [];
+      currentPlanParts = [];
     }
+
+    function isUserInputBoundaryItem(item: unknown): boolean {
+      const record = asObject(item);
+      if (!record) return false;
+      const type = (asString(record.type) || '').toLowerCase();
+      const method = (asString(record.method) || '').toLowerCase();
+      const name = (asString(record.name) || '').toLowerCase();
+      const toolName = (asString(record.toolName) || '').toLowerCase();
+      return (
+        type.includes('requestuserinput') ||
+        type.includes('request_user_input') ||
+        type.includes('userinputrequest') ||
+        method === 'item/tool/requestuserinput' ||
+        name.includes('requestuserinput') ||
+        name.includes('request_user_input') ||
+        toolName.includes('requestuserinput') ||
+        toolName.includes('request_user_input')
+      );
+    }
+
+    function extractUserMessageText(item: unknown): string {
+      const record = asObject(item);
+      if (!record || record.type !== 'userMessage') return '';
+      const content = Array.isArray(record.content) ? record.content : [];
+      return content
+        .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+        .map((part) => part.text)
+        .join('\n')
+        .trim();
+    }
+
+    const hasUserMessageItems = items.some((item) => item?.type === 'userMessage');
+    if (!hasUserMessageItems) {
+      const userTextFromInput = input
+        .filter((item) => item?.type === 'text' && typeof item.text === 'string')
+        .map((item) => item.text)
+        .join('\n')
+        .trim();
+      pushUserMessage(userTextFromInput);
+    }
+
+    for (const item of items) {
+      if (item?.type === 'userMessage') {
+        flushAssistantSegment();
+        pushUserMessage(extractUserMessageText(item));
+        continue;
+      }
+      if (item?.type === 'agentMessage' && typeof item.text === 'string') {
+        currentAnswerParts.push(item.text);
+        continue;
+      }
+      if (item?.type === 'plan' && typeof item.text === 'string') {
+        currentPlanParts.push(item.text);
+        continue;
+      }
+      if (isUserInputBoundaryItem(item)) {
+        flushAssistantSegment();
+      }
+    }
+    flushAssistantSegment();
   }
 
   return messages;
