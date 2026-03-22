@@ -430,35 +430,6 @@ function expandAssistantItems(items: OutputItem[]): OutputItem[] {
   return out;
 }
 
-function withAutoAssistantSeparators(items: OutputItem[]): OutputItem[] {
-  const src = Array.isArray(items) ? items : [];
-  const out: OutputItem[] = [];
-  let prev: OutputItem | null = null;
-  for (const item of src) {
-    const current = item && typeof item === 'object' ? item : null;
-    if (!current) continue;
-
-    if (
-      prev &&
-      prev.type !== 'separator' &&
-      current.type !== 'separator' &&
-      prev.role === 'assistant' &&
-      current.role === 'assistant'
-    ) {
-      out.push({
-        id: `auto-sep:${prev.id}->${current.id}`,
-        role: 'system',
-        type: 'separator',
-        text: ''
-      });
-    }
-
-    out.push(current);
-    prev = current;
-  }
-  return out;
-}
-
 function ChatPage() {
   const {
     connected,
@@ -511,7 +482,7 @@ function ChatPage() {
   const userInputCardRef = useRef<HTMLDivElement | null>(null);
   const swipeStartXRef = useRef<number | null>(null);
   const swipeStartYRef = useRef<number | null>(null);
-  const displayItems = useMemo(() => withAutoAssistantSeparators(outputItems), [outputItems]);
+  const displayItems = outputItems;
   const latestPlanItemId = useMemo(() => {
     for (let idx = displayItems.length - 1; idx >= 0; idx -= 1) {
       const item = displayItems[idx];
@@ -745,9 +716,6 @@ function ChatPage() {
 
         <article className="fx-chat-scroll" ref={outputRef}>
           {displayItems.map((item) => {
-            if (item.type === 'separator') {
-              return <div key={item.id} className="fx-turn-separator" />;
-            }
             if (item.role !== 'assistant' && item.role !== 'user') {
               return (
                 <div key={item.id} className="fx-msg fx-msg-system">
@@ -1295,21 +1263,17 @@ export default function AppRoot() {
     return assistantId;
   }
 
-  function finalizeStreamingAssistantCard(id: string, answer: string, plan: string, appendSeparator = false): void {
+  function finalizeStreamingAssistantCard(id: string, answer: string, plan: string): void {
     if (!id) return;
     const finalAnswer = answer.trim() ? answer : '(応答なし)';
     const finalType: AssistantOutputItem['type'] = looksLikeDiff(finalAnswer) ? 'diff' : 'markdown';
-    setOutputItems((prev): OutputItem[] => {
-      const next = prev.map((item) =>
+    setOutputItems((prev): OutputItem[] =>
+      prev.map((item) =>
         item.id === id && isAssistantItem(item)
           ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer, plan }
           : item
-      );
-      if (appendSeparator) {
-        next.push({ id: `${id}:sep`, role: 'system', type: 'separator', text: '' });
-      }
-      return next;
-    });
+      )
+    );
   }
 
   function ensureStreamingAssistantCardForItem(itemId: string): void {
@@ -1840,15 +1804,13 @@ export default function AppRoot() {
 
       const finalAnswer = answerCommitted.trim() ? answerCommitted : '(応答なし)';
       const finalType: AssistantOutputItem['type'] = looksLikeDiff(finalAnswer) ? 'diff' : 'markdown';
-      setOutputItems((prev): OutputItem[] => {
-        const next = prev.map((item) =>
+      setOutputItems((prev): OutputItem[] =>
+        prev.map((item) =>
           item.id === assistantId && isAssistantItem(item)
             ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer, plan: planCommitted }
             : item
-        );
-        next.push({ id: `${assistantId}:sep`, role: 'system', type: 'separator', text: '' });
-        return next;
-      });
+        )
+      );
     } catch (e: unknown) {
       if (!(e instanceof DOMException && e.name === 'AbortError')) {
         // resume失敗時は履歴再取得で最新化し、失敗トーストは出さない。

@@ -64,17 +64,11 @@ export interface UserOutputItem extends BaseOutputItem {
   attachments?: ImageAttachmentMeta[];
 }
 
-export interface SeparatorOutputItem extends BaseOutputItem {
-  role: 'system';
-  type: 'separator';
-  text: '';
-}
-
 export interface SystemOutputItem extends BaseOutputItem {
   role: 'system';
 }
 
-export type OutputItem = AssistantOutputItem | UserOutputItem | SeparatorOutputItem | SystemOutputItem;
+export type OutputItem = AssistantOutputItem | UserOutputItem | SystemOutputItem;
 
 export interface AppErrorState {
   title: string;

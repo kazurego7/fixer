@@ -1105,12 +1105,6 @@ function normalizeThreadMessages(readResult: ThreadMessageReadResult): OutputIte
         answer: answerText,
         plan: planText
       });
-      messages.push({
-        id: `${turn.id}:sep:${assistantIndex}`,
-        role: 'system',
-        type: 'separator',
-        text: ''
-      });
       assistantIndex += 1;
       currentAnswerParts = [];
       currentPlanParts = [];

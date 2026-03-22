@@ -420,8 +420,7 @@ test('normalizeThreadMessages keeps assistant as single message unit even with r
     out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
     [
       ['t1:user:0', 'user', 'plain', 'ユーザー質問'],
-      ['t1:assistant:0', 'assistant', 'markdown', '本文1\n本文2\n本文3'],
-      ['t1:sep:0', 'system', 'separator', '']
+      ['t1:assistant:0', 'assistant', 'markdown', '本文1\n本文2\n本文3']
     ]
   );
 });
@@ -444,8 +443,7 @@ test('normalizeThreadMessages keeps single assistant segment when reasoning is a
     out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
     [
       ['t2:user:0', 'user', 'plain', 'q'],
-      ['t2:assistant:0', 'assistant', 'markdown', 'a1\na2'],
-      ['t2:sep:0', 'system', 'separator', '']
+      ['t2:assistant:0', 'assistant', 'markdown', 'a1\na2']
     ]
   );
 });
@@ -468,8 +466,7 @@ test('normalizeThreadMessages keeps plan items in dedicated field', () => {
     out.map((item: OutputItem) => [item.id, item.role, item.type, item.text]),
     [
       ['t2p:user:0', 'user', 'plain', 'q'],
-      ['t2p:assistant:0', 'assistant', 'markdown', '最終回答'],
-      ['t2p:sep:0', 'system', 'separator', '']
+      ['t2p:assistant:0', 'assistant', 'markdown', '最終回答']
     ]
   );
   const assistant = out.find((item: OutputItem) => item.id === 't2p:assistant:0');
@@ -518,9 +515,7 @@ test('normalizeThreadMessages splits assistant segments around request user inpu
     [
       ['t4:user:0', 'user', 'plain', 'q'],
       ['t4:assistant:0', 'assistant', 'markdown', '確認前の回答'],
-      ['t4:sep:0', 'system', 'separator', ''],
-      ['t4:assistant:1', 'assistant', 'markdown', '確認後の回答'],
-      ['t4:sep:1', 'system', 'separator', '']
+      ['t4:assistant:1', 'assistant', 'markdown', '確認後の回答']
     ]
   );
 });
@@ -549,10 +544,8 @@ test('normalizeThreadMessages splits same turn when app server history contains 
     [
       ['t5:user:0', 'user', 'plain', '最初の質問'],
       ['t5:assistant:0', 'assistant', 'markdown', '最初の途中回答'],
-      ['t5:sep:0', 'system', 'separator', ''],
       ['t5:user:1', 'user', 'plain', '追加の入力'],
-      ['t5:assistant:1', 'assistant', 'markdown', '追加入力を踏まえた最終回答'],
-      ['t5:sep:1', 'system', 'separator', '']
+      ['t5:assistant:1', 'assistant', 'markdown', '追加入力を踏まえた最終回答']
     ]
   );
 });
