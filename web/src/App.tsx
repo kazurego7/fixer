@@ -1239,6 +1239,7 @@ export default function AppRoot() {
   const streamingAnswerBufferRef = useRef('');
   const streamingPlanBufferRef = useRef('');
   const pendingFollowupSplitRef = useRef(false);
+  const awaitingPostUserInputAssistantRef = useRef(false);
   const backgroundInterruptedTurnRef = useRef(false);
   const shouldResumeOnVisibleRef = useRef(false);
   const pushEndpointRef = useRef(
@@ -1276,6 +1277,20 @@ export default function AppRoot() {
     );
   }
 
+  function discardStreamingAssistantCard(id: string): void {
+    if (!id) return;
+    setOutputItems((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  function splitStreamingAssistantCard(): void {
+    const currentAssistantId = String(streamingAssistantIdRef.current || '');
+    finalizeStreamingAssistantCard(currentAssistantId, streamingAnswerBufferRef.current, streamingPlanBufferRef.current);
+    streamingAnswerBufferRef.current = '';
+    streamingPlanBufferRef.current = '';
+    streamingAssistantMessageItemIdRef.current = '';
+    appendStreamingAssistantCard();
+  }
+
   function ensureStreamingAssistantCardForItem(itemId: string): void {
     const nextItemId = String(itemId || '').trim();
     if (!nextItemId) return;
@@ -1286,11 +1301,7 @@ export default function AppRoot() {
     }
     if (currentItemId === nextItemId) return;
     if (pendingFollowupSplitRef.current) {
-      const previousAssistantId = String(streamingAssistantIdRef.current || '');
-      finalizeStreamingAssistantCard(previousAssistantId, streamingAnswerBufferRef.current, streamingPlanBufferRef.current, false);
-      streamingAnswerBufferRef.current = '';
-      streamingPlanBufferRef.current = '';
-      appendStreamingAssistantCard();
+      splitStreamingAssistantCard();
       pendingFollowupSplitRef.current = false;
     }
     streamingAssistantMessageItemIdRef.current = nextItemId;
@@ -1639,6 +1650,7 @@ export default function AppRoot() {
     setStreaming(true);
     setStreamingAssistantTarget(assistantId);
     streamingAssistantMessageItemIdRef.current = '';
+    awaitingPostUserInputAssistantRef.current = false;
     setLiveReasoningText('');
     setActiveTurnId(String(turnId || ''));
     activeTurnIdRef.current = String(turnId || '');
@@ -2080,6 +2092,7 @@ export default function AppRoot() {
     streamingAnswerBufferRef.current = '';
     streamingPlanBufferRef.current = '';
     pendingFollowupSplitRef.current = false;
+    awaitingPostUserInputAssistantRef.current = false;
 
     const controller = new AbortController();
     streamAbortRef.current = controller;
@@ -2175,6 +2188,7 @@ export default function AppRoot() {
           if (evt.type === 'answer_delta' && evt.delta) {
             setAwaitingFirstStreamChunk(false);
             setHasAnswerStarted(true);
+            awaitingPostUserInputAssistantRef.current = false;
             ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
             streamingAnswerBufferRef.current += evt.delta;
             const nextType = looksLikeDiff(streamingAnswerBufferRef.current) ? 'diff' : 'plain';
@@ -2188,18 +2202,24 @@ export default function AppRoot() {
             continue;
           }
           if (evt.type === 'plan_delta' && evt.delta) {
+            awaitingPostUserInputAssistantRef.current = false;
             ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
             streamingPlanBufferRef.current += evt.delta;
             updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
             continue;
           }
           if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
+            awaitingPostUserInputAssistantRef.current = false;
             ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
             streamingPlanBufferRef.current = evt.text;
             updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
             continue;
           }
           if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
+            if (streamingAnswerBufferRef.current.trim() || streamingPlanBufferRef.current.trim()) {
+              splitStreamingAssistantCard();
+              awaitingPostUserInputAssistantRef.current = true;
+            }
             mergePendingUserInputRequest({
               requestId: evt.requestId,
               threadId: threadIdToUse,
@@ -2244,6 +2264,7 @@ export default function AppRoot() {
           if (evt.type === 'answer_delta' && evt.delta) {
             setAwaitingFirstStreamChunk(false);
             setHasAnswerStarted(true);
+            awaitingPostUserInputAssistantRef.current = false;
             ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
             streamingAnswerBufferRef.current += evt.delta;
             const nextType = looksLikeDiff(streamingAnswerBufferRef.current) ? 'diff' : 'plain';
@@ -2256,16 +2277,22 @@ export default function AppRoot() {
             });
           }
           if (evt.type === 'plan_delta' && evt.delta) {
+            awaitingPostUserInputAssistantRef.current = false;
             ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
             streamingPlanBufferRef.current += evt.delta;
             updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
           }
           if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
+            awaitingPostUserInputAssistantRef.current = false;
             ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
             streamingPlanBufferRef.current = evt.text;
             updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
           }
           if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
+            if (streamingAnswerBufferRef.current.trim() || streamingPlanBufferRef.current.trim()) {
+              splitStreamingAssistantCard();
+              awaitingPostUserInputAssistantRef.current = true;
+            }
             mergePendingUserInputRequest({
               requestId: evt.requestId,
               threadId: threadIdToUse,
@@ -2288,12 +2315,16 @@ export default function AppRoot() {
         }
       }
 
-      finalizeStreamingAssistantCard(
-        String(streamingAssistantIdRef.current || assistantId || ''),
-        streamingAnswerBufferRef.current,
-        streamingPlanBufferRef.current,
-        true
-      );
+      const currentAssistantId = String(streamingAssistantIdRef.current || assistantId || '');
+      if (
+        awaitingPostUserInputAssistantRef.current &&
+        !streamingAnswerBufferRef.current.trim() &&
+        !streamingPlanBufferRef.current.trim()
+      ) {
+        discardStreamingAssistantCard(currentAssistantId);
+      } else {
+        finalizeStreamingAssistantCard(currentAssistantId, streamingAnswerBufferRef.current, streamingPlanBufferRef.current);
+      }
     } catch (e: unknown) {
       if (e instanceof DOMException && e.name === 'AbortError') {
         const currentAssistantId = String(streamingAssistantIdRef.current || assistantId || '');
@@ -2328,6 +2359,7 @@ export default function AppRoot() {
         streamingAnswerBufferRef.current = '';
         streamingPlanBufferRef.current = '';
         pendingFollowupSplitRef.current = false;
+        awaitingPostUserInputAssistantRef.current = false;
         streamAbortRef.current = null;
         backgroundInterruptedTurnRef.current = false;
       }

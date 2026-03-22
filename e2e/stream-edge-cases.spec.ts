@@ -217,6 +217,8 @@ test('複数質問の回答送信後にresumeストリームを再開する', as
   await expect(page.locator('.fx-msg-assistant .fx-msg-bubble')).toHaveCount(2);
   await expect(page.locator('.fx-msg-assistant .fx-msg-bubble').nth(0)).toContainText('確認前の回答です');
   await expect(page.locator('.fx-msg-assistant .fx-msg-bubble').nth(1)).toContainText('再開後の回答です');
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble').nth(0)).not.toContainText('再開後の回答です');
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble').nth(1)).not.toContainText('確認前の回答です');
   await expect(page.getByTestId('thinking-live-panel')).toHaveCount(0);
 });
 
