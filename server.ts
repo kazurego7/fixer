@@ -11,6 +11,7 @@ import Fastify, {
 import fastifyStatic from '@fastify/static';
 import WebSocket from 'ws';
 import webPush, { type PushSubscription } from 'web-push';
+import { extractDisplayReasoningText } from './shared/reasoning';
 import type {
   CloneState,
   CollaborationMode,
@@ -85,20 +86,45 @@ interface TurnInputImageItem {
 
 type TurnInputItem = TurnInputTextItem | TurnInputImageItem;
 
+interface ThreadMessageContentPart {
+  type?: string;
+  text?: string;
+  url?: string;
+}
+
+interface ThreadMessageTurnItem {
+  id?: string;
+  type?: string;
+  text?: string;
+  phase?: string | null;
+  summary?: string[];
+  content?: ThreadMessageContentPart[];
+}
+
+interface ThreadMessageTurn {
+  id?: string;
+  input?: Array<{ type?: string; text?: string }>;
+  items?: ThreadMessageTurnItem[];
+  status?: string;
+}
+
 interface ThreadMessageReadResult {
   thread?: {
     model?: string;
-    turns?: Array<{
-      id?: string;
-      input?: Array<{ type?: string; text?: string }>;
-      items?: Array<{
-        type?: string;
-        text?: string;
-        summary?: string[];
-        content?: Array<{ type?: string; text?: string }>;
-      }>;
-    }>;
+    turns?: ThreadMessageTurn[];
   };
+}
+
+interface LiveTurnState {
+  threadId: string;
+  turnId: string;
+  items: ThreadMessageTurnItem[];
+  itemOrder: string[];
+  latestSeq: number;
+  renderItems: OutputItem[];
+  liveReasoningRaw: string;
+  liveReasoningText: string;
+  buffer: Array<{ seq: number; event: TurnStreamEvent }>;
 }
 
 interface GithubUserResponse {
@@ -162,6 +188,8 @@ const threadModelByThreadId = new Map<string, string>();
 const pendingUserInputRequestById = new Map<string, PendingUserInputRequest & { createdAt: string }>();
 const handledTerminalTurnKeys = new Set<string>();
 const handledPushTurnKeys = new Set<string>();
+const liveTurnStateByThreadId = new Map<string, LiveTurnState>();
+let liveTurnSeq = 1;
 const DEFAULT_MODEL_FALLBACK = 'gpt-5-codex';
 const DEFAULT_REASONING_SUMMARY = 'concise';
 
@@ -172,6 +200,9 @@ let wsConnectPromise: Promise<void> | null = null;
 let rpcSeq = 1;
 const rpcPending = new Map<number, RpcPendingEntry>();
 const wsSubscribers = new Set<(msg: unknown) => void>();
+const liveTurnSubscribers = new Set<
+  (payload: { threadId: string; turnId: string; seq: number; event: TurnStreamEvent }) => void
+>();
 let pushSubscriptions: PushSubscriptionRecord[] = [];
 let pushPublicKey = '';
 let pushPrivateKey = '';
@@ -361,6 +392,379 @@ function addWsSubscriber(handler: (msg: unknown) => void): () => boolean {
   return () => wsSubscribers.delete(handler);
 }
 
+function addLiveTurnSubscriber(
+  handler: (payload: { threadId: string; turnId: string; seq: number; event: TurnStreamEvent }) => void
+): () => boolean {
+  liveTurnSubscribers.add(handler);
+  return () => liveTurnSubscribers.delete(handler);
+}
+
+function nextLiveTurnSeq(): number {
+  const seq = liveTurnSeq;
+  liveTurnSeq += 1;
+  return seq;
+}
+
+function trimLiveTurnBuffer(state: LiveTurnState, max = 300): void {
+  if (state.buffer.length <= max) return;
+  state.buffer.splice(0, state.buffer.length - max);
+}
+
+function toThreadMessageTurnItem(item: unknown): ThreadMessageTurnItem | null {
+  const record = asObject(item);
+  if (!record) return null;
+  const type = asString(record.type);
+  const id = asString(record.id);
+  if (!type || !id) return null;
+  const normalized: ThreadMessageTurnItem = {
+    id,
+    type
+  };
+  if (typeof record.text === 'string') normalized.text = record.text;
+  if (typeof record.phase === 'string') normalized.phase = record.phase;
+  if (Array.isArray(record.summary)) normalized.summary = record.summary.map((part) => String(part || ''));
+  if (Array.isArray(record.content)) {
+    normalized.content = record.content
+      .filter((part) => part && typeof part === 'object')
+      .map((part) => {
+        const contentPart = asObject(part) || {};
+        return {
+          type: asString(contentPart.type) || undefined,
+          text: asString(contentPart.text) || undefined,
+          url: asString(contentPart.url) || asString((contentPart as JsonRecord).image_url) || undefined
+        };
+      });
+  }
+  return normalized;
+}
+
+function ensureLiveTurnState(threadId: string, turnId: string): LiveTurnState {
+  const existing = liveTurnStateByThreadId.get(threadId);
+  if (existing && existing.turnId === turnId) return existing;
+  const created: LiveTurnState = {
+    threadId,
+    turnId,
+    items: [],
+    itemOrder: [],
+    latestSeq: 0,
+    renderItems: [],
+    liveReasoningRaw: '',
+    liveReasoningText: '',
+    buffer: []
+  };
+  liveTurnStateByThreadId.set(threadId, created);
+  return created;
+}
+
+function findLiveTurnItem(state: LiveTurnState, itemId: string): ThreadMessageTurnItem | null {
+  const idx = state.itemOrder.indexOf(itemId);
+  if (idx < 0) return null;
+  return state.items[idx] || null;
+}
+
+function upsertLiveTurnItem(state: LiveTurnState, item: ThreadMessageTurnItem): ThreadMessageTurnItem {
+  const itemId = asString(item.id);
+  if (!itemId) return item;
+  const idx = state.itemOrder.indexOf(itemId);
+  const cloned = {
+    ...item,
+    summary: Array.isArray(item.summary) ? [...item.summary] : item.summary,
+    content: Array.isArray(item.content) ? item.content.map((part) => ({ ...part })) : item.content
+  };
+  if (idx >= 0) {
+    state.items[idx] = cloned;
+    return state.items[idx] as ThreadMessageTurnItem;
+  }
+  state.itemOrder.push(itemId);
+  state.items.push(cloned);
+  return state.items[state.items.length - 1] as ThreadMessageTurnItem;
+}
+
+function ensureLiveTurnItemByType(state: LiveTurnState, itemId: string, type: string): ThreadMessageTurnItem {
+  const found = findLiveTurnItem(state, itemId);
+  if (found) return found;
+  const created: ThreadMessageTurnItem = { id: itemId, type };
+  if (type === 'reasoning') {
+    created.summary = [];
+    created.content = [];
+  }
+  if (type === 'agentMessage' || type === 'plan') {
+    created.text = '';
+  }
+  return upsertLiveTurnItem(state, created);
+}
+
+function appendLiveTurnBoundary(state: LiveTurnState, boundaryId: string): void {
+  if (!boundaryId) return;
+  const last = state.items[state.items.length - 1];
+  if (last?.id === boundaryId) return;
+  state.itemOrder.push(boundaryId);
+  state.items.push({ id: boundaryId, type: 'request_user_input' });
+}
+
+function extractReasoningRawFromItem(item: ThreadMessageTurnItem | null): string {
+  if (!item || item.type !== 'reasoning') return '';
+  const summaryText = Array.isArray(item.summary) ? item.summary.join('\n').trim() : '';
+  if (summaryText) return summaryText;
+  const contentText = Array.isArray(item.content)
+    ? item.content
+        .map((part) => String(part?.text || ''))
+        .filter(Boolean)
+        .join('\n')
+        .trim()
+    : '';
+  return contentText;
+}
+
+function rebuildLiveTurnStateRender(state: LiveTurnState): void {
+  const turn: ThreadMessageTurn = {
+    id: state.turnId,
+    input: [],
+    items: state.items.map((item) => ({
+      id: item.id,
+      type: item.type,
+      text: item.text,
+      phase: item.phase ?? null,
+      summary: Array.isArray(item.summary) ? [...item.summary] : undefined,
+      content: Array.isArray(item.content)
+        ? item.content.map((part) => ({ type: part.type, text: part.text, url: part.url }))
+        : undefined
+      }))
+  };
+  state.renderItems = normalizeTurnMessages(turn);
+  state.liveReasoningText = extractDisplayReasoningText(state.liveReasoningRaw);
+}
+
+function emitLiveTurnEvent(state: LiveTurnState, event: TurnStreamEvent): number {
+  const seq = nextLiveTurnSeq();
+  state.latestSeq = seq;
+  const normalizedEvent =
+    event.type === 'turn_state'
+      ? {
+          ...event,
+          seq
+        }
+      : event;
+  state.buffer.push({ seq, event: normalizedEvent });
+  trimLiveTurnBuffer(state);
+  for (const subscriber of liveTurnSubscribers) {
+    subscriber({
+      threadId: state.threadId,
+      turnId: state.turnId,
+      seq,
+      event: normalizedEvent
+    });
+  }
+  return seq;
+}
+
+function emitLiveTurnStateSnapshot(state: LiveTurnState): void {
+  rebuildLiveTurnStateRender(state);
+  emitLiveTurnEvent(state, {
+    type: 'turn_state',
+    seq: state.latestSeq,
+    turnId: state.turnId,
+    items: state.renderItems,
+    liveReasoningText: state.liveReasoningText
+  });
+}
+
+function parseV2ItemLifecycleNotification(
+  msg: unknown
+): { method: 'item/started' | 'item/completed'; threadId: string; turnId: string; item: ThreadMessageTurnItem } | null {
+  const record = asObject(msg);
+  if (!record) return null;
+  const method = asString(record.method);
+  if (method !== 'item/started' && method !== 'item/completed') return null;
+  const params = asObject(record.params);
+  const threadId = asString(params?.threadId);
+  const turnId = asString(params?.turnId);
+  const item = toThreadMessageTurnItem(params?.item);
+  if (!threadId || !turnId || !item) return null;
+  return { method, threadId, turnId, item };
+}
+
+function parseV2RetryableErrorNotification(
+  msg: unknown
+): { threadId: string; turnId: string; message: string } | null {
+  const parsed = parseV2TurnNotification(msg);
+  if (!parsed || parsed.method !== 'error' || !parsed.willRetry || !parsed.threadId || !parsed.turnId) return null;
+  return {
+    threadId: parsed.threadId,
+    turnId: parsed.turnId,
+    message: parsed.errorMessage || 'reconnecting'
+  };
+}
+
+function parseTurnPlanUpdateNotification(
+  msg: unknown
+): { threadId: string; turnId: string; itemId: string; text: string } | null {
+  const record = asObject(msg);
+  if (!record || asString(record.method) !== 'turn/plan/updated') return null;
+  const params = asObject(record.params);
+  const threadId = asString(params?.threadId);
+  const turnId = asString(params?.turnId);
+  if (!threadId || !turnId) return null;
+  const itemId = asString(params?.itemId) || `plan:${turnId}`;
+  return {
+    threadId,
+    turnId,
+    itemId,
+    text: buildTurnPlanText(params?.explanation, params?.plan)
+  };
+}
+
+function hydrateLiveTurnStateFromTurn(turnId: string, threadId: string, turn: ThreadMessageTurn | null | undefined): LiveTurnState {
+  const state = ensureLiveTurnState(threadId, turnId);
+  state.items = [];
+  state.itemOrder = [];
+  state.buffer = [];
+  state.latestSeq = 0;
+  state.liveReasoningRaw = '';
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  for (const rawItem of items) {
+    const normalized = toThreadMessageTurnItem(rawItem);
+    if (!normalized) continue;
+    upsertLiveTurnItem(state, normalized);
+    const reasoningRaw = extractReasoningRawFromItem(normalized);
+    if (reasoningRaw) state.liveReasoningRaw = reasoningRaw;
+  }
+  rebuildLiveTurnStateRender(state);
+  return state;
+}
+
+async function ensureLiveTurnStateSnapshot(threadId: string, turnId: string): Promise<LiveTurnState | null> {
+  const existing = liveTurnStateByThreadId.get(threadId);
+  if (existing && existing.turnId === turnId) return existing;
+  try {
+    await rpcRequest('thread/resume', { threadId });
+    const read = await rpcRequest<ThreadMessageReadResult>('thread/read', { threadId, includeTurns: true });
+    const turns = Array.isArray(read?.thread?.turns) ? read.thread.turns : [];
+    const turn = turns.find((entry) => entry?.id === turnId) || null;
+    if (!turn) return null;
+    return hydrateLiveTurnStateFromTurn(turnId, threadId, turn);
+  } catch {
+    return null;
+  }
+}
+
+function buildCurrentTurnStateEvent(state: LiveTurnState): TurnStreamEvent {
+  return {
+    type: 'turn_state',
+    seq: state.latestSeq,
+    turnId: state.turnId,
+    items: state.renderItems,
+    liveReasoningText: state.liveReasoningText
+  };
+}
+
+function replayLiveTurnEvents(
+  state: LiveTurnState,
+  afterSeq: number,
+  writeEvent: (event: TurnStreamEvent) => void
+): number {
+  let lastSentSeq = afterSeq;
+  const buffered = state.buffer.filter((entry) => entry.seq > afterSeq);
+  if (buffered.length === 0) {
+    if (state.latestSeq > afterSeq) {
+      writeEvent(buildCurrentTurnStateEvent(state));
+      return state.latestSeq;
+    }
+    return lastSentSeq;
+  }
+  for (const entry of buffered) {
+    writeEvent(entry.event);
+    lastSentSeq = entry.seq;
+  }
+  return lastSentSeq;
+}
+
+function applyLiveTurnNotification(msg: unknown): void {
+  const lifecycle = parseV2ItemLifecycleNotification(msg);
+  if (lifecycle) {
+    const state = ensureLiveTurnState(lifecycle.threadId, lifecycle.turnId);
+    upsertLiveTurnItem(state, lifecycle.item);
+    const reasoningRaw = extractReasoningRawFromItem(lifecycle.item);
+    if (reasoningRaw) state.liveReasoningRaw = reasoningRaw;
+    emitLiveTurnStateSnapshot(state);
+    return;
+  }
+
+  const planUpdate = parseTurnPlanUpdateNotification(msg);
+  if (planUpdate) {
+    const state = ensureLiveTurnState(planUpdate.threadId, planUpdate.turnId);
+    const planItem = ensureLiveTurnItemByType(state, planUpdate.itemId, 'plan');
+    planItem.text = planUpdate.text;
+    emitLiveTurnStateSnapshot(state);
+    return;
+  }
+
+  const request = parseToolRequestUserInput(msg);
+  if (request) {
+    const state = ensureLiveTurnState(request.threadId, request.turnId);
+    appendLiveTurnBoundary(state, `request_user_input:${String(request.requestId)}`);
+    emitLiveTurnStateSnapshot(state);
+    emitLiveTurnEvent(state, {
+      type: 'request_user_input',
+      requestId: request.requestId,
+      turnId: request.turnId,
+      itemId: request.itemId,
+      questions: request.questions
+    });
+    return;
+  }
+
+  const v2 = parseV2TurnNotification(msg);
+  if (v2?.threadId && v2.turnId) {
+    const state = ensureLiveTurnState(v2.threadId, v2.turnId);
+    if (v2.method === 'item/agentMessage/delta' && v2.itemId && v2.delta) {
+      const item = ensureLiveTurnItemByType(state, v2.itemId, 'agentMessage');
+      item.text = `${String(item.text || '')}${v2.delta}`;
+      emitLiveTurnStateSnapshot(state);
+      return;
+    }
+    if (v2.method === 'item/plan/delta' && v2.itemId && v2.delta) {
+      const item = ensureLiveTurnItemByType(state, v2.itemId, 'plan');
+      item.text = `${String(item.text || '')}${v2.delta}`;
+      emitLiveTurnStateSnapshot(state);
+      return;
+    }
+    if (
+      (v2.method === 'item/reasoning/summaryTextDelta' || v2.method === 'item/reasoning/textDelta') &&
+      v2.itemId &&
+      v2.delta
+    ) {
+      const item = ensureLiveTurnItemByType(state, v2.itemId, 'reasoning');
+      if (v2.method === 'item/reasoning/summaryTextDelta') {
+        const summary = Array.isArray(item.summary) ? item.summary : [];
+        if (summary.length === 0) summary.push('');
+        summary[summary.length - 1] = `${String(summary[summary.length - 1] || '')}${v2.delta}`;
+        item.summary = summary;
+      } else {
+        const content = Array.isArray(item.content) ? item.content : [];
+        if (content.length === 0) content.push({ type: 'text', text: '' });
+        const last = content[content.length - 1] || { type: 'text', text: '' };
+        last.text = `${String(last.text || '')}${v2.delta}`;
+        content[content.length - 1] = last;
+        item.content = content;
+      }
+      state.liveReasoningRaw = `${state.liveReasoningRaw}${v2.delta}`;
+      emitLiveTurnStateSnapshot(state);
+      return;
+    }
+  }
+
+  const retryableError = parseV2RetryableErrorNotification(msg);
+  if (retryableError) {
+    const state = ensureLiveTurnState(retryableError.threadId, retryableError.turnId);
+    emitLiveTurnEvent(state, {
+      type: 'status',
+      phase: 'reconnecting',
+      message: retryableError.message
+    });
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -394,6 +798,7 @@ function attachWsHandlers(ws: WebSocket): void {
     if (terminal) handleTurnTerminalNotification(terminal);
     const userInputRequest = parseToolRequestUserInput(record);
     if (userInputRequest) rememberPendingUserInputRequest(userInputRequest);
+    applyLiveTurnNotification(record);
 
     if (
       Object.prototype.hasOwnProperty.call(record, 'id') &&
@@ -906,9 +1311,22 @@ function handleTurnTerminalNotification(terminal: TurnTerminalNotification | nul
 
   const effectiveTurnId = terminal.turnId || runningTurnId || null;
   const turnKey = `${terminal.threadId}:${effectiveTurnId || 'unknown'}`;
+  const liveState =
+    effectiveTurnId && liveTurnStateByThreadId.get(terminal.threadId)?.turnId === effectiveTurnId
+      ? (liveTurnStateByThreadId.get(terminal.threadId) as LiveTurnState)
+      : null;
 
   runningTurnByThreadId.delete(terminal.threadId);
   clearPendingUserInputForThread(terminal.threadId);
+
+  if (liveState) {
+    emitLiveTurnEvent(
+      liveState,
+      terminal.kind === 'done'
+        ? { type: 'done' }
+        : { type: 'error', message: terminal.message || 'turn_failed' }
+    );
+  }
 
   if (!handledTerminalTurnKeys.has(turnKey)) {
     rememberBounded(handledTerminalTurnKeys, turnKey);
@@ -1071,105 +1489,106 @@ function selectTurnStreamUpdate(msg: unknown, state: SelectTurnStreamState): Sel
 
 function normalizeThreadMessages(readResult: ThreadMessageReadResult): OutputItem[] {
   const turns = Array.isArray(readResult?.thread?.turns) ? readResult.thread.turns : [];
+  return turns.flatMap((turn) => normalizeTurnMessages(turn));
+}
+
+function isUserInputBoundaryItem(item: unknown): boolean {
+  const record = asObject(item);
+  if (!record) return false;
+  const type = (asString(record.type) || '').toLowerCase();
+  const method = (asString(record.method) || '').toLowerCase();
+  const name = (asString(record.name) || '').toLowerCase();
+  const toolName = (asString(record.toolName) || '').toLowerCase();
+  return (
+    type.includes('requestuserinput') ||
+    type.includes('request_user_input') ||
+    type.includes('userinputrequest') ||
+    method === 'item/tool/requestuserinput' ||
+    name.includes('requestuserinput') ||
+    name.includes('request_user_input') ||
+    toolName.includes('requestuserinput') ||
+    toolName.includes('request_user_input')
+  );
+}
+
+function extractUserMessageText(item: unknown): string {
+  const record = asObject(item);
+  if (!record || record.type !== 'userMessage') return '';
+  const content = Array.isArray(record.content) ? record.content : [];
+  return content
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n')
+    .trim();
+}
+
+function normalizeTurnMessages(turn: ThreadMessageTurn | null | undefined): OutputItem[] {
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const input = Array.isArray(turn?.input) ? turn.input : [];
   const messages: OutputItem[] = [];
+  let userIndex = 0;
+  let assistantIndex = 0;
+  let currentAnswerParts: string[] = [];
+  let currentPlanParts: string[] = [];
 
-  for (const turn of turns) {
-    const items = Array.isArray(turn?.items) ? turn.items : [];
-    const input = Array.isArray(turn?.input) ? turn.input : [];
-    let userIndex = 0;
-    let assistantIndex = 0;
-    let currentAnswerParts: string[] = [];
-    let currentPlanParts: string[] = [];
-
-    function pushUserMessage(text: string): void {
-      const normalized = String(text || '').trim();
-      if (!normalized) return;
-      messages.push({
-        id: `${turn.id}:user:${userIndex}`,
-        role: 'user',
-        type: 'plain',
-        text: normalized
-      });
-      userIndex += 1;
-    }
-
-    function flushAssistantSegment(): void {
-      const answerText = currentAnswerParts.join('\n');
-      const planText = currentPlanParts.join('\n');
-      if (!answerText && !planText) return;
-      messages.push({
-        id: `${turn.id}:assistant:${assistantIndex}`,
-        role: 'assistant',
-        type: looksLikeDiff(answerText) ? 'diff' : 'markdown',
-        text: answerText,
-        answer: answerText,
-        plan: planText
-      });
-      assistantIndex += 1;
-      currentAnswerParts = [];
-      currentPlanParts = [];
-    }
-
-    function isUserInputBoundaryItem(item: unknown): boolean {
-      const record = asObject(item);
-      if (!record) return false;
-      const type = (asString(record.type) || '').toLowerCase();
-      const method = (asString(record.method) || '').toLowerCase();
-      const name = (asString(record.name) || '').toLowerCase();
-      const toolName = (asString(record.toolName) || '').toLowerCase();
-      return (
-        type.includes('requestuserinput') ||
-        type.includes('request_user_input') ||
-        type.includes('userinputrequest') ||
-        method === 'item/tool/requestuserinput' ||
-        name.includes('requestuserinput') ||
-        name.includes('request_user_input') ||
-        toolName.includes('requestuserinput') ||
-        toolName.includes('request_user_input')
-      );
-    }
-
-    function extractUserMessageText(item: unknown): string {
-      const record = asObject(item);
-      if (!record || record.type !== 'userMessage') return '';
-      const content = Array.isArray(record.content) ? record.content : [];
-      return content
-        .filter((part) => part?.type === 'text' && typeof part.text === 'string')
-        .map((part) => part.text)
-        .join('\n')
-        .trim();
-    }
-
-    const hasUserMessageItems = items.some((item) => item?.type === 'userMessage');
-    if (!hasUserMessageItems) {
-      const userTextFromInput = input
-        .filter((item) => item?.type === 'text' && typeof item.text === 'string')
-        .map((item) => item.text)
-        .join('\n')
-        .trim();
-      pushUserMessage(userTextFromInput);
-    }
-
-    for (const item of items) {
-      if (item?.type === 'userMessage') {
-        flushAssistantSegment();
-        pushUserMessage(extractUserMessageText(item));
-        continue;
-      }
-      if (item?.type === 'agentMessage' && typeof item.text === 'string') {
-        currentAnswerParts.push(item.text);
-        continue;
-      }
-      if (item?.type === 'plan' && typeof item.text === 'string') {
-        currentPlanParts.push(item.text);
-        continue;
-      }
-      if (isUserInputBoundaryItem(item)) {
-        flushAssistantSegment();
-      }
-    }
-    flushAssistantSegment();
+  function pushUserMessage(text: string): void {
+    const normalized = String(text || '').trim();
+    if (!normalized) return;
+    messages.push({
+      id: `${turn?.id}:user:${userIndex}`,
+      role: 'user',
+      type: 'plain',
+      text: normalized
+    });
+    userIndex += 1;
   }
+
+  function flushAssistantSegment(): void {
+    const answerText = currentAnswerParts.join('\n');
+    const planText = currentPlanParts.join('\n');
+    if (!answerText && !planText) return;
+    messages.push({
+      id: `${turn?.id}:assistant:${assistantIndex}`,
+      role: 'assistant',
+      type: looksLikeDiff(answerText) ? 'diff' : 'markdown',
+      text: answerText,
+      answer: answerText,
+      plan: planText
+    });
+    assistantIndex += 1;
+    currentAnswerParts = [];
+    currentPlanParts = [];
+  }
+
+  const hasUserMessageItems = items.some((item) => item?.type === 'userMessage');
+  if (!hasUserMessageItems) {
+    const userTextFromInput = input
+      .filter((item) => item?.type === 'text' && typeof item.text === 'string')
+      .map((item) => item.text)
+      .join('\n')
+      .trim();
+    pushUserMessage(userTextFromInput);
+  }
+
+  for (const item of items) {
+    if (item?.type === 'userMessage') {
+      flushAssistantSegment();
+      pushUserMessage(extractUserMessageText(item));
+      continue;
+    }
+    if (item?.type === 'agentMessage' && typeof item.text === 'string') {
+      currentAnswerParts.push(item.text);
+      continue;
+    }
+    if (item?.type === 'plan' && typeof item.text === 'string') {
+      currentPlanParts.push(item.text);
+      continue;
+    }
+    if (isUserInputBoundaryItem(item)) {
+      flushAssistantSegment();
+    }
+  }
+  flushAssistantSegment();
 
   return messages;
 }
@@ -1763,6 +2182,107 @@ function buildServer(): FastifyInstance {
     return { id, reused: false };
   });
 
+  function attachLiveTurnStream({
+    reply,
+    threadId,
+    turnId,
+    afterSeq = 0,
+    timeoutEvent,
+    includeStarted = true,
+    alreadyHijacked = false
+  }: {
+    reply: FastifyReply;
+    threadId: string;
+    turnId: string;
+    afterSeq?: number;
+    timeoutEvent: string;
+    includeStarted?: boolean;
+    alreadyHijacked?: boolean;
+  }): void {
+    if (!alreadyHijacked) {
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive'
+      });
+    }
+
+    let aborted = false;
+    let closed = false;
+    let lastSentSeq = Math.max(0, Number(afterSeq || 0));
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    let unsubLive: (() => boolean) | null = null;
+
+    function writeEvent(event: TurnStreamEvent): void {
+      if (aborted) return;
+      reply.raw.write(`${JSON.stringify(event)}\n`);
+    }
+
+    function closeStream(kind: 'done' | 'error', message: string | null = null): void {
+      if (closed) return;
+      closed = true;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+      if (typeof unsubLive === 'function') {
+        unsubLive();
+        unsubLive = null;
+      }
+      if (kind === 'done') writeEvent({ type: 'done' });
+      if (kind === 'error') writeEvent({ type: 'error', message: message || 'unknown_error' });
+      if (!aborted) reply.raw.end();
+    }
+
+    if (includeStarted) writeEvent({ type: 'started', turnId });
+
+    reply.raw.on('close', () => {
+      aborted = true;
+      closeStream('error', 'client_disconnected');
+    });
+
+    timeoutHandle = setTimeout(() => {
+      pushRuntimeLog({
+        level: 'error',
+        event: timeoutEvent,
+        threadId,
+        turnId
+      });
+      closeStream('error', 'turn_timeout');
+    }, 180000);
+
+    unsubLive = addLiveTurnSubscriber((payload) => {
+      if (aborted || closed) return;
+      if (payload.threadId !== threadId || payload.turnId !== turnId) return;
+      if (payload.seq <= lastSentSeq) return;
+      lastSentSeq = payload.seq;
+      if (payload.event.type === 'status' && payload.event.phase === 'reconnecting') {
+        pushRuntimeLog({
+          level: 'info',
+          event: `${timeoutEvent}_reconnecting`,
+          threadId,
+          turnId,
+          message: String(payload.event.message || 'reconnecting')
+        });
+      }
+      if (payload.event.type === 'done') {
+        closeStream('done');
+        return;
+      }
+      if (payload.event.type === 'error') {
+        closeStream('error', payload.event.message);
+        return;
+      }
+      writeEvent(payload.event);
+    });
+
+    const existingState = liveTurnStateByThreadId.get(threadId);
+    if (existingState && existingState.turnId === turnId) {
+      lastSentSeq = replayLiveTurnEvents(existingState, lastSentSeq, writeEvent);
+    }
+  }
+
   app.get('/api/turns/running', async (request, reply) => {
     const query = asObject(request.query) ?? {};
     const threadId = asString(query.threadId);
@@ -1775,10 +2295,41 @@ function buildServer(): FastifyInstance {
     return { running: true, threadId, turnId };
   });
 
+  app.get('/api/turns/live-state', async (request, reply) => {
+    const query = asObject(request.query) ?? {};
+    const threadId = asString(query.threadId);
+    if (!threadId) {
+      reply.code(400);
+      return { error: 'threadId is required' };
+    }
+
+    const turnId = runningTurnByThreadId.get(threadId);
+    if (!turnId) {
+      return {
+        running: false,
+        threadId,
+        seq: 0,
+        items: [],
+        liveReasoningText: ''
+      };
+    }
+
+    const state = (await ensureLiveTurnStateSnapshot(threadId, turnId)) || ensureLiveTurnState(threadId, turnId);
+    return {
+      running: true,
+      threadId,
+      turnId,
+      seq: state.latestSeq,
+      items: state.renderItems,
+      liveReasoningText: ''
+    };
+  });
+
   app.get('/api/turns/stream/resume', async (request, reply) => {
     const query = asObject(request.query) ?? {};
     const threadId = asString(query.threadId);
     const turnId = asString(query.turnId);
+    const afterSeq = Number(query.afterSeq || 0);
     if (!threadId || !turnId) {
       reply.code(400);
       return { error: 'threadId and turnId are required' };
@@ -1804,89 +2355,13 @@ function buildServer(): FastifyInstance {
       turnId
     });
 
-    reply.hijack();
-    reply.raw.writeHead(200, {
-      'Content-Type': 'application/x-ndjson; charset=utf-8',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive'
-    });
-
-    let aborted = false;
-    let closed = false;
-    let unsubWs: (() => boolean) | null = null;
-    let timeoutHandle: NodeJS.Timeout | null = null;
-    let preferV2 = false;
-
-    function writeEvent(event: TurnStreamEvent): void {
-      if (aborted) return;
-      reply.raw.write(`${JSON.stringify(event)}\n`);
-    }
-
-    function closeStream(kind: 'done' | 'error', message: string | null = null): void {
-      if (closed) return;
-      closed = true;
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-        timeoutHandle = null;
-      }
-      if (typeof unsubWs === 'function') {
-        unsubWs();
-        unsubWs = null;
-      }
-      if (kind === 'done') writeEvent({ type: 'done' });
-      if (kind === 'error') writeEvent({ type: 'error', message: message || 'unknown_error' });
-      if (!aborted) reply.raw.end();
-    }
-
-    writeEvent({ type: 'started', turnId });
-
-    reply.raw.on('close', () => {
-      aborted = true;
-      closeStream('error', 'client_disconnected');
-    });
-
-    timeoutHandle = setTimeout(() => {
-      pushRuntimeLog({
-        level: 'error',
-        event: 'turn_stream_resume_timeout',
-        threadId,
-        turnId
-      });
-      closeStream('error', 'turn_timeout');
-    }, 180000);
-
-    unsubWs = addWsSubscriber((msg) => {
-      if (aborted || closed) return;
-      const update = selectTurnStreamUpdate(msg, { threadId, turnId, preferV2 });
-      preferV2 = update.nextPreferV2;
-      if (!update.matched) return;
-
-      if (update.streamEvent?.type === 'status' && update.streamEvent.phase === 'reconnecting') {
-        pushRuntimeLog({
-          level: 'info',
-          event: 'turn_stream_resume_reconnecting',
-          threadId,
-          turnId,
-          message: String(update.streamEvent.message || 'reconnecting')
-        });
-      }
-
-      if (update.streamEvent) {
-        writeEvent(update.streamEvent);
-        return;
-      }
-
-      if (update.terminal) {
-        pushRuntimeLog({
-          level: update.terminal.kind === 'error' ? 'error' : 'info',
-          event: 'turn_stream_resume_terminal',
-          threadId,
-          turnId,
-          kind: update.terminal.kind,
-          message: update.terminal.message || null
-        });
-        closeStream(update.terminal.kind, update.terminal.message);
-      }
+    await ensureLiveTurnStateSnapshot(threadId, turnId);
+    attachLiveTurnStream({
+      reply,
+      threadId,
+      turnId,
+      afterSeq: Number.isFinite(afterSeq) ? afterSeq : 0,
+      timeoutEvent: 'turn_stream_resume_timeout'
     });
   });
 
@@ -1909,18 +2384,6 @@ function buildServer(): FastifyInstance {
       inputLength: prompt.length,
       collaborationMode: collaborationMode || null
     });
-    reply.hijack();
-    reply.raw.writeHead(200, {
-      'Content-Type': 'application/x-ndjson; charset=utf-8',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive'
-    });
-
-    let aborted = false;
-    let closed = false;
-    let unsubWs: (() => boolean) | null = null;
-    let timeoutHandle: NodeJS.Timeout | null = null;
-    let preferV2 = false;
     const turnStartOverrides = await buildTurnStartOverrides(activeThreadId, {
       selectedModel,
       collaborationMode
@@ -1928,31 +2391,20 @@ function buildServer(): FastifyInstance {
 
     if (selectedModel) threadModelByThreadId.set(activeThreadId, selectedModel);
 
-    function writeEvent(event: TurnStreamEvent): void {
-      if (aborted) return;
-      reply.raw.write(`${JSON.stringify(event)}\n`);
-    }
+    const pendingStreamEvents: TurnStreamEvent[] = [];
+    let responseReady = false;
 
-    function closeStream(kind: 'done' | 'error', message: string | null = null, clearRunning = true): void {
-      if (closed) return;
-      closed = true;
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-        timeoutHandle = null;
+    function writeEvent(event: TurnStreamEvent): void {
+      if (!responseReady) {
+        pendingStreamEvents.push(event);
+        return;
       }
-      if (typeof unsubWs === 'function') {
-        unsubWs();
-        unsubWs = null;
-      }
-      if (clearRunning) runningTurnByThreadId.delete(activeThreadId);
-      if (kind === 'done') writeEvent({ type: 'done' });
-      if (kind === 'error') writeEvent({ type: 'error', message: message || 'unknown_error' });
-      if (!aborted) reply.raw.end();
+      reply.raw.write(`${JSON.stringify(event)}\n`);
     }
 
     let turnId: string | null = null;
     try {
-        turnId = await startTurnWithRetry(
+      turnId = await startTurnWithRetry(
         activeThreadId,
         buildTurnInput(prompt, attachments),
         20,
@@ -1962,49 +2414,38 @@ function buildServer(): FastifyInstance {
         turnStartOverrides
       );
       runningTurnByThreadId.set(activeThreadId, turnId);
-      writeEvent({ type: 'started', turnId });
+      ensureLiveTurnState(activeThreadId, turnId);
     } catch (error) {
-      writeEvent({ type: 'error', message: getErrorMessage(error, 'turn_start_failed') });
-      if (!aborted) reply.raw.end();
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive'
+      });
+      for (const event of pendingStreamEvents) reply.raw.write(`${JSON.stringify(event)}\n`);
+      reply.raw.write(
+        `${JSON.stringify({ type: 'error', message: getErrorMessage(error, 'turn_start_failed') } satisfies TurnStreamEvent)}\n`
+      );
+      reply.raw.end();
       return;
     }
 
-    reply.raw.on('close', () => {
-      aborted = true;
-      closeStream('error', 'client_disconnected', false);
+    await ensureLiveTurnStateSnapshot(activeThreadId, turnId);
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive'
     });
-
-    timeoutHandle = setTimeout(() => {
-      pushRuntimeLog({
-        level: 'error',
-        event: 'turn_stream_timeout',
-        threadId: activeThreadId,
-        turnId
-      });
-      closeStream('error', 'turn_timeout', false);
-    }, 180000);
-
-    unsubWs = addWsSubscriber((msg) => {
-      if (aborted || closed) return;
-      const update = selectTurnStreamUpdate(msg, { threadId: activeThreadId, turnId, preferV2 });
-      preferV2 = update.nextPreferV2;
-      if (!update.matched) return;
-      if (update.streamEvent?.type === 'status' && update.streamEvent.phase === 'reconnecting') {
-        pushRuntimeLog({
-          level: 'info',
-          event: 'turn_stream_reconnecting',
-          threadId: activeThreadId,
-          turnId,
-          message: String(update.streamEvent.message || 'reconnecting')
-        });
-      }
-      if (update.streamEvent) {
-        writeEvent(update.streamEvent);
-        return;
-      }
-      if (update.terminal) {
-        closeStream(update.terminal.kind, update.terminal.message);
-      }
+    responseReady = true;
+    for (const event of pendingStreamEvents) reply.raw.write(`${JSON.stringify(event)}\n`);
+    attachLiveTurnStream({
+      reply,
+      threadId: activeThreadId,
+      turnId,
+      afterSeq: 0,
+      timeoutEvent: 'turn_stream_timeout',
+      alreadyHijacked: true
     });
   });
 

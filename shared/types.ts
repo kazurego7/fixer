@@ -155,6 +155,14 @@ export interface RequestUserInputTurnStreamEvent {
   questions: UserInputQuestion[];
 }
 
+export interface TurnStateStreamEvent {
+  type: 'turn_state';
+  seq: number;
+  turnId: string;
+  items: OutputItem[];
+  liveReasoningText: string;
+}
+
 export interface StatusTurnStreamEvent {
   type: 'status';
   phase: 'starting' | 'reconnecting';
@@ -173,6 +181,7 @@ export interface ErrorTurnStreamEvent {
 
 export type TurnStreamEvent =
   | StartedTurnStreamEvent
+  | TurnStateStreamEvent
   | AnswerDeltaTurnStreamEvent
   | ReasoningDeltaTurnStreamEvent
   | PlanDeltaTurnStreamEvent
@@ -226,6 +235,16 @@ export interface SelectTurnStreamUpdateResult {
     kind: 'done' | 'error';
     message?: string;
   };
+}
+
+export interface LiveTurnStateResponse {
+  running: boolean;
+  threadId: string;
+  turnId?: string;
+  seq?: number;
+  items?: OutputItem[];
+  liveReasoningText?: string;
+  error?: string;
 }
 
 export interface CollaborationModeSettings {

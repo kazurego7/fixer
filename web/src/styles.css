@@ -819,6 +819,7 @@ body {
   background: rgba(248, 250, 252, 0.98);
   border-top: 1px solid #e2e8f0;
   backdrop-filter: blur(12px);
+  transition: bottom 0.16s ease;
 }
 
 .fx-file-input {
@@ -1133,22 +1134,22 @@ body {
   width: 100%;
   margin: 0;
   resize: none;
-  min-height: 2rem;
-  max-height: 16vh;
+  min-height: 2.75rem;
   border: 1px solid #d1d5db;
   border-radius: 10px;
   background: #ffffff;
   padding: 0.4rem 0.58rem;
   font-size: 0.9rem;
   line-height: 1.45;
-  transition: min-height 0.16s ease, max-height 0.16s ease;
+  display: block;
+  overflow-y: hidden;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .fx-composer textarea:focus {
-  min-height: 6.4rem;
-  max-height: 38vh;
   outline: none;
   border-color: #94a3b8;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.16);
 }
 
 .fx-composer-actions {

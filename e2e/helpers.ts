@@ -104,15 +104,61 @@ async function installApiMocks(page: Page, options: InstallApiMocksOptions = {})
   await page.route('**/api/turns/stream', async (route) => {
     const raw = route.request().postData() || '{}';
     state.lastTurnStreamBody = JSON.parse(raw) as MockRouteState['lastTurnStreamBody'];
+    const prompt = String(state.lastTurnStreamBody?.input || '');
     const ndjson = [
-      JSON.stringify({ type: 'started' }),
-      JSON.stringify({ type: 'answer_delta', delta: 'ok' }),
+      JSON.stringify({ type: 'started', turnId: 'turn-e2e-default-1' }),
+      JSON.stringify({
+        type: 'turn_state',
+        seq: 1,
+        turnId: 'turn-e2e-default-1',
+        liveReasoningText: '',
+        items: [
+          {
+            id: 'turn-e2e-default-1:user:0',
+            role: 'user',
+            type: 'plain',
+            text: prompt
+          },
+          {
+            id: 'turn-e2e-default-1:assistant:0',
+            role: 'assistant',
+            type: 'markdown',
+            text: 'ok',
+            answer: 'ok',
+            plan: ''
+          }
+        ]
+      }),
       JSON.stringify({ type: 'done' })
     ].join('\n') + '\n';
     await route.fulfill({
       status: 200,
       headers: { 'content-type': 'application/x-ndjson; charset=utf-8' },
       body: ndjson
+    });
+  });
+
+  await page.route('**/api/turns/running**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ running: false, threadId })
+    });
+  });
+
+  await page.route('**/api/turns/live-state**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ running: false, threadId, seq: 0, items: [], liveReasoningText: '' })
+    });
+  });
+
+  await page.route('**/api/approvals/pending**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ requests: [] })
     });
   });
 

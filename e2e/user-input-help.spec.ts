@@ -4,6 +4,7 @@ import { bootstrapChatState, installApiMocks } from './helpers';
 test('プラン実現ボタン下に操作説明を表示し、問UIでは説明を表示しない', async ({ page }) => {
   await bootstrapChatState(page);
   await installApiMocks(page);
+  const state = { pending: false };
 
   await page.unroute('**/api/threads/messages**');
   await page.route('**/api/threads/messages**', async (route) => {
@@ -27,6 +28,7 @@ test('プラン実現ボタン下に操作説明を表示し、問UIでは説明
 
   await page.unroute('**/api/turns/stream');
   await page.route('**/api/turns/stream', async (route) => {
+    state.pending = true;
     const ndjson = [
       JSON.stringify({ type: 'started', turnId: 'turn-1' }),
       JSON.stringify({
@@ -53,6 +55,38 @@ test('プラン実現ボタン下に操作説明を表示し、問UIでは説明
       status: 200,
       headers: { 'content-type': 'application/x-ndjson; charset=utf-8' },
       body: ndjson
+    });
+  });
+
+  await page.unroute('**/api/approvals/pending**');
+  await page.route('**/api/approvals/pending**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        requests: state.pending
+          ? [
+              {
+                requestId: 'req-1',
+                threadId: 'thread-e2e-1',
+                turnId: 'turn-1',
+                itemId: 'item-1',
+                createdAt: '2026-03-30T00:00:00.000Z',
+                questions: [
+                  {
+                    id: 'q1',
+                    header: '方針確認',
+                    question: '次に進める方向を選んでください。',
+                    options: [
+                      { label: '案A', description: '速度優先で進めます。' },
+                      { label: '案B', description: '安全性優先で進めます。' }
+                    ]
+                  }
+                ]
+              }
+            ]
+          : []
+      })
     });
   });
 

@@ -14,13 +14,13 @@ import {
 } from 'react';
 import { marked } from 'marked';
 import { App, Page, PageContent, Button, f7ready, f7 } from 'framework7-react';
-import { extractDisplayReasoningText } from './reasoning';
 import type {
   AppErrorState,
   AssistantOutputItem,
   CollaborationMode,
   ImageAttachmentDraft,
   ImageAttachmentMeta,
+  LiveTurnStateResponse,
   ModelOption,
   OutputItem,
   PendingBusyMap,
@@ -28,6 +28,7 @@ import type {
   PendingUserInputRequest,
   RepoSummary,
   RequestId,
+  TurnStateStreamEvent,
   TurnStreamEvent,
   UserInputAnswerMap,
   UserInputDraft,
@@ -51,7 +52,6 @@ type RepoFilter = 'all' | 'cloned' | 'not_cloned';
 type ThreadByRepoMap = Record<string, string>;
 type CollaborationModeByRepoMap = Record<string, CollaborationMode>;
 type ModelByRepoMap = Record<string, string>;
-type AssistantPatch = Partial<AssistantOutputItem> | ((item: AssistantOutputItem) => AssistantOutputItem);
 
 interface AppContextValue {
   connected: boolean;
@@ -92,6 +92,7 @@ interface AppContextValue {
   startNewThread: () => Promise<void>;
   canReturnToPreviousThread: boolean;
   returnToPreviousThread: () => void;
+  goBackToRepoList: () => void;
   canApplyLatestPlan: boolean;
   applyLatestPlanShortcut: () => Promise<void>;
   chatSettingsOpen: boolean;
@@ -183,18 +184,6 @@ function parseTurnStreamEvent(rawLine: string): TurnStreamEvent | null {
   } catch {
     return null;
   }
-}
-
-function createEmptyAssistantItem(id: string): AssistantOutputItem {
-  return {
-    id,
-    role: 'assistant',
-    type: 'markdown',
-    text: '',
-    status: '',
-    answer: '',
-    plan: ''
-  };
 }
 
 function formatFileSize(size: number | string | null | undefined): string {
@@ -455,6 +444,7 @@ function ChatPage() {
     startNewThread,
     canReturnToPreviousThread,
     returnToPreviousThread,
+    goBackToRepoList,
     canApplyLatestPlan,
     applyLatestPlanShortcut,
     chatSettingsOpen,
@@ -477,6 +467,9 @@ function ChatPage() {
   const canSend = hasComposerInput;
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [composerHeight, setComposerHeight] = useState(0);
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  const composerRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const userInputCardRef = useRef<HTMLDivElement | null>(null);
@@ -517,6 +510,28 @@ function ChatPage() {
     const hit = availableModels.find((item) => item.id === activeRepoModel);
     return hit?.name || activeRepoModel;
   }, [availableModels, activeRepoModel]);
+  const chatScrollPaddingBottom = Math.max(78, composerHeight + keyboardInset + 12);
+  const composerInlineStyle = keyboardInset > 0 ? { bottom: `${keyboardInset}px` } : undefined;
+
+  function syncComposerLayout(target: HTMLTextAreaElement | null = composerInputRef.current): void {
+    if (typeof window === 'undefined') return;
+    if (!(target instanceof HTMLTextAreaElement)) return;
+    const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
+    const maxHeight = Math.max(120, Math.floor(viewportHeight * (isInputFocused ? 0.38 : 0.28)));
+    target.style.height = 'auto';
+    const nextHeight = Math.min(target.scrollHeight, maxHeight);
+    target.style.height = `${Math.max(nextHeight, 44)}px`;
+    target.style.overflowY = target.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }
+
+  function syncComposerMetrics(): void {
+    syncComposerLayout();
+    const node = composerRef.current;
+    if (!(node instanceof HTMLElement)) return;
+    const nextHeight = Math.ceil(node.getBoundingClientRect().height);
+    setComposerHeight((prev) => (Math.abs(prev - nextHeight) < 1 ? prev : nextHeight));
+  }
+
   const keepComposerFocus = (event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
@@ -582,6 +597,50 @@ function ChatPage() {
   }, [previewIndex, pendingAttachments.length]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const rafId = window.requestAnimationFrame(syncComposerMetrics);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [
+    message,
+    pendingAttachments.length,
+    isInputFocused,
+    streaming,
+    activeUserInputRequest?.requestId,
+    activeUserInputQuestion?.id
+  ]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const node = composerRef.current;
+    if (!(node instanceof HTMLElement) || typeof ResizeObserver === 'undefined') {
+      syncComposerMetrics();
+      return;
+    }
+    const observer = new ResizeObserver(() => syncComposerMetrics());
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const syncViewportInset = () => {
+      const nextInset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+      setKeyboardInset((prev) => (Math.abs(prev - nextInset) < 1 ? prev : nextInset));
+    };
+    syncViewportInset();
+    viewport.addEventListener('resize', syncViewportInset);
+    viewport.addEventListener('scroll', syncViewportInset);
+    window.addEventListener('resize', syncViewportInset);
+    return () => {
+      viewport.removeEventListener('resize', syncViewportInset);
+      viewport.removeEventListener('scroll', syncViewportInset);
+      window.removeEventListener('resize', syncViewportInset);
+    };
+  }, []);
+
+  useEffect(() => {
     if (previewIndex === null) return undefined;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -624,7 +683,7 @@ function ChatPage() {
           <button
             className="fx-back-icon"
             type="button"
-            onClick={() => navigate('/repos/')}
+            onClick={goBackToRepoList}
             data-testid="back-button"
           >
             ←
@@ -657,7 +716,7 @@ function ChatPage() {
               className="fx-new-thread-icon"
               type="button"
               onClick={returnToPreviousThread}
-              disabled={busy || streaming}
+              disabled={busy}
               aria-label="前のスレッドに戻る"
               title="前のスレッドに戻る"
               data-testid="return-thread-button"
@@ -690,7 +749,7 @@ function ChatPage() {
               className="fx-new-thread-icon"
               type="button"
               onClick={startNewThread}
-              disabled={busy || streaming}
+              disabled={busy}
               aria-label="新規スレッド"
               title="新規スレッド"
               data-testid="new-thread-button"
@@ -714,7 +773,7 @@ function ChatPage() {
           )}
         </div>
 
-        <article className="fx-chat-scroll" ref={outputRef}>
+        <article className="fx-chat-scroll" ref={outputRef} style={{ paddingBottom: `${chatScrollPaddingBottom}px` }}>
           {displayItems.map((item) => {
             if (item.role !== 'assistant' && item.role !== 'user') {
               return (
@@ -756,7 +815,7 @@ function ChatPage() {
                           className="fx-plan-apply-inline-btn"
                           type="button"
                           onClick={applyLatestPlanShortcut}
-                          disabled={busy || streaming}
+                          disabled={busy}
                           data-testid="plan-apply-button"
                           aria-label="プランを実現"
                           title="プランを実現"
@@ -891,7 +950,7 @@ function ChatPage() {
                           type="button"
                           className={`fx-model-option${selected ? ' is-selected' : ''}`}
                           onClick={() => setActiveRepoModel(model.id)}
-                          disabled={streaming}
+                          disabled={busy}
                           data-testid={`model-option-${testIdModel}`}
                         >
                           <div className="fx-model-option-title">{model.name}</div>
@@ -910,7 +969,13 @@ function ChatPage() {
           </div>
         ) : null}
 
-        <div className="fx-composer" onPointerDownCapture={keepComposerFocus} data-testid="composer">
+        <div
+          className="fx-composer"
+          ref={composerRef}
+          style={composerInlineStyle}
+          onPointerDownCapture={keepComposerFocus}
+          data-testid="composer"
+        >
           {isInputFocused ? (
             <div className="fx-mode-toggle" data-testid="mode-toggle">
               <button
@@ -918,7 +983,7 @@ function ChatPage() {
                 className={`fx-mode-btn is-default${activeCollaborationMode === 'default' ? ' is-active' : ''}`}
                 onPointerDown={(e) => e.preventDefault()}
                 onClick={() => setActiveCollaborationMode('default')}
-                disabled={streaming}
+                disabled={busy}
                 data-testid="mode-default-button"
               >
                 通常
@@ -928,7 +993,7 @@ function ChatPage() {
                 className={`fx-mode-btn is-plan${activeCollaborationMode === 'plan' ? ' is-active' : ''}`}
                 onPointerDown={(e) => e.preventDefault()}
                 onClick={() => setActiveCollaborationMode('plan')}
-                disabled={streaming}
+                disabled={busy}
                 data-testid="mode-plan-button"
               >
                 プラン
@@ -1009,11 +1074,20 @@ function ChatPage() {
             <textarea
               ref={composerInputRef}
               value={message}
-              onChange={(e) => setMessage(e.target.value)}
+              onChange={(e) => {
+                setMessage(e.target.value);
+                syncComposerLayout(e.target);
+              }}
               rows={1}
               placeholder="指示を入力"
-              onFocus={() => setIsInputFocused(true)}
-              onBlur={handleComposerInputBlur}
+              onFocus={(e) => {
+                setIsInputFocused(true);
+                syncComposerLayout(e.currentTarget);
+              }}
+              onBlur={(e) => {
+                handleComposerInputBlur(e);
+                if (typeof window !== 'undefined') window.requestAnimationFrame(() => syncComposerLayout(e.currentTarget));
+              }}
               data-testid="composer-textarea"
             />
             <div
@@ -1235,12 +1309,11 @@ export default function AppRoot() {
   const activeTurnIdRef = useRef('');
   const activeRepoRef = useRef<string | null>(activeRepoFullName);
   const streamingAssistantIdRef = useRef<string | null>(null);
-  const streamingAssistantMessageItemIdRef = useRef('');
-  const streamingAnswerBufferRef = useRef('');
-  const streamingPlanBufferRef = useRef('');
-  const pendingFollowupSplitRef = useRef(false);
-  const awaitingPostUserInputAssistantRef = useRef(false);
+  const activeLiveTurnSeqRef = useRef(0);
+  const unboundPendingUserIdsRef = useRef<string[]>([]);
+  const pendingUserIdsByTurnRef = useRef<Record<string, string[]>>({});
   const backgroundInterruptedTurnRef = useRef(false);
+  const silentStreamAbortRef = useRef(false);
   const shouldResumeOnVisibleRef = useRef(false);
   const pushEndpointRef = useRef(
     typeof window !== 'undefined' ? window.localStorage.getItem(PUSH_ENDPOINT_KEY) || '' : ''
@@ -1257,54 +1330,155 @@ export default function AppRoot() {
     setStreamingAssistantId(id);
   }
 
-  function appendStreamingAssistantCard(): string {
-    const assistantId = `a-${Date.now() + 1}`;
-    setStreamingAssistantTarget(assistantId);
-    setOutputItems((prev) => [...prev, createEmptyAssistantItem(assistantId)]);
-    return assistantId;
+  function bindPendingUserIdsToTurn(turnId: string): void {
+    const pendingIds = unboundPendingUserIdsRef.current;
+    if (!turnId || pendingIds.length === 0) return;
+    pendingUserIdsByTurnRef.current[turnId] = [
+      ...(pendingUserIdsByTurnRef.current[turnId] || []),
+      ...pendingIds
+    ];
+    unboundPendingUserIdsRef.current = [];
   }
 
-  function finalizeStreamingAssistantCard(id: string, answer: string, plan: string): void {
-    if (!id) return;
-    const finalAnswer = answer.trim() ? answer : '(応答なし)';
-    const finalType: AssistantOutputItem['type'] = looksLikeDiff(finalAnswer) ? 'diff' : 'markdown';
-    setOutputItems((prev): OutputItem[] =>
-      prev.map((item) =>
-        item.id === id && isAssistantItem(item)
-          ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer, plan }
-          : item
-      )
-    );
-  }
-
-  function discardStreamingAssistantCard(id: string): void {
-    if (!id) return;
-    setOutputItems((prev) => prev.filter((item) => item.id !== id));
-  }
-
-  function splitStreamingAssistantCard(): void {
-    const currentAssistantId = String(streamingAssistantIdRef.current || '');
-    finalizeStreamingAssistantCard(currentAssistantId, streamingAnswerBufferRef.current, streamingPlanBufferRef.current);
-    streamingAnswerBufferRef.current = '';
-    streamingPlanBufferRef.current = '';
-    streamingAssistantMessageItemIdRef.current = '';
-    appendStreamingAssistantCard();
-  }
-
-  function ensureStreamingAssistantCardForItem(itemId: string): void {
-    const nextItemId = String(itemId || '').trim();
-    if (!nextItemId) return;
-    const currentItemId = String(streamingAssistantMessageItemIdRef.current || '');
-    if (!currentItemId) {
-      streamingAssistantMessageItemIdRef.current = nextItemId;
+  function trackPendingUserId(userId: string, turnId: string | null = null): void {
+    if (!userId) return;
+    if (!turnId) {
+      unboundPendingUserIdsRef.current = [...unboundPendingUserIdsRef.current, userId];
       return;
     }
-    if (currentItemId === nextItemId) return;
-    if (pendingFollowupSplitRef.current) {
-      splitStreamingAssistantCard();
-      pendingFollowupSplitRef.current = false;
+    pendingUserIdsByTurnRef.current[turnId] = [
+      ...(pendingUserIdsByTurnRef.current[turnId] || []),
+      userId
+    ];
+  }
+
+  function getTrackedPendingUserIds(turnId: string): string[] {
+    return pendingUserIdsByTurnRef.current[turnId] || [];
+  }
+
+  function hasAssistantContent(items: OutputItem[]): boolean {
+    return items.some((item) => {
+      if (!isAssistantItem(item)) return false;
+      const answer = typeof item.answer === 'string' ? item.answer.trim() : String(item.text || '').trim();
+      const plan = typeof item.plan === 'string' ? item.plan.trim() : '';
+      const status = typeof item.status === 'string' ? item.status.trim() : '';
+      return Boolean(answer || plan || status);
+    });
+  }
+
+  function getLastAssistantId(items: OutputItem[]): string | null {
+    for (let idx = items.length - 1; idx >= 0; idx -= 1) {
+      const item = items[idx];
+      if (isAssistantItem(item)) return String(item.id || '') || null;
     }
-    streamingAssistantMessageItemIdRef.current = nextItemId;
+    return null;
+  }
+
+  function applyLiveTurnState(
+    threadId: string,
+    turnId: string,
+    items: OutputItem[],
+    {
+      seq,
+      liveReasoningText: nextLiveReasoningText,
+      markStreaming
+    }: { seq: number; liveReasoningText: string; markStreaming: boolean }
+  ): void {
+    if (!threadId || !turnId) return;
+    const normalizedItems = expandAssistantItems(Array.isArray(items) ? items : []);
+    const pendingIds = getTrackedPendingUserIds(turnId);
+    const hasCanonicalUser = normalizedItems.some((item) => isUserItem(item));
+    if (hasCanonicalUser && pendingIds.length > 0) {
+      delete pendingUserIdsByTurnRef.current[turnId];
+    }
+    const turnPrefix = `${turnId}:`;
+    setOutputItems((prev) => {
+      const nextBase = prev.filter((item) => {
+        const itemId = String(item.id || '');
+        if (itemId.startsWith(turnPrefix)) return false;
+        if (hasCanonicalUser && pendingIds.includes(itemId)) return false;
+        return true;
+      });
+      return [...nextBase, ...normalizedItems];
+    });
+    activeLiveTurnSeqRef.current = Math.max(0, Number(seq || 0));
+    const nextAssistantId = markStreaming ? getLastAssistantId(normalizedItems) : null;
+    setStreamingAssistantTarget(nextAssistantId);
+    const hasOutput = hasAssistantContent(normalizedItems);
+    setAwaitingFirstStreamChunk(!hasOutput && !String(nextLiveReasoningText || '').trim());
+    setHasAnswerStarted(markStreaming && hasOutput);
+    setHasReasoningStarted(markStreaming && Boolean(String(nextLiveReasoningText || '').trim()));
+    setLiveReasoningText(markStreaming ? String(nextLiveReasoningText || '') : '');
+  }
+
+  function handleTurnStateEvent(
+    threadId: string,
+    evt: TurnStateStreamEvent,
+    options: { markStreaming: boolean }
+  ): void {
+    const turnId = String(evt.turnId || '');
+    if (!turnId) return;
+    setActiveTurnId(turnId);
+    activeTurnIdRef.current = turnId;
+    applyLiveTurnState(threadId, turnId, Array.isArray(evt.items) ? evt.items : [], {
+      seq: Number(evt.seq || 0),
+      liveReasoningText: String(evt.liveReasoningText || ''),
+      markStreaming: options.markStreaming
+    });
+  }
+
+  function resetStreamingUiState(): void {
+    setStreaming(false);
+    setStreamingAssistantTarget(null);
+    setLiveReasoningText('');
+    setAwaitingFirstStreamChunk(false);
+    setHasReasoningStarted(false);
+    setHasAnswerStarted(false);
+    setActiveTurnId('');
+    activeTurnIdRef.current = '';
+    activeLiveTurnSeqRef.current = 0;
+  }
+
+  async function interruptStreamingSilently(): Promise<void> {
+    if (!streaming && !streamAbortRef.current && !resumeStreamAbortRef.current) return;
+    silentStreamAbortRef.current = true;
+    shouldResumeOnVisibleRef.current = false;
+    if (resumeStreamAbortRef.current) {
+      silentStreamAbortRef.current = true;
+      resumeStreamAbortRef.current.abort();
+    }
+    if (streamAbortRef.current) streamAbortRef.current.abort();
+
+    const threadId = activeThreadRef.current;
+    if (threadId) {
+      try {
+        await fetch('/api/turns/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ thread_id: threadId })
+        });
+      } catch {
+        // 画面遷移を優先する。
+      }
+    }
+
+    setPendingUserInputRequests([]);
+    setPendingUserInputDrafts({});
+    setActiveTurnId('');
+    activeTurnIdRef.current = '';
+  }
+
+  function appendStreamErrorMessage(prefix: string, messageText: string): void {
+    const text = `${prefix}: ${messageText}`;
+    setOutputItems((prev) => [
+      ...prev,
+      {
+        id: `system:${Date.now()}`,
+        role: 'system',
+        type: 'plain',
+        text
+      }
+    ]);
   }
 
   function getRepoModel(repoFullName: string | null = activeRepoRef.current): string {
@@ -1485,6 +1659,13 @@ export default function AppRoot() {
     return data;
   }
 
+  async function fetchLiveTurnState(threadId: string): Promise<LiveTurnStateResponse> {
+    const res = await fetch(`/api/turns/live-state?threadId=${encodeURIComponent(threadId)}`);
+    const data = (await res.json()) as LiveTurnStateResponse;
+    if (!res.ok) throw new Error(data.error || 'live_turn_state_fetch_failed');
+    return data;
+  }
+
   function sanitizePendingUserInputRequests(
     items: unknown,
     threadId: string | null = activeThreadRef.current
@@ -1536,6 +1717,74 @@ export default function AppRoot() {
     return requests;
   }
 
+  function applyTurnStreamEvent(threadId: string, evt: TurnStreamEvent, options: { markStreaming: boolean }): void {
+    if (evt.type === 'started') {
+      const turnId = String(evt.turnId || '');
+      if (!turnId) return;
+      setActiveTurnId(turnId);
+      activeTurnIdRef.current = turnId;
+      bindPendingUserIdsToTurn(turnId);
+      return;
+    }
+    if (evt.type === 'turn_state') {
+      handleTurnStateEvent(threadId, evt, options);
+      return;
+    }
+    if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
+      mergePendingUserInputRequest({
+        requestId: evt.requestId,
+        threadId,
+        turnId: String(evt.turnId || activeTurnIdRef.current || ''),
+        itemId: String(evt.itemId || ''),
+        questions: evt.questions,
+        createdAt: new Date().toISOString()
+      });
+      return;
+    }
+    if (evt.type === 'status') return;
+    if (evt.type === 'reasoning_delta' || evt.type === 'answer_delta' || evt.type === 'plan_delta' || evt.type === 'plan_snapshot') {
+      return;
+    }
+  }
+
+  async function consumeTurnStreamResponse(
+    response: Response,
+    threadId: string,
+    signal: AbortSignal,
+    options: { markStreaming: boolean }
+  ): Promise<void> {
+    if (!response.body) throw new Error('turn_stream_body_missing');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let lineBuf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      lineBuf += decoder.decode(value, { stream: true });
+      const lines = lineBuf.split('\n');
+      lineBuf = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const evt = parseTurnStreamEvent(trimmed);
+        if (!evt) continue;
+        if (evt.type === 'error') throw new Error(String(evt.message || 'unknown_error'));
+        if (evt.type === 'done') return;
+        applyTurnStreamEvent(threadId, evt, options);
+      }
+    }
+
+    if (!lineBuf.trim()) return;
+    const evt = parseTurnStreamEvent(lineBuf.trim());
+    if (!evt) return;
+    if (evt.type === 'error') throw new Error(String(evt.message || 'unknown_error'));
+    if (evt.type === 'done') return;
+    applyTurnStreamEvent(threadId, evt, options);
+  }
+
   async function respondToUserInput(
     requestId: RequestId,
     answers: UserInputAnswerMap,
@@ -1561,14 +1810,10 @@ export default function AppRoot() {
       if (metaThreadId) {
         if (streaming) return true;
         try {
-          const running = await fetchRunningTurn(metaThreadId);
-          if (running?.running && running.turnId) {
-            await startResumeStream(metaThreadId, running.turnId);
-          } else {
-            restoreOutputForThread(metaThreadId);
-          }
+          const resumed = await resumeRunningTurn(metaThreadId);
+          if (!resumed) restoreOutputForThread(metaThreadId).catch(() => {});
         } catch {
-          restoreOutputForThread(metaThreadId);
+          restoreOutputForThread(metaThreadId).catch(() => {});
         }
       }
       return true;
@@ -1632,7 +1877,7 @@ export default function AppRoot() {
     });
   }
 
-  async function startResumeStream(threadId: string, turnId: string): Promise<void> {
+  async function startResumeStream(threadId: string, turnId: string, afterSeq = 0): Promise<void> {
     if (!threadId || !turnId) return;
     if (resumeStreamingTurnIdRef.current === turnId && resumeStreamAbortRef.current) return;
     if (resumeStreamAbortRef.current) resumeStreamAbortRef.current.abort();
@@ -1643,190 +1888,25 @@ export default function AppRoot() {
     resumeStreamingTurnIdRef.current = turnId;
     streamAbortRef.current = controller;
 
-    const assistantId = `resume:${turnId}:${Date.now()}`;
-    setAwaitingFirstStreamChunk(true);
-    setHasReasoningStarted(false);
-    setHasAnswerStarted(false);
     setStreaming(true);
-    setStreamingAssistantTarget(assistantId);
-    streamingAssistantMessageItemIdRef.current = '';
-    awaitingPostUserInputAssistantRef.current = false;
-    setLiveReasoningText('');
     setActiveTurnId(String(turnId || ''));
     activeTurnIdRef.current = String(turnId || '');
 
-    setOutputItems((prev) => [...prev, createEmptyAssistantItem(assistantId)]);
-
-    let answerCommitted = '';
-    let planCommitted = '';
-    let reasoningRaw = '';
-    let lineBuf = '';
-
-    function updateAssistant(patch: AssistantPatch): void {
-      setOutputItems((prev) =>
-        prev.map((item) => {
-          if (item.id !== assistantId || !isAssistantItem(item)) return item;
-          const merged = typeof patch === 'function' ? patch(item) : { ...item, ...patch };
-          return merged;
-        })
-      );
-    }
-
     try {
       const res = await fetch(
-        `/api/turns/stream/resume?threadId=${encodeURIComponent(threadId)}&turnId=${encodeURIComponent(turnId)}`,
+        `/api/turns/stream/resume?threadId=${encodeURIComponent(threadId)}&turnId=${encodeURIComponent(turnId)}&afterSeq=${encodeURIComponent(String(afterSeq || 0))}`,
         { signal: controller.signal }
       );
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
         const err = await res.text();
         throw new Error(err || 'resume_stream_failed');
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        lineBuf += decoder.decode(value, { stream: true });
-        const lines = lineBuf.split('\n');
-        lineBuf = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          const evt = parseTurnStreamEvent(trimmed);
-          if (!evt) {
-            setAwaitingFirstStreamChunk(false);
-            setHasAnswerStarted(true);
-            answerCommitted += `${line}\n`;
-            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
-            continue;
-          }
-          if (evt.type === 'reasoning_delta' && evt.delta) {
-            setAwaitingFirstStreamChunk(false);
-            setHasReasoningStarted(true);
-            reasoningRaw += evt.delta;
-            const displayReasoning = extractDisplayReasoningText(reasoningRaw);
-            if (displayReasoning) setLiveReasoningText(displayReasoning);
-            continue;
-          }
-          if (evt.type === 'answer_delta' && evt.delta) {
-            setAwaitingFirstStreamChunk(false);
-            setHasAnswerStarted(true);
-            answerCommitted += evt.delta;
-            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
-            continue;
-          }
-          if (evt.type === 'plan_delta' && evt.delta) {
-            planCommitted += evt.delta;
-            updateAssistant({ plan: planCommitted, status: '' });
-            continue;
-          }
-          if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
-            planCommitted = evt.text;
-            updateAssistant({ plan: planCommitted, status: '' });
-            continue;
-          }
-          if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
-            mergePendingUserInputRequest({
-              requestId: evt.requestId,
-              threadId,
-              turnId,
-              itemId: String(evt.itemId || ''),
-              questions: evt.questions,
-              createdAt: new Date().toISOString()
-            });
-            continue;
-          }
-          if (evt.type === 'started') {
-            const nextTurnId = String(evt.turnId || turnId || '');
-            if (nextTurnId) {
-              setActiveTurnId(nextTurnId);
-              activeTurnIdRef.current = nextTurnId;
-            }
-            continue;
-          }
-          if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) continue;
-          if (evt.type === 'done') continue;
-          if (evt.type === 'error') {
-            throw new Error(String(evt.message || 'unknown_error'));
-          }
-        }
-      }
-
-      if (lineBuf.trim()) {
-        const evt = parseTurnStreamEvent(lineBuf.trim());
-        if (!evt) {
-          setAwaitingFirstStreamChunk(false);
-          setHasAnswerStarted(true);
-          answerCommitted += lineBuf;
-          const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-          updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
-        } else {
-          if (evt.type === 'reasoning_delta' && evt.delta) {
-            setAwaitingFirstStreamChunk(false);
-            setHasReasoningStarted(true);
-            reasoningRaw += evt.delta;
-            const displayReasoning = extractDisplayReasoningText(reasoningRaw);
-            if (displayReasoning) setLiveReasoningText(displayReasoning);
-          }
-          if (evt.type === 'answer_delta' && evt.delta) {
-            setAwaitingFirstStreamChunk(false);
-            setHasAnswerStarted(true);
-            answerCommitted += evt.delta;
-            const nextType = looksLikeDiff(answerCommitted) ? 'diff' : 'plain';
-            updateAssistant({ type: nextType, answer: answerCommitted, text: answerCommitted, plan: planCommitted, status: '' });
-          }
-          if (evt.type === 'plan_delta' && evt.delta) {
-            planCommitted += evt.delta;
-            updateAssistant({ plan: planCommitted, status: '' });
-          }
-          if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
-            planCommitted = evt.text;
-            updateAssistant({ plan: planCommitted, status: '' });
-          }
-          if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
-            mergePendingUserInputRequest({
-              requestId: evt.requestId,
-              threadId,
-              turnId,
-              itemId: String(evt.itemId || ''),
-              questions: evt.questions,
-              createdAt: new Date().toISOString()
-            });
-          }
-          if (evt.type === 'started') {
-            const nextTurnId = String(evt.turnId || turnId || '');
-            if (nextTurnId) {
-              setActiveTurnId(nextTurnId);
-              activeTurnIdRef.current = nextTurnId;
-            }
-          }
-          if (evt.type === 'done') {
-            // no-op: 最終確定はストリーム読了後に行う。
-          }
-          if (evt.type === 'error') {
-            throw new Error(String(evt.message || 'unknown_error'));
-          }
-        }
-      }
-
-      const finalAnswer = answerCommitted.trim() ? answerCommitted : '(応答なし)';
-      const finalType: AssistantOutputItem['type'] = looksLikeDiff(finalAnswer) ? 'diff' : 'markdown';
-      setOutputItems((prev): OutputItem[] =>
-        prev.map((item) =>
-          item.id === assistantId && isAssistantItem(item)
-            ? { ...item, type: finalType, status: '', answer: finalAnswer, text: finalAnswer, plan: planCommitted }
-            : item
-        )
-      );
+      await consumeTurnStreamResponse(res, threadId, controller.signal, { markStreaming: true });
+      restoreOutputForThread(threadId).catch(() => {});
     } catch (e: unknown) {
       if (!(e instanceof DOMException && e.name === 'AbortError')) {
-        // resume失敗時は履歴再取得で最新化し、失敗トーストは出さない。
-        restoreOutputForThread(threadId);
+        restoreOutputForThread(threadId).catch(() => {});
       }
     } finally {
       if (resumeStreamAbortRef.current === controller) {
@@ -1838,15 +1918,8 @@ export default function AppRoot() {
         streamAbortRef.current = null;
       }
       if (streamAbortRef.current === null || streamAbortRef.current === controller) {
-        setStreaming(false);
-        setStreamingAssistantTarget(null);
-        streamingAssistantMessageItemIdRef.current = '';
-        setLiveReasoningText('');
-        setAwaitingFirstStreamChunk(false);
-        setHasReasoningStarted(false);
-        setHasAnswerStarted(false);
-        setActiveTurnId('');
-        activeTurnIdRef.current = '';
+        silentStreamAbortRef.current = false;
+        resetStreamingUiState();
       }
     }
   }
@@ -1873,6 +1946,41 @@ export default function AppRoot() {
       items: expandAssistantItems(Array.isArray(data.items) ? data.items : []),
       model: String(data.model || '').trim()
     };
+  }
+
+  async function resumeRunningTurn(threadId: string): Promise<boolean> {
+    if (!threadId) return false;
+    const running = await fetchRunningTurn(threadId);
+    if (!running?.running || !running.turnId) {
+      resetStreamingUiState();
+      return false;
+    }
+
+    const liveState = await fetchLiveTurnState(threadId);
+    if (activeThreadRef.current !== threadId) return false;
+
+    const snapshotTurnId = String(liveState.turnId || running.turnId || '');
+    if (snapshotTurnId && Array.isArray(liveState.items)) {
+      setActiveTurnId(snapshotTurnId);
+      activeTurnIdRef.current = snapshotTurnId;
+      applyLiveTurnState(threadId, snapshotTurnId, liveState.items, {
+        seq: Number(liveState.seq || 0),
+        liveReasoningText: '',
+        markStreaming: false
+      });
+    } else {
+      setStreamingAssistantTarget(null);
+      setLiveReasoningText('');
+      setAwaitingFirstStreamChunk(true);
+      setHasReasoningStarted(false);
+      setHasAnswerStarted(false);
+      activeLiveTurnSeqRef.current = Number(liveState.seq || 0);
+      setActiveTurnId(String(running.turnId || ''));
+      activeTurnIdRef.current = String(running.turnId || '');
+    }
+
+    await startResumeStream(threadId, String(running.turnId), Number(liveState.seq || 0));
+    return true;
   }
 
   async function ensureThread(repoFullName: string, preferredThreadId: string | null = null, model = ''): Promise<string> {
@@ -1971,24 +2079,34 @@ export default function AppRoot() {
     return id;
   }
 
-  function restoreOutputForThread(threadId: string, repoFullName: string | null = activeRepoRef.current): void {
+  async function restoreOutputForThread(
+    threadId: string,
+    repoFullName: string | null = activeRepoRef.current,
+    options: { resumeLive?: boolean } = {}
+  ): Promise<void> {
     if (!threadId) return;
-    // スレッド切替直後でも、到着した履歴を破棄しないよう即時更新する。
     activeThreadRef.current = threadId;
     const cached = loadThreadMessages(threadId);
     setOutputItems(cached);
     fetchPendingUserInputRequests(threadId).catch(() => {
       // 取得失敗時は既存表示を維持する。
     });
-    fetchThreadMessages(threadId)
-      .then((payload) => {
-        if (activeThreadRef.current !== threadId) return;
-        setOutputItems(payload.items);
-        if (payload.model && repoFullName) setRepoModel(repoFullName, payload.model);
-      })
-      .catch(() => {
-        // API取得に失敗した場合はキャッシュ表示を維持する。
-      });
+
+    try {
+      const payload = await fetchThreadMessages(threadId);
+      if (activeThreadRef.current !== threadId) return;
+      setOutputItems(payload.items);
+      if (payload.model && repoFullName) setRepoModel(repoFullName, payload.model);
+    } catch {
+      // API取得に失敗した場合はキャッシュ表示を維持する。
+    }
+
+    if (!options.resumeLive) return;
+    try {
+      await resumeRunningTurn(threadId);
+    } catch {
+      // live-state 復元に失敗した場合は履歴表示のみ維持する。
+    }
   }
 
   async function startWithRepo(repo: RepoSummary): Promise<boolean> {
@@ -2015,7 +2133,7 @@ export default function AppRoot() {
       setActiveRepoFullName(repo.fullName);
       setChatVisible(true);
       setThreadByRepo((prev) => ({ ...prev, [repo.fullName]: threadId }));
-      restoreOutputForThread(threadId, repo.fullName);
+      restoreOutputForThread(threadId, repo.fullName, { resumeLive: true }).catch(() => {});
       toast('接続しました');
       return true;
     } catch (e: unknown) {
@@ -2026,7 +2144,11 @@ export default function AppRoot() {
     }
   }
 
-  function appendUserMessage(prompt: string, attachments: ImageAttachmentDraft[]): void {
+  function appendUserMessage(
+    prompt: string,
+    attachments: ImageAttachmentDraft[],
+    options: { turnId?: string | null } = {}
+  ): string {
     const userId = `u-${Date.now()}`;
     const attachmentMeta: ImageAttachmentMeta[] = attachments.map((att) => ({
       type: 'image',
@@ -2034,7 +2156,9 @@ export default function AppRoot() {
       size: att.size,
       mime: att.mime
     }));
+    trackPendingUserId(userId, options.turnId || null);
     setOutputItems((prev) => [...prev, { id: userId, role: 'user', type: 'plain', text: prompt, attachments: attachmentMeta }]);
+    return userId;
   }
 
   async function postSteerTurn(
@@ -2082,17 +2206,12 @@ export default function AppRoot() {
     setHasReasoningStarted(false);
     setHasAnswerStarted(false);
     setStreaming(true);
+    setStreamingAssistantTarget(null);
     setActiveTurnId('');
     activeTurnIdRef.current = '';
+    activeLiveTurnSeqRef.current = 0;
 
     if (appendUser) appendUserMessage(prompt, attachmentsToSend);
-
-    const assistantId = appendStreamingAssistantCard();
-    streamingAssistantMessageItemIdRef.current = '';
-    streamingAnswerBufferRef.current = '';
-    streamingPlanBufferRef.current = '';
-    pendingFollowupSplitRef.current = false;
-    awaitingPostUserInputAssistantRef.current = false;
 
     const controller = new AbortController();
     streamAbortRef.current = controller;
@@ -2123,245 +2242,37 @@ export default function AppRoot() {
           threadIdToUse = recovered;
           setActiveThreadId(recovered);
           setThreadByRepo((prev) => ({ ...prev, [repoFullName]: recovered }));
-          restoreOutputForThread(recovered, repoFullName);
+          restoreOutputForThread(recovered, repoFullName, { resumeLive: true }).catch(() => {});
           res = await postTurn(threadIdToUse);
         } else {
           throw new Error(firstErr || 'send_failed');
         }
       }
 
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
         const err = await res.text();
         throw new Error(err || 'send_failed');
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let reasoningRaw = '';
-      let lineBuf = '';
-
-      function updateAssistant(patch: AssistantPatch): void {
-        const targetId = String(streamingAssistantIdRef.current || assistantId || '');
-        if (!targetId) return;
-        setOutputItems((prev) =>
-          prev.map((item) => {
-            if (item.id !== targetId || !isAssistantItem(item)) return item;
-            const merged = typeof patch === 'function' ? patch(item) : { ...item, ...patch };
-            return merged;
-          })
-        );
-      }
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        lineBuf += decoder.decode(value, { stream: true });
-        const lines = lineBuf.split('\n');
-        lineBuf = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          const evt = parseTurnStreamEvent(trimmed);
-          if (!evt) {
-            setAwaitingFirstStreamChunk(false);
-            setHasAnswerStarted(true);
-            streamingAnswerBufferRef.current += `${line}\n`;
-            const nextType = looksLikeDiff(streamingAnswerBufferRef.current) ? 'diff' : 'plain';
-            updateAssistant({
-              type: nextType,
-              answer: streamingAnswerBufferRef.current,
-              text: streamingAnswerBufferRef.current,
-              plan: streamingPlanBufferRef.current,
-              status: ''
-            });
-            continue;
-          }
-          if (evt.type === 'reasoning_delta' && evt.delta) {
-            setAwaitingFirstStreamChunk(false);
-            setHasReasoningStarted(true);
-            reasoningRaw += evt.delta;
-            const displayReasoning = extractDisplayReasoningText(reasoningRaw);
-            if (displayReasoning) setLiveReasoningText(displayReasoning);
-            continue;
-          }
-          if (evt.type === 'answer_delta' && evt.delta) {
-            setAwaitingFirstStreamChunk(false);
-            setHasAnswerStarted(true);
-            awaitingPostUserInputAssistantRef.current = false;
-            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
-            streamingAnswerBufferRef.current += evt.delta;
-            const nextType = looksLikeDiff(streamingAnswerBufferRef.current) ? 'diff' : 'plain';
-            updateAssistant({
-              type: nextType,
-              answer: streamingAnswerBufferRef.current,
-              text: streamingAnswerBufferRef.current,
-              plan: streamingPlanBufferRef.current,
-              status: ''
-            });
-            continue;
-          }
-          if (evt.type === 'plan_delta' && evt.delta) {
-            awaitingPostUserInputAssistantRef.current = false;
-            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
-            streamingPlanBufferRef.current += evt.delta;
-            updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
-            continue;
-          }
-          if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
-            awaitingPostUserInputAssistantRef.current = false;
-            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
-            streamingPlanBufferRef.current = evt.text;
-            updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
-            continue;
-          }
-          if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
-            if (streamingAnswerBufferRef.current.trim() || streamingPlanBufferRef.current.trim()) {
-              splitStreamingAssistantCard();
-              awaitingPostUserInputAssistantRef.current = true;
-            }
-            mergePendingUserInputRequest({
-              requestId: evt.requestId,
-              threadId: threadIdToUse,
-              turnId: String(evt.turnId || ''),
-              itemId: String(evt.itemId || ''),
-              questions: evt.questions,
-              createdAt: new Date().toISOString()
-            });
-            continue;
-          }
-          if (evt.type === 'started') {
-            const nextTurnId = String(evt.turnId || '');
-            if (nextTurnId) {
-              setActiveTurnId(nextTurnId);
-              activeTurnIdRef.current = nextTurnId;
-            }
-            continue;
-          }
-          if (evt.type === 'status' && (evt.phase === 'starting' || evt.phase === 'reconnecting')) {
-            continue;
-          }
-          if (evt.type === 'error') {
-            throw new Error(String(evt.message || 'unknown_error'));
-          }
-        }
-      }
-
-      if (lineBuf.trim()) {
-        const evt = parseTurnStreamEvent(lineBuf.trim());
-        if (!evt) {
-          setAwaitingFirstStreamChunk(false);
-          setHasAnswerStarted(true);
-          streamingAnswerBufferRef.current += lineBuf;
-        } else {
-          if (evt.type === 'reasoning_delta' && evt.delta) {
-            setAwaitingFirstStreamChunk(false);
-            setHasReasoningStarted(true);
-            reasoningRaw += evt.delta;
-            const displayReasoning = extractDisplayReasoningText(reasoningRaw);
-            if (displayReasoning) setLiveReasoningText(displayReasoning);
-          }
-          if (evt.type === 'answer_delta' && evt.delta) {
-            setAwaitingFirstStreamChunk(false);
-            setHasAnswerStarted(true);
-            awaitingPostUserInputAssistantRef.current = false;
-            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
-            streamingAnswerBufferRef.current += evt.delta;
-            const nextType = looksLikeDiff(streamingAnswerBufferRef.current) ? 'diff' : 'plain';
-            updateAssistant({
-              type: nextType,
-              answer: streamingAnswerBufferRef.current,
-              text: streamingAnswerBufferRef.current,
-              plan: streamingPlanBufferRef.current,
-              status: ''
-            });
-          }
-          if (evt.type === 'plan_delta' && evt.delta) {
-            awaitingPostUserInputAssistantRef.current = false;
-            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
-            streamingPlanBufferRef.current += evt.delta;
-            updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
-          }
-          if (evt.type === 'plan_snapshot' && typeof evt.text === 'string') {
-            awaitingPostUserInputAssistantRef.current = false;
-            ensureStreamingAssistantCardForItem(String(evt.itemId || ''));
-            streamingPlanBufferRef.current = evt.text;
-            updateAssistant({ plan: streamingPlanBufferRef.current, status: '' });
-          }
-          if (evt.type === 'request_user_input' && evt.requestId && Array.isArray(evt.questions)) {
-            if (streamingAnswerBufferRef.current.trim() || streamingPlanBufferRef.current.trim()) {
-              splitStreamingAssistantCard();
-              awaitingPostUserInputAssistantRef.current = true;
-            }
-            mergePendingUserInputRequest({
-              requestId: evt.requestId,
-              threadId: threadIdToUse,
-              turnId: String(evt.turnId || ''),
-              itemId: String(evt.itemId || ''),
-              questions: evt.questions,
-              createdAt: new Date().toISOString()
-            });
-          }
-          if (evt.type === 'started') {
-            const nextTurnId = String(evt.turnId || '');
-            if (nextTurnId) {
-              setActiveTurnId(nextTurnId);
-              activeTurnIdRef.current = nextTurnId;
-            }
-          }
-          if (evt.type === 'error') {
-            throw new Error(String(evt.message || 'unknown_error'));
-          }
-        }
-      }
-
-      const currentAssistantId = String(streamingAssistantIdRef.current || assistantId || '');
-      if (
-        awaitingPostUserInputAssistantRef.current &&
-        !streamingAnswerBufferRef.current.trim() &&
-        !streamingPlanBufferRef.current.trim()
-      ) {
-        discardStreamingAssistantCard(currentAssistantId);
-      } else {
-        finalizeStreamingAssistantCard(currentAssistantId, streamingAnswerBufferRef.current, streamingPlanBufferRef.current);
-      }
+      await consumeTurnStreamResponse(res, threadIdToUse, controller.signal, { markStreaming: true });
+      restoreOutputForThread(threadIdToUse).catch(() => {});
     } catch (e: unknown) {
       if (e instanceof DOMException && e.name === 'AbortError') {
-        const currentAssistantId = String(streamingAssistantIdRef.current || assistantId || '');
-        setOutputItems((prev) =>
-          prev.map((item) => (item.id === currentAssistantId && isAssistantItem(item) ? { ...item, text: '(停止しました)' } : item))
-        );
+        if (!backgroundInterruptedTurnRef.current && !silentStreamAbortRef.current) {
+          appendStreamErrorMessage('停止', '停止しました');
+        }
       } else if (backgroundInterruptedTurnRef.current) {
-        const currentAssistantId = String(streamingAssistantIdRef.current || assistantId || '');
-        setOutputItems((prev) => prev.filter((item) => item.id !== currentAssistantId));
+        // 背景化に伴う中断は再開処理へ委譲する。
       } else {
-        const currentAssistantId = String(streamingAssistantIdRef.current || assistantId || '');
-        setOutputItems((prev) =>
-          prev.map((item) =>
-            item.id === currentAssistantId && isAssistantItem(item)
-              ? { ...item, text: `送信失敗: ${getClientErrorMessage(e)}` }
-              : item
-          )
-        );
+        appendStreamErrorMessage('送信失敗', getClientErrorMessage(e));
         toast('送信に失敗しました');
       }
     } finally {
       if (streamAbortRef.current === controller) {
-        setStreaming(false);
-        setStreamingAssistantTarget(null);
-        setLiveReasoningText('');
-        setAwaitingFirstStreamChunk(false);
-        setHasReasoningStarted(false);
-        setHasAnswerStarted(false);
-        setActiveTurnId('');
-        activeTurnIdRef.current = '';
-        streamingAssistantMessageItemIdRef.current = '';
-        streamingAnswerBufferRef.current = '';
-        streamingPlanBufferRef.current = '';
-        pendingFollowupSplitRef.current = false;
-        awaitingPostUserInputAssistantRef.current = false;
         streamAbortRef.current = null;
         backgroundInterruptedTurnRef.current = false;
+        silentStreamAbortRef.current = false;
+        resetStreamingUiState();
       }
     }
   }
@@ -2382,7 +2293,7 @@ export default function AppRoot() {
         const created = await ensureThread(repoFullName, null, getRepoModel(repoFullName));
         setActiveThreadId(created);
         setThreadByRepo((prev) => ({ ...prev, [repoFullName]: created }));
-        restoreOutputForThread(created, repoFullName);
+        restoreOutputForThread(created, repoFullName, { resumeLive: true }).catch(() => {});
       } catch (e: unknown) {
         toast(`Thread準備失敗: ${getClientErrorMessage(e)}`);
         return;
@@ -2406,7 +2317,7 @@ export default function AppRoot() {
       if (ensured !== activeThreadId) {
         setActiveThreadId(ensured);
         setThreadByRepo((prev) => ({ ...prev, [repoFullName]: ensured }));
-        restoreOutputForThread(ensured, repoFullName);
+        restoreOutputForThread(ensured, repoFullName, { resumeLive: true }).catch(() => {});
       }
     } catch (e: unknown) {
       toast(`Thread再接続失敗: ${getClientErrorMessage(e)}`);
@@ -2427,19 +2338,22 @@ export default function AppRoot() {
 
     setMessage('');
     setPendingAttachments([]);
-    appendUserMessage(prompt, attachmentsToSend);
 
     if (resumeStreamAbortRef.current) resumeStreamAbortRef.current.abort();
 
     const turnIdToUse = String(activeTurnIdRef.current || '');
     if (!turnIdToUse) {
+      appendUserMessage(prompt, attachmentsToSend);
       const controller = streamAbortRef.current;
-      if (controller) controller.abort();
+      if (controller) {
+        silentStreamAbortRef.current = true;
+        controller.abort();
+      }
       await startTurnStream(prompt, attachmentsToSend, threadIdToUse, false, forcedMode);
       return;
     }
 
-    pendingFollowupSplitRef.current = true;
+    appendUserMessage(prompt, attachmentsToSend, { turnId: turnIdToUse });
     const steerResult = await postSteerTurn(threadIdToUse, turnIdToUse, prompt, attachmentsToSend);
     if (steerResult.ok) return;
 
@@ -2449,14 +2363,15 @@ export default function AppRoot() {
       steerResult.error.includes('turn_mismatch') ||
       steerResult.error.includes('running_turn_not_found');
     if (isRecoverableSteerError) {
-      pendingFollowupSplitRef.current = false;
       const controller = streamAbortRef.current;
-      if (controller) controller.abort();
+      if (controller) {
+        silentStreamAbortRef.current = true;
+        controller.abort();
+      }
       await startTurnStream(prompt, attachmentsToSend, threadIdToUse, false, forcedMode);
       return;
     }
 
-    pendingFollowupSplitRef.current = false;
     toast(`追加入力送信失敗: ${steerResult.error || 'steer_failed'}`);
   }
 
@@ -2464,8 +2379,14 @@ export default function AppRoot() {
     await sendTurnWithOverrides();
   }
 
+  function goBackToRepoList(): void {
+    void (async () => {
+      await interruptStreamingSilently();
+      navigate('/repos/');
+    })();
+  }
+
   async function startNewThread(): Promise<void> {
-    if (streaming) return;
     const repoFullName = activeRepoFullName;
     if (!repoFullName) {
       toast('リポジトリが未選択です');
@@ -2473,6 +2394,7 @@ export default function AppRoot() {
     }
     setBusy(true);
     try {
+      if (streaming) await interruptStreamingSilently();
       const previousThreadId = String(activeThreadRef.current || '');
       const id = await createThread(repoFullName, getRepoModel(repoFullName));
       setActiveThreadId(id);
@@ -2550,7 +2472,13 @@ export default function AppRoot() {
     const containerTop = container.getBoundingClientRect().top;
     const targetTop = target.getBoundingClientRect().top;
     container.scrollTop += targetTop - containerTop;
-    return true;
+    let diff = Math.abs(target.getBoundingClientRect().top - container.getBoundingClientRect().top);
+    if (diff >= 4) {
+      const fallbackTop = Math.max(0, target.offsetTop - container.offsetTop);
+      container.scrollTop = fallbackTop;
+      diff = Math.abs(target.getBoundingClientRect().top - container.getBoundingClientRect().top);
+    }
+    return diff < 4;
   }
 
   useEffect(() => {
@@ -2630,6 +2558,8 @@ export default function AppRoot() {
         if (streaming) {
           backgroundInterruptedTurnRef.current = true;
           shouldResumeOnVisibleRef.current = true;
+          if (resumeStreamAbortRef.current) resumeStreamAbortRef.current.abort();
+          if (streamAbortRef.current) streamAbortRef.current.abort();
         }
         return;
       }
@@ -2638,23 +2568,11 @@ export default function AppRoot() {
       const threadId = activeThreadRef.current;
       if (!threadId) return;
 
-      restoreOutputForThread(threadId);
+      restoreOutputForThread(threadId, activeRepoRef.current, {
+        resumeLive: shouldResumeOnVisibleRef.current
+      }).catch(() => {});
 
-      if (!shouldResumeOnVisibleRef.current) return;
       shouldResumeOnVisibleRef.current = false;
-
-      (async () => {
-        try {
-          const running = await fetchRunningTurn(threadId);
-          if (document.visibilityState !== 'visible') return;
-          if (activeThreadRef.current !== threadId) return;
-          if (running?.running && running.turnId) {
-            await startResumeStream(threadId, running.turnId);
-          }
-        } catch {
-          // running turnの取得に失敗した場合は履歴再取得のみ維持。
-        }
-      })();
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -2714,9 +2632,9 @@ export default function AppRoot() {
   }, [activeThreadId, outputItems]);
 
   useEffect(() => {
-    if (!autoScrollRef.current || !outputRef.current) return;
+    if (!streaming || !autoScrollRef.current || !outputRef.current) return;
     outputRef.current.scrollTop = outputRef.current.scrollHeight;
-  }, [outputItems]);
+  }, [outputItems, streaming]);
 
   useEffect(() => {
     if (currentPath !== '/chat/' || !chatVisible) return;
@@ -2733,7 +2651,7 @@ export default function AppRoot() {
         lastChatEntryAlignKeyRef.current = alignKey;
         return;
       }
-      if (attempts >= 12) return;
+      if (attempts >= 60) return;
       rafId = window.requestAnimationFrame(tick);
     };
     rafId = window.requestAnimationFrame(tick);
@@ -2747,7 +2665,7 @@ export default function AppRoot() {
 
   useEffect(() => {
     if (!activeThreadId) return;
-    restoreOutputForThread(activeThreadId, activeRepoFullName);
+    restoreOutputForThread(activeThreadId, activeRepoFullName, { resumeLive: true }).catch(() => {});
   }, [activeThreadId, activeRepoFullName]);
 
   useEffect(() => {
@@ -2803,7 +2721,7 @@ export default function AppRoot() {
   );
 
   const canApplyLatestPlan = Boolean(
-    latestPlanText && activeThreadId && activeRepoFullName && !streaming
+    latestPlanText && activeThreadId && activeRepoFullName
   );
 
   async function applyLatestPlanShortcut(): Promise<void> {
@@ -2825,10 +2743,13 @@ export default function AppRoot() {
       toast('前のスレッドが見つかりません');
       return;
     }
-    setActiveThreadId(fallbackThreadId);
-    setThreadByRepo((prev) => ({ ...prev, [repoFullName]: fallbackThreadId }));
-    restoreOutputForThread(fallbackThreadId, repoFullName);
-    setPendingThreadReturn(null);
+    void (async () => {
+      if (streaming) await interruptStreamingSilently();
+      setActiveThreadId(fallbackThreadId);
+      setThreadByRepo((prev) => ({ ...prev, [repoFullName]: fallbackThreadId }));
+      restoreOutputForThread(fallbackThreadId, repoFullName, { resumeLive: true }).catch(() => {});
+      setPendingThreadReturn(null);
+    })();
   }
 
   const ctx = useMemo(
@@ -2871,6 +2792,7 @@ export default function AppRoot() {
       startNewThread,
       canReturnToPreviousThread,
       returnToPreviousThread,
+      goBackToRepoList,
       canApplyLatestPlan,
       applyLatestPlanShortcut,
       chatSettingsOpen,
@@ -2915,6 +2837,7 @@ export default function AppRoot() {
       activeCollaborationMode,
       activeRepoModel,
       canReturnToPreviousThread,
+      goBackToRepoList,
       canApplyLatestPlan,
       chatSettingsOpen,
       availableModels,
