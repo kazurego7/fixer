@@ -510,22 +510,28 @@ function ChatPage() {
     const hit = availableModels.find((item) => item.id === activeRepoModel);
     return hit?.name || activeRepoModel;
   }, [availableModels, activeRepoModel]);
+  const isComposerExpanded = isInputFocused;
   const chatScrollPaddingBottom = Math.max(78, composerHeight + keyboardInset + 12);
   const composerInlineStyle = keyboardInset > 0 ? { bottom: `${keyboardInset}px` } : undefined;
 
-  function syncComposerLayout(target: HTMLTextAreaElement | null = composerInputRef.current): void {
+  function syncComposerLayout(
+    target: HTMLTextAreaElement | null = composerInputRef.current,
+    options: { expanded?: boolean } = {}
+  ): void {
     if (typeof window === 'undefined') return;
     if (!(target instanceof HTMLTextAreaElement)) return;
+    const expanded = typeof options.expanded === 'boolean' ? options.expanded : isComposerExpanded;
     const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
-    const maxHeight = Math.max(120, Math.floor(viewportHeight * (isInputFocused ? 0.38 : 0.28)));
+    const minHeight = expanded ? 104 : 36;
+    const maxHeight = Math.max(expanded ? 180 : 120, Math.floor(viewportHeight * (expanded ? 0.38 : 0.18)));
     target.style.height = 'auto';
-    const nextHeight = Math.min(target.scrollHeight, maxHeight);
-    target.style.height = `${Math.max(nextHeight, 44)}px`;
-    target.style.overflowY = target.scrollHeight > maxHeight ? 'auto' : 'hidden';
+    const nextHeight = Math.max(target.scrollHeight, minHeight);
+    target.style.height = `${Math.min(nextHeight, maxHeight)}px`;
+    target.style.overflowY = expanded && target.scrollHeight > maxHeight ? 'auto' : 'hidden';
   }
 
   function syncComposerMetrics(): void {
-    syncComposerLayout();
+    syncComposerLayout(undefined, { expanded: isComposerExpanded });
     const node = composerRef.current;
     if (!(node instanceof HTMLElement)) return;
     const nextHeight = Math.ceil(node.getBoundingClientRect().height);
@@ -626,7 +632,8 @@ function ChatPage() {
     const viewport = window.visualViewport;
     if (!viewport) return;
     const syncViewportInset = () => {
-      const nextInset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+      // offsetTop は表示領域のパン量であり、キーボード高ではない。
+      const nextInset = Math.max(0, Math.round(window.innerHeight - viewport.height));
       setKeyboardInset((prev) => (Math.abs(prev - nextInset) < 1 ? prev : nextInset));
     };
     syncViewportInset();
@@ -1072,21 +1079,28 @@ function ChatPage() {
               ＋
             </Button>
             <textarea
+              className={isComposerExpanded ? 'is-expanded' : ''}
               ref={composerInputRef}
               value={message}
               onChange={(e) => {
                 setMessage(e.target.value);
-                syncComposerLayout(e.target);
+                syncComposerLayout(e.target, { expanded: true });
               }}
               rows={1}
               placeholder="指示を入力"
               onFocus={(e) => {
                 setIsInputFocused(true);
-                syncComposerLayout(e.currentTarget);
+                syncComposerLayout(e.currentTarget, { expanded: true });
               }}
               onBlur={(e) => {
                 handleComposerInputBlur(e);
-                if (typeof window !== 'undefined') window.requestAnimationFrame(() => syncComposerLayout(e.currentTarget));
+                const next = e.relatedTarget;
+                const shouldStayExpanded = next instanceof HTMLElement && Boolean(next.closest('.fx-mode-toggle'));
+                if (typeof window !== 'undefined') {
+                  window.requestAnimationFrame(() =>
+                    syncComposerLayout(e.currentTarget, { expanded: shouldStayExpanded })
+                  );
+                }
               }}
               data-testid="composer-textarea"
             />

@@ -1,5 +1,79 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { bootstrapChatState, installApiMocks } from './helpers';
+
+async function installVisualViewportMock(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const listeners = {
+      resize: new Set<(event: Event) => void>(),
+      scroll: new Set<(event: Event) => void>()
+    };
+    const viewport = {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      offsetTop: 0,
+      offsetLeft: 0,
+      pageTop: 0,
+      pageLeft: 0,
+      scale: 1,
+      addEventListener(type: 'resize' | 'scroll', listener: EventListenerOrEventListenerObject | null) {
+        if (!listener || (type !== 'resize' && type !== 'scroll')) return;
+        const callback =
+          typeof listener === 'function' ? listener : (event: Event) => listener.handleEvent(event);
+        listeners[type].add(callback);
+      },
+      removeEventListener(type: 'resize' | 'scroll', listener: EventListenerOrEventListenerObject | null) {
+        if (!listener || (type !== 'resize' && type !== 'scroll')) return;
+        const callback =
+          typeof listener === 'function' ? listener : (event: Event) => listener.handleEvent(event);
+        listeners[type].delete(callback);
+      }
+    };
+    const testWindow = window as Window & {
+      visualViewport?: typeof viewport;
+      __fxTestSetVisualViewport?: (height: number, offsetTop?: number) => void;
+    };
+    Object.defineProperty(testWindow, 'visualViewport', {
+      configurable: true,
+      get() {
+        return viewport;
+      }
+    });
+    testWindow.__fxTestSetVisualViewport = (height: number, offsetTop = 0) => {
+      viewport.height = height;
+      viewport.offsetTop = offsetTop;
+      const resizeEvent = new Event('resize');
+      const scrollEvent = new Event('scroll');
+      listeners.resize.forEach((listener) => listener(resizeEvent));
+      listeners.scroll.forEach((listener) => listener(scrollEvent));
+    };
+  });
+}
+
+async function setVisualViewportMetrics(page: Page, height: number, offsetTop = 0): Promise<void> {
+  await page.evaluate(
+    ({ nextHeight, nextOffsetTop }) => {
+      const testWindow = window as Window & {
+        __fxTestSetVisualViewport?: (height: number, offsetTop?: number) => void;
+      };
+      testWindow.__fxTestSetVisualViewport?.(nextHeight, nextOffsetTop);
+    },
+    { nextHeight: height, nextOffsetTop: offsetTop }
+  );
+}
+
+async function readComposerViewportMetrics(page: Page): Promise<{ bottom: number; paddingBottom: number }> {
+  return page.evaluate(() => {
+    const composer = document.querySelector('[data-testid="composer"]');
+    const scroll = document.querySelector('.fx-chat-scroll');
+    if (!(composer instanceof HTMLElement) || !(scroll instanceof HTMLElement)) {
+      throw new Error('composer_metrics_missing');
+    }
+    return {
+      bottom: Number.parseFloat(getComputedStyle(composer).bottom || '0'),
+      paddingBottom: Number.parseFloat(getComputedStyle(scroll).paddingBottom || '0')
+    };
+  });
+}
 
 test('ライブ出力中でもリポジトリ一覧へ戻れる', async ({ page }) => {
   await bootstrapChatState(page);
@@ -137,17 +211,59 @@ test('ライブ出力中でも入力欄へ再入力できて複数行で広が�
 
   await page.goto('/chat/');
   const textarea = page.getByTestId('composer-textarea');
+  const collapsedHeight = await textarea.evaluate((node) => node.clientHeight);
 
+  await textarea.click();
+  await expect(textarea).toBeFocused();
+  await expect.poll(() => textarea.evaluate((node) => node.clientHeight)).toBeGreaterThan(collapsedHeight + 40);
   await textarea.fill('最初の入力');
-  const baseHeight = await textarea.evaluate((node) => node.clientHeight);
   await page.getByTestId('send-button').click();
 
   await textarea.click();
   await expect(textarea).toBeFocused();
+  const expandedHeight = await textarea.evaluate((node) => node.clientHeight);
   await textarea.fill(['1行目', '2行目', '3行目', '4行目', '5行目'].join('\n'));
 
-  await expect.poll(() => textarea.evaluate((node) => node.clientHeight)).toBeGreaterThan(baseHeight + 24);
+  await expect.poll(() => textarea.evaluate((node) => node.clientHeight)).toBeGreaterThan(expandedHeight + 8);
   await expect(page.getByTestId('followup-button')).toBeEnabled();
+});
+
+test('初回応答待ち中はvisualViewportのoffsetTop変動で入力欄位置を下げない', async ({ page }) => {
+  await installVisualViewportMock(page);
+  await bootstrapChatState(page);
+  await installApiMocks(page);
+
+  await page.unroute('**/api/turns/stream');
+  await page.route('**/api/turns/stream', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const ndjson = [JSON.stringify({ type: 'started', turnId: 'turn-viewport-1' }), JSON.stringify({ type: 'done' })].join('\n') + '\n';
+    await route.fulfill({
+      status: 200,
+      headers: { 'content-type': 'application/x-ndjson; charset=utf-8' },
+      body: ndjson
+    });
+  });
+
+  await page.goto('/chat/');
+  const textarea = page.getByTestId('composer-textarea');
+  await textarea.fill('最初の入力');
+  await page.getByTestId('send-button').click();
+  await expect(page.getByTestId('stream-loading-indicator')).toBeVisible();
+  await textarea.click();
+  await expect(textarea).toBeFocused();
+
+  const innerHeight = await page.evaluate(() => window.innerHeight);
+  await setVisualViewportMetrics(page, innerHeight - 320, 0);
+  await expect.poll(() => readComposerViewportMetrics(page).then((metrics) => metrics.bottom)).toBe(320);
+  const baseline = await readComposerViewportMetrics(page);
+
+  await setVisualViewportMetrics(page, innerHeight - 320, 110);
+  await expect
+    .poll(() => readComposerViewportMetrics(page))
+    .toMatchObject({
+      bottom: baseline.bottom,
+      paddingBottom: baseline.paddingBottom
+    });
 });
 
 test('errorイベント時は送信失敗を表示して思考パネルを消す', async ({ page }) => {
