@@ -499,8 +499,14 @@ body {
   border-color: #cbd5e1;
 }
 
-.fx-msg-assistant .fx-msg-bubble > div {
+.fx-msg-assistant .fx-msg-bubble > * {
   min-width: 0;
+  max-width: 100%;
+}
+
+.fx-msg-assistant .fx-msg-bubble :is(p, li, a, code, pre, blockquote) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .fx-msg-assistant .fx-msg-bubble p {
@@ -609,6 +615,15 @@ body {
 
 .fx-msg-assistant .fx-msg-bubble li {
   margin-bottom: 0.2rem;
+}
+
+.fx-msg-assistant .fx-msg-bubble pre {
+  margin: 0.45rem 0;
+  white-space: pre-wrap;
+}
+
+.fx-msg-assistant .fx-msg-bubble pre code {
+  white-space: inherit;
 }
 
 .fx-reasoning-stream {
