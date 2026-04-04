@@ -256,33 +256,31 @@ body {
   display: block;
 }
 
-.fx-new-thread-icon {
-  position: absolute;
-  right: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2rem;
-  height: 2rem;
+.fx-thread-action-button {
+  width: 100%;
+  min-height: 2.6rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
-  border-radius: 999px;
+  gap: 0.48rem;
+  padding: 0.58rem 0.8rem;
+  border-radius: 12px;
   border: 1px solid #cbd5e1;
   background: #fff;
   color: #0f172a;
-  font-size: 1.34rem;
+  font-size: 0.84rem;
   font-weight: 700;
-  line-height: 1;
+  line-height: 1.2;
 }
 
-.fx-new-thread-icon:disabled {
+.fx-thread-action-button:disabled {
   opacity: 0.45;
 }
 
-.fx-new-thread-icon-svg {
-  width: 1.2rem;
-  height: 1.2rem;
+.fx-thread-action-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
 }
 
 .fx-chat-scroll {

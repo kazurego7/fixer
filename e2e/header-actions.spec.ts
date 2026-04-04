@@ -7,6 +7,7 @@ test('ヘッダーボタンが表示されクリック可能 @smoke', async ({ p
   await page.goto('/chat/');
 
   await expect(page.getByTestId('back-button')).toBeVisible();
+  await page.getByTestId('chat-settings-trigger').click();
   await expect(page.getByTestId('new-thread-button')).toBeVisible();
 
   await page.getByTestId('new-thread-button').click();
@@ -20,6 +21,7 @@ test('新規スレッド開始直後は戻るボタンが表示され、戻る�
   await installApiMocks(page);
   await page.goto('/chat/');
 
+  await page.getByTestId('chat-settings-trigger').click();
   await page.getByTestId('new-thread-button').click();
   await expect(page.getByTestId('return-thread-button')).toBeVisible();
 
@@ -33,6 +35,7 @@ test('新規と戻るを繰り返しても毎回戻るボタンが正しく機�
   await installApiMocks(page);
   await page.goto('/chat/');
 
+  await page.getByTestId('chat-settings-trigger').click();
   await page.getByTestId('new-thread-button').click();
   await expect(page.getByTestId('return-thread-button')).toBeVisible();
   await page.getByTestId('return-thread-button').click();
@@ -49,12 +52,15 @@ test('新規スレッドで送信すると戻るボタンは消えて新規ボ�
   await installApiMocks(page);
   await page.goto('/chat/');
 
+  await page.getByTestId('chat-settings-trigger').click();
   await page.getByTestId('new-thread-button').click();
   await expect(page.getByTestId('return-thread-button')).toBeVisible();
 
+  await page.getByTestId('chat-settings-close').click();
   await page.getByTestId('composer-textarea').fill('test message');
   await page.getByTestId('send-button').click();
 
+  await page.getByTestId('chat-settings-trigger').click();
   await expect(page.getByTestId('new-thread-button')).toBeVisible();
   await expect(page.getByTestId('return-thread-button')).toHaveCount(0);
 });

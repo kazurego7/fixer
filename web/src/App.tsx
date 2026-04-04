@@ -718,66 +718,6 @@ function ChatPage() {
               </svg>
             </span>
           </button>
-          {canReturnToPreviousThread ? (
-            <button
-              className="fx-new-thread-icon"
-              type="button"
-              onClick={returnToPreviousThread}
-              disabled={busy}
-              aria-label="前のスレッドに戻る"
-              title="前のスレッドに戻る"
-              data-testid="return-thread-button"
-            >
-              <svg
-                className="fx-new-thread-icon-svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-                aria-hidden="true"
-              >
-                <path
-                  d="M9 14L4 9L9 4"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <path
-                  d="M4 9H15C17.2091 9 19 10.7909 19 13V13C19 15.2091 17.2091 17 15 17H14"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-          ) : (
-            <button
-              className="fx-new-thread-icon"
-              type="button"
-              onClick={startNewThread}
-              disabled={busy}
-              aria-label="新規スレッド"
-              title="新規スレッド"
-              data-testid="new-thread-button"
-            >
-              <svg
-                className="fx-new-thread-icon-svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-                aria-hidden="true"
-              >
-                <path
-                  d="M16.8617 4.48667L18.5492 2.79917C19.2814 2.06694 20.4686 2.06694 21.2008 2.79917C21.9331 3.53141 21.9331 4.71859 21.2008 5.45083L10.5822 16.0695C10.0535 16.5981 9.40144 16.9868 8.68489 17.2002L6 18L6.79978 15.3151C7.01323 14.5986 7.40185 13.9465 7.93052 13.4178L16.8617 4.48667ZM16.8617 4.48667L19.5 7.12499M18 14V18.75C18 19.9926 16.9926 21 15.75 21H5.25C4.00736 21 3 19.9926 3 18.75V8.24999C3 7.00735 4.00736 5.99999 5.25 5.99999H10"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-          )}
         </div>
 
         <article className="fx-chat-scroll" ref={outputRef} style={{ paddingBottom: `${chatScrollPaddingBottom}px` }}>
@@ -934,6 +874,70 @@ function ChatPage() {
                   ×
                 </button>
               </header>
+              <div className="fx-chat-settings-section">
+                <div className="fx-chat-settings-label">スレッド</div>
+                <div className="fx-chat-settings-current">
+                  {canReturnToPreviousThread ? '新規スレッドから前の会話へ戻せます' : 'ここから新規スレッドを開始できます'}
+                </div>
+                {canReturnToPreviousThread ? (
+                  <button
+                    className="fx-thread-action-button"
+                    type="button"
+                    onClick={returnToPreviousThread}
+                    disabled={busy}
+                    data-testid="return-thread-button"
+                  >
+                    <svg
+                      className="fx-thread-action-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M9 14L4 9L9 4"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path
+                        d="M4 9H15C17.2091 9 19 10.7909 19 13V13C19 15.2091 17.2091 17 15 17H14"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    <span>前のスレッドに戻る</span>
+                  </button>
+                ) : (
+                  <button
+                    className="fx-thread-action-button"
+                    type="button"
+                    onClick={startNewThread}
+                    disabled={busy}
+                    data-testid="new-thread-button"
+                  >
+                    <svg
+                      className="fx-thread-action-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M16.8617 4.48667L18.5492 2.79917C19.2814 2.06694 20.4686 2.06694 21.2008 2.79917C21.9331 3.53141 21.9331 4.71859 21.2008 5.45083L10.5822 16.0695C10.0535 16.5981 9.40144 16.9868 8.68489 17.2002L6 18L6.79978 15.3151C7.01323 14.5986 7.40185 13.9465 7.93052 13.4178L16.8617 4.48667ZM16.8617 4.48667L19.5 7.12499M18 14V18.75C18 19.9926 16.9926 21 15.75 21H5.25C4.00736 21 3 19.9926 3 18.75V8.24999C3 7.00735 4.00736 5.99999 5.25 5.99999H10"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    <span>新規スレッドを開始</span>
+                  </button>
+                )}
+              </div>
               <div className="fx-chat-settings-section">
                 <div className="fx-chat-settings-label">モデル</div>
                 <div className="fx-chat-settings-current">現在: {activeModelLabel}</div>
