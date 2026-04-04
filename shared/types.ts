@@ -27,6 +27,25 @@ export interface ModelOption {
   description: string;
 }
 
+export type GitStatusTone = 'neutral' | 'success' | 'warning' | 'danger';
+
+export interface GitRepoStatus {
+  repoFullName: string;
+  repoPath: string;
+  branch: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  stagedCount: number;
+  unstagedCount: number;
+  untrackedCount: number;
+  conflictedCount: number;
+  hasChanges: boolean;
+  actionRecommended: boolean;
+  tone: GitStatusTone;
+  summary: string;
+}
+
 export interface ImageAttachmentDraft {
   type: 'image';
   name: string;

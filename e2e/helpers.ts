@@ -81,6 +81,29 @@ async function installApiMocks(page: Page, options: InstallApiMocksOptions = {})
     });
   });
 
+  await page.route('**/api/repos/git-status**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        repoFullName: repo,
+        repoPath: `/tmp/${repo.replace('/', '__')}`,
+        branch: 'main',
+        upstream: 'origin/main',
+        ahead: 0,
+        behind: 0,
+        stagedCount: 1,
+        unstagedCount: 1,
+        untrackedCount: 0,
+        conflictedCount: 0,
+        hasChanges: true,
+        actionRecommended: true,
+        tone: 'warning',
+        summary: '変更あり: ステージ 1 / 未反映 1'
+      })
+    });
+  });
+
   await page.route('**/api/threads/ensure', async (route) => {
     await route.fulfill({
       status: 200,

@@ -12,6 +12,7 @@
     "web:dev": "vite --config vite.config.ts",
     "test": "tsx --test test/*.test.ts",
     "test:e2e": "playwright test --config playwright.config.ts",
+    "test:e2e:git-visual": "playwright test --config playwright.config.ts e2e/git-visual.spec.ts",
     "test:smoke": "playwright test --config playwright.config.ts --grep @smoke",
     "test:all": "npm test && npm run test:smoke"
   },

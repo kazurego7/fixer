@@ -201,6 +201,32 @@ body {
   line-height: 1;
 }
 
+.fx-git-action-icon {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+}
+
+.fx-git-action-icon:disabled {
+  opacity: 0.42;
+}
+
+.fx-git-action-icon-svg {
+  width: 1.16rem;
+  height: 1.16rem;
+}
+
 .fx-repo-pill {
   display: inline-flex;
   align-items: center;
@@ -289,6 +315,61 @@ body {
   overflow-y: auto;
   padding: 0.62rem 0.7rem 4.85rem;
   background: #f8fafc;
+}
+
+.fx-git-status-line {
+  display: flex;
+  align-items: center;
+  gap: 0.42rem;
+  padding: 0.42rem 0.75rem;
+  border-bottom: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.fx-git-status-line.is-neutral {
+  color: #475569;
+}
+
+.fx-git-status-line.is-success {
+  color: #166534;
+}
+
+.fx-git-status-line.is-warning {
+  color: #9a3412;
+  background: #fff7ed;
+}
+
+.fx-git-status-line.is-danger {
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.fx-git-status-dot {
+  width: 0.46rem;
+  height: 0.46rem;
+  border-radius: 999px;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.fx-git-status-text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76rem;
+  line-height: 1.2;
+}
+
+.fx-git-status-branch {
+  flex: 0 0 auto;
+  padding: 0.14rem 0.42rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  line-height: 1.1;
+  opacity: 0.8;
 }
 
 .fx-chat-settings-overlay {

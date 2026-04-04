@@ -18,6 +18,7 @@ import type {
   AppErrorState,
   AssistantOutputItem,
   CollaborationMode,
+  GitRepoStatus,
   ImageAttachmentDraft,
   ImageAttachmentMeta,
   LiveTurnStateResponse,
@@ -104,6 +105,11 @@ interface AppContextValue {
   loadAvailableModels: (force?: boolean) => Promise<void>;
   activeRepoModel: string;
   setActiveRepoModel: (modelId: string) => void;
+  gitStatus: GitRepoStatus | null;
+  gitStatusLoading: boolean;
+  gitStatusError: string;
+  refreshGitStatus: () => Promise<void>;
+  requestGitCommitPush: () => Promise<void>;
   activeCollaborationMode: CollaborationMode;
   setActiveCollaborationMode: (mode: CollaborationMode) => void;
   pendingUserInputRequests: PendingUserInputRequest[];
@@ -144,6 +150,11 @@ interface EnsureThreadResponse {
   id?: string;
   thread_id?: string;
   error?: string;
+}
+
+interface GitStatusResponse extends GitRepoStatus {
+  error?: string;
+  detail?: string;
 }
 
 interface JsonErrorResponse {
@@ -456,6 +467,10 @@ function ChatPage() {
     loadAvailableModels,
     activeRepoModel,
     setActiveRepoModel,
+    gitStatus,
+    gitStatusLoading,
+    gitStatusError,
+    requestGitCommitPush,
     activeCollaborationMode,
     setActiveCollaborationMode,
     pendingUserInputRequests,
@@ -510,6 +525,19 @@ function ChatPage() {
     const hit = availableModels.find((item) => item.id === activeRepoModel);
     return hit?.name || activeRepoModel;
   }, [availableModels, activeRepoModel]);
+  const gitStatusSummary = gitStatusLoading
+    ? 'Git 状態を確認中...'
+    : gitStatusError
+      ? `Git 状態取得失敗: ${gitStatusError}`
+      : gitStatus?.summary || 'Git 状態を確認できません';
+  const gitStatusTone = gitStatusError ? 'danger' : gitStatus?.tone || 'neutral';
+  const canRequestGitCommitPush = Boolean(
+    !busy &&
+      !streaming &&
+      !gitStatusLoading &&
+      !gitStatusError &&
+      gitStatus?.actionRecommended
+  );
   const isComposerExpanded = isInputFocused;
   const chatScrollPaddingBottom = Math.max(78, composerHeight + keyboardInset + 12);
   const composerInlineStyle = keyboardInset > 0 ? { bottom: `${keyboardInset}px` } : undefined;
@@ -718,6 +746,61 @@ function ChatPage() {
               </svg>
             </span>
           </button>
+          <button
+            className="fx-git-action-icon"
+            type="button"
+            onClick={requestGitCommitPush}
+            disabled={!canRequestGitCommitPush}
+            aria-label="Codex にコミットと push を依頼"
+            title="Codex にコミットと push を依頼"
+            data-testid="git-commit-push-button"
+          >
+            <svg
+              className="fx-git-action-icon-svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <path
+                d="M6 4.5H16.5L19.5 7.5V19.5H4.5V6A1.5 1.5 0 0 1 6 4.5Z"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M8 4.5V10H15V4.5"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M12 16V11.5"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M9.75 13.75L12 11.5L14.25 13.75"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+        <div
+          className={`fx-git-status-line is-${gitStatusTone}`}
+          data-testid="git-status-line"
+          title={gitStatusSummary}
+        >
+          <span className="fx-git-status-dot" aria-hidden="true" />
+          <span className="fx-git-status-text">{gitStatusSummary}</span>
+          {gitStatus?.branch ? <span className="fx-git-status-branch">{gitStatus.branch}</span> : null}
         </div>
 
         <article className="fx-chat-scroll" ref={outputRef} style={{ paddingBottom: `${chatScrollPaddingBottom}px` }}>
@@ -1307,6 +1390,9 @@ export default function AppRoot() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
   const [chatSettingsOpen, setChatSettingsOpen] = useState(false);
+  const [gitStatus, setGitStatus] = useState<GitRepoStatus | null>(null);
+  const [gitStatusLoading, setGitStatusLoading] = useState(false);
+  const [gitStatusError, setGitStatusError] = useState('');
   const [pendingUserInputRequests, setPendingUserInputRequests] = useState<PendingUserInputRequest[]>([]);
   const [pendingUserInputDrafts, setPendingUserInputDrafts] = useState<UserInputDraftMap>({});
   const [pendingUserInputBusy, setPendingUserInputBusy] = useState<PendingBusyMap>({});
@@ -1549,6 +1635,45 @@ export default function AppRoot() {
 
   function closeChatSettings() {
     setChatSettingsOpen(false);
+  }
+
+  async function fetchGitStatus(repoFullName: string | null = activeRepoRef.current, background = false): Promise<void> {
+    if (!repoFullName) {
+      setGitStatus(null);
+      setGitStatusError('');
+      setGitStatusLoading(false);
+      return;
+    }
+    if (!background) setGitStatusLoading(true);
+    setGitStatusError('');
+    try {
+      const res = await fetch(`/api/repos/git-status?repoFullName=${encodeURIComponent(repoFullName)}`);
+      const data = (await res.json()) as GitStatusResponse;
+      if (!res.ok) throw new Error(data.detail || data.error || 'git_status_failed');
+      if (activeRepoRef.current !== repoFullName) return;
+      setGitStatus(data);
+    } catch (e: unknown) {
+      if (activeRepoRef.current !== repoFullName) return;
+      setGitStatus(null);
+      setGitStatusError(getClientErrorMessage(e, 'git_status_failed'));
+    } finally {
+      if (activeRepoRef.current === repoFullName) {
+        setGitStatusLoading(false);
+      }
+    }
+  }
+
+  async function requestGitCommitPush(): Promise<void> {
+    if (!activeRepoFullName) {
+      toast('リポジトリが未選択です');
+      return;
+    }
+    if (!gitStatus?.actionRecommended || gitStatusLoading || gitStatusError) return;
+    await sendTurnWithOverrides({
+      forcedPrompt:
+        'このリポジトリの現在の git 状態と差分を確認し、コミット対象は適切なファイルだけを選んで、日本語のコミットメッセージでコミットし、現在のブランチへ push してください。push 時に non-fast-forward や競合が起きた場合は、状況を確認して適切に解決したうえで最後まで push してください。必要なら git status・git diff・git log を使って判断し、完了後は実行内容と結果を簡潔に報告してください。',
+      forcedCollaborationMode: 'default'
+    });
   }
 
   async function addImageAttachments(fileList: FileList | null): Promise<void> {
@@ -2552,6 +2677,20 @@ export default function AppRoot() {
   }, [activeRepoFullName]);
 
   useEffect(() => {
+    if (!chatVisible || !activeRepoFullName) {
+      setGitStatus(null);
+      setGitStatusError('');
+      setGitStatusLoading(false);
+      return;
+    }
+    fetchGitStatus(activeRepoFullName).catch(() => {});
+    const timer = window.setInterval(() => {
+      fetchGitStatus(activeRepoRef.current, true).catch(() => {});
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [chatVisible, activeRepoFullName]);
+
+  useEffect(() => {
     activeThreadRef.current = activeThreadId;
     setActiveTurnId('');
     activeTurnIdRef.current = '';
@@ -2685,6 +2824,11 @@ export default function AppRoot() {
     if (!activeThreadId) return;
     restoreOutputForThread(activeThreadId, activeRepoFullName, { resumeLive: true }).catch(() => {});
   }, [activeThreadId, activeRepoFullName]);
+
+  useEffect(() => {
+    if (!chatVisible || !activeRepoFullName || streaming) return;
+    fetchGitStatus(activeRepoFullName, true).catch(() => {});
+  }, [chatVisible, activeRepoFullName, streaming]);
 
   useEffect(() => {
     if (activeThreadId) return;
@@ -2822,6 +2966,11 @@ export default function AppRoot() {
       loadAvailableModels,
       activeRepoModel,
       setActiveRepoModel,
+      gitStatus,
+      gitStatusLoading,
+      gitStatusError,
+      refreshGitStatus: fetchGitStatus,
+      requestGitCommitPush,
       activeCollaborationMode,
       setActiveCollaborationMode,
       pendingUserInputRequests,
@@ -2861,6 +3010,9 @@ export default function AppRoot() {
       availableModels,
       modelsLoading,
       modelsError,
+      gitStatus,
+      gitStatusLoading,
+      gitStatusError,
       pendingUserInputRequests,
       pendingUserInputBusy,
       pendingUserInputDrafts

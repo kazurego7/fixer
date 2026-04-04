@@ -16,6 +16,7 @@ import type {
   CloneState,
   CollaborationMode,
   CollaborationModeOverride,
+  GitRepoStatus,
   ModelOption,
   OutputItem,
   ParsedLegacyTurnNotification,
@@ -1691,6 +1692,117 @@ function getCloneState(fullName: string): CloneState {
   return { status: 'not_cloned', repoPath };
 }
 
+function parseGitStatusOutput(repoFullName: string, repoPath: string, raw: string): GitRepoStatus {
+  let branch = '';
+  let upstream: string | null = null;
+  let ahead = 0;
+  let behind = 0;
+  let stagedCount = 0;
+  let unstagedCount = 0;
+  let untrackedCount = 0;
+  let conflictedCount = 0;
+
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    if (line.startsWith('# branch.head ')) {
+      branch = line.slice('# branch.head '.length).trim();
+      continue;
+    }
+    if (line.startsWith('# branch.upstream ')) {
+      upstream = line.slice('# branch.upstream '.length).trim() || null;
+      continue;
+    }
+    if (line.startsWith('# branch.ab ')) {
+      const match = line.match(/\+(\d+)\s+\-(\d+)/);
+      ahead = Number(match?.[1] || 0);
+      behind = Number(match?.[2] || 0);
+      continue;
+    }
+    if (line.startsWith('1 ') || line.startsWith('2 ')) {
+      const xy = line.split(/\s+/, 3)[1] || '..';
+      const x = xy[0] || '.';
+      const y = xy[1] || '.';
+      if (x !== '.' && x !== '?') stagedCount += 1;
+      if (y !== '.' && y !== '?') unstagedCount += 1;
+      continue;
+    }
+    if (line.startsWith('u ')) {
+      conflictedCount += 1;
+      continue;
+    }
+    if (line.startsWith('? ')) {
+      untrackedCount += 1;
+    }
+  }
+
+  const hasChanges = stagedCount + unstagedCount + untrackedCount + conflictedCount > 0;
+  const branchLabel = !branch || branch === '(detached)' ? 'detached' : branch;
+  const actionRecommended = hasChanges || ahead > 0 || behind > 0;
+  let tone: GitRepoStatus['tone'] = 'neutral';
+  let summary = 'Git は同期済みです';
+
+  if (conflictedCount > 0) {
+    tone = 'danger';
+    summary = `Git 競合 ${conflictedCount} 件`;
+  } else if (hasChanges) {
+    tone = 'warning';
+    const parts: string[] = [];
+    if (stagedCount > 0) parts.push(`ステージ ${stagedCount}`);
+    if (unstagedCount > 0) parts.push(`未反映 ${unstagedCount}`);
+    if (untrackedCount > 0) parts.push(`未追跡 ${untrackedCount}`);
+    summary = `変更あり: ${parts.join(' / ')}`;
+    if (!upstream) summary += ' / upstream 未設定';
+    else if (ahead > 0 || behind > 0) summary += ` / +${ahead} -${behind}`;
+  } else if (ahead > 0 && behind > 0) {
+    tone = 'danger';
+    summary = `push 前に同期が必要: +${ahead} -${behind}`;
+  } else if (ahead > 0) {
+    tone = 'success';
+    summary = `未 push のコミット ${ahead} 件`;
+  } else if (behind > 0) {
+    tone = 'warning';
+    summary = `リモート更新 ${behind} 件`;
+  }
+
+  return {
+    repoFullName,
+    repoPath,
+    branch: branchLabel,
+    upstream,
+    ahead,
+    behind,
+    stagedCount,
+    unstagedCount,
+    untrackedCount,
+    conflictedCount,
+    hasChanges,
+    actionRecommended,
+    tone,
+    summary
+  };
+}
+
+function readGitRepoStatus(repoFullName: string): GitRepoStatus {
+  const repoPath = repoPathFromFullName(repoFullName);
+  if (!fs.existsSync(path.join(repoPath, '.git'))) throw new Error('repo_not_cloned');
+  const result = spawnSync('git', ['status', '--porcelain=2', '--branch'], {
+    cwd: repoPath,
+    encoding: 'utf8',
+    timeout: 15000,
+    maxBuffer: 1024 * 1024
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const message = (result.stderr || result.stdout || '').trim() || 'git_status_failed';
+    throw new Error(message);
+  }
+  return parseGitStatusOutput(repoFullName, repoPath, result.stdout || '');
+}
+
 function runClone(fullName: string, cloneUrl: string): void {
   const repoPath = repoPathFromFullName(fullName);
   if (fs.existsSync(path.join(repoPath, '.git'))) {
@@ -2011,6 +2123,27 @@ function buildServer(): FastifyInstance {
       return { error: 'fullName is required' };
     }
     return getCloneState(fullName);
+  });
+
+  app.get('/api/repos/git-status', async (request, reply) => {
+    const query = asObject(request.query) ?? {};
+    const repoFullName = asString(query.repoFullName);
+    if (!repoFullName) {
+      reply.code(400);
+      return { error: 'repoFullName is required' };
+    }
+    try {
+      return readGitRepoStatus(repoFullName);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message === 'repo_not_cloned') {
+        reply.code(404);
+        return { error: message };
+      }
+      pushRuntimeLog({ level: 'error', event: 'git_status_failed', repoFullName, message });
+      reply.code(500);
+      return { error: 'git_status_failed', detail: message };
+    }
   });
 
   app.get('/api/threads', async (request, reply) => {
@@ -2588,6 +2721,8 @@ export {
   repoFolderFromFullName,
   repoPathFromFullName,
   getCloneState,
+  parseGitStatusOutput,
+  readGitRepoStatus,
   normalizeCollaborationMode,
   parseV2TurnNotification,
   parseLegacyTurnNotification,

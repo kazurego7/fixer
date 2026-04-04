@@ -9,6 +9,7 @@ const {
   buildCollaborationMode,
   repoFolderFromFullName,
   repoPathFromFullName,
+  parseGitStatusOutput,
   normalizeCollaborationMode,
   parseV2TurnNotification,
   parseLegacyTurnNotification,
@@ -76,6 +77,51 @@ test('repoPathFromFullName resolves under workspace root', () => {
   const repoPath = repoPathFromFullName('org/repo');
   assert.equal(path.basename(repoPath), 'org__repo');
   assert.match(repoPath, /workspace/);
+});
+
+test('parseGitStatusOutput collects変更件数と ahead/behind を判定する', () => {
+  const out = parseGitStatusOutput(
+    'org/repo',
+    '/tmp/org__repo',
+    [
+      '# branch.oid abcdef',
+      '# branch.head main',
+      '# branch.upstream origin/main',
+      '# branch.ab +2 -1',
+      '1 M. N... 100644 100644 100644 abcdef abcdef src/app.ts',
+      '1 .M N... 100644 100644 100644 abcdef abcdef src/ui.ts',
+      '? README.local.md'
+    ].join('\n')
+  );
+
+  assert.equal(out.branch, 'main');
+  assert.equal(out.upstream, 'origin/main');
+  assert.equal(out.ahead, 2);
+  assert.equal(out.behind, 1);
+  assert.equal(out.stagedCount, 1);
+  assert.equal(out.unstagedCount, 1);
+  assert.equal(out.untrackedCount, 1);
+  assert.equal(out.conflictedCount, 0);
+  assert.equal(out.hasChanges, true);
+  assert.equal(out.actionRecommended, true);
+  assert.equal(out.tone, 'warning');
+  assert.match(out.summary, /変更あり/);
+});
+
+test('parseGitStatusOutput marks conflict state as danger', () => {
+  const out = parseGitStatusOutput(
+    'org/repo',
+    '/tmp/org__repo',
+    [
+      '# branch.oid abcdef',
+      '# branch.head main',
+      'u UU N... 100644 100644 100644 100644 abcdef abcdef abcdef conflicted.ts'
+    ].join('\n')
+  );
+
+  assert.equal(out.conflictedCount, 1);
+  assert.equal(out.tone, 'danger');
+  assert.match(out.summary, /競合/);
 });
 
 test('parseV2TurnNotification parses delta notification', () => {
