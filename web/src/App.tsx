@@ -1670,8 +1670,7 @@ export default function AppRoot() {
     }
     if (!gitStatus?.actionRecommended || gitStatusLoading || gitStatusError) return;
     await sendTurnWithOverrides({
-      forcedPrompt:
-        'git 状態と差分を確認して、適切なファイルだけをコミットし、現在のブランチへ push してください。競合や non-fast-forward が出たら解決して最後まで完了してください。',
+      forcedPrompt: 'commit & push',
       forcedCollaborationMode: 'default'
     });
   }
