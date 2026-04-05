@@ -27,6 +27,9 @@ import type {
   PendingBusyMap,
   PendingThreadReturn,
   PendingUserInputRequest,
+  RepoFileListItem,
+  RepoFileListResponse,
+  RepoFileViewResponse,
   RepoSummary,
   RequestId,
   TurnStateStreamEvent,
@@ -110,6 +113,16 @@ interface AppContextValue {
   gitStatusError: string;
   refreshGitStatus: () => Promise<void>;
   requestGitCommitPush: () => Promise<void>;
+  fileListItems: RepoFileListItem[];
+  fileListLoading: boolean;
+  fileListError: string;
+  fileListIncludeUnchanged: boolean;
+  setFileListIncludeUnchanged: (value: boolean) => void;
+  refreshFileList: (includeUnchanged?: boolean) => Promise<void>;
+  selectedFileView: RepoFileViewResponse | null;
+  selectedFileViewLoading: boolean;
+  selectedFileViewError: string;
+  openRepoFile: (filePath: string, line?: number | null, replace?: boolean) => Promise<void>;
   activeCollaborationMode: CollaborationMode;
   setActiveCollaborationMode: (mode: CollaborationMode) => void;
   pendingUserInputRequests: PendingUserInputRequest[];
@@ -153,6 +166,16 @@ interface EnsureThreadResponse {
 }
 
 interface GitStatusResponse extends GitRepoStatus {
+  error?: string;
+  detail?: string;
+}
+
+interface FileListFetchResponse extends RepoFileListResponse {
+  error?: string;
+  detail?: string;
+}
+
+interface FileViewFetchResponse extends RepoFileViewResponse {
   error?: string;
   detail?: string;
 }
@@ -227,7 +250,10 @@ function decodeBase64UrlToUint8Array(base64Url: string): Uint8Array {
 }
 
 function normalizePath(rawPath: string): string {
-  if (rawPath === '/chat' || rawPath === '/chat/') return '/chat/';
+  const pathname = String(rawPath || '').split('?')[0].split('#')[0];
+  if (pathname === '/files' || pathname === '/files/') return '/files/';
+  if (pathname === '/files/view' || pathname === '/files/view/') return '/files/view/';
+  if (pathname === '/chat' || pathname === '/chat/') return '/chat/';
   return '/repos/';
 }
 
@@ -239,11 +265,95 @@ function getCurrentPath() {
 }
 
 function pushPath(path: string, replace = false): string {
-  const target = normalizePath(path);
+  const raw = String(path || '');
+  const queryIndex = raw.indexOf('?');
+  const search = queryIndex >= 0 ? raw.slice(queryIndex) : '';
+  const target = `${normalizePath(raw)}${search}`;
   if (typeof window === 'undefined') return target;
   if (replace) window.history.replaceState({}, '', target);
   else window.history.pushState({}, '', target);
   return target;
+}
+
+function getCurrentSearch(): string {
+  if (typeof window === 'undefined') return '';
+  return String(window.location.search || '');
+}
+
+function extractSearch(rawPath: string): string {
+  const queryIndex = String(rawPath || '').indexOf('?');
+  return queryIndex >= 0 ? String(rawPath || '').slice(queryIndex) : '';
+}
+
+function getCurrentFileParams(): { path: string; line: number | null } {
+  if (typeof window === 'undefined') return { path: '', line: null };
+  const params = new URLSearchParams(window.location.search || '');
+  const filePath = String(params.get('path') || '').trim();
+  const lineRaw = Number(params.get('line') || '');
+  return {
+    path: filePath,
+    line: Number.isInteger(lineRaw) && lineRaw > 0 ? lineRaw : null
+  };
+}
+
+function buildFileViewPath(filePath: string, line: number | null = null): string {
+  const params = new URLSearchParams();
+  params.set('path', filePath);
+  if (line && line > 0) params.set('line', String(line));
+  return `/files/view/?${params.toString()}`;
+}
+
+function parseLineAnchor(rawHref: string): { path: string; line: number | null } {
+  const href = String(rawHref || '').trim();
+  let pathPart = href;
+  let line: number | null = null;
+
+  const hashIndex = href.indexOf('#');
+  if (hashIndex >= 0) {
+    pathPart = href.slice(0, hashIndex);
+    const hash = href.slice(hashIndex + 1);
+    const lineMatch = hash.match(/^L(\d+)/i);
+    if (lineMatch) line = Number(lineMatch[1]);
+  }
+
+  if (!line) {
+    const colonMatch = pathPart.match(/:(\d+)(?::\d+)?$/);
+    if (colonMatch) {
+      line = Number(colonMatch[1]);
+      pathPart = pathPart.slice(0, colonMatch.index);
+    }
+  }
+
+  return { path: pathPart, line: Number.isInteger(line) && line > 0 ? line : null };
+}
+
+function resolveRepoRelativeFilePath(rawHref: string, repoPath: string): { path: string; line: number | null } | null {
+  const parsed = parseLineAnchor(rawHref);
+  const hrefPath = String(parsed.path || '').trim();
+  if (!hrefPath) return null;
+  if (/^(https?:|mailto:|tel:)/i.test(hrefPath)) return null;
+
+  let absolutePath = '';
+  if (hrefPath.startsWith('file://')) {
+    try {
+      absolutePath = decodeURIComponent(new URL(hrefPath).pathname || '');
+    } catch {
+      return null;
+    }
+  } else if (hrefPath.startsWith('/')) {
+    absolutePath = hrefPath;
+  } else {
+    absolutePath = `${repoPath.replace(/[\\/]+$/, '')}/${hrefPath}`;
+  }
+
+  const normalizedRepo = repoPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalizedAbsolute = absolutePath.replace(/\\/g, '/');
+  if (normalizedAbsolute === normalizedRepo || !normalizedAbsolute.startsWith(`${normalizedRepo}/`)) return null;
+
+  return {
+    path: normalizedAbsolute.slice(normalizedRepo.length + 1),
+    line: parsed.line
+  };
 }
 
 function threadMessagesKey(threadId: string): string {
@@ -392,6 +502,409 @@ function ReposPage() {
   );
 }
 
+function formatChangeKindLabel(kind: RepoFileListItem['changeKind'] | RepoFileViewResponse['changeKind']): string {
+  switch (kind) {
+    case 'added':
+    case 'untracked':
+      return '追加';
+    case 'deleted':
+      return '削除';
+    case 'renamed':
+      return '移動';
+    case 'conflicted':
+      return '競合';
+    case 'ignored':
+      return '除外';
+    case 'unchanged':
+      return '差分なし';
+    default:
+      return '変更';
+  }
+}
+
+interface RepoFileTreeNode {
+  name: string;
+  path: string;
+  type: 'directory' | 'file';
+  hasDiff: boolean;
+  changeKind: RepoFileListItem['changeKind'];
+  additions: number;
+  deletions: number;
+  children: RepoFileTreeNode[];
+  item: RepoFileListItem | null;
+}
+
+function getTreeTone(kind: RepoFileListItem['changeKind']): 'deleted' | 'added' | 'modified' | 'ignored' | 'normal' {
+  switch (kind) {
+    case 'deleted':
+    case 'conflicted':
+      return 'deleted';
+    case 'added':
+    case 'untracked':
+      return 'added';
+    case 'modified':
+    case 'renamed':
+      return 'modified';
+    case 'ignored':
+      return 'ignored';
+    default:
+      return 'normal';
+  }
+}
+
+function getTreePriority(kind: RepoFileListItem['changeKind']): number {
+  switch (kind) {
+    case 'deleted':
+    case 'conflicted':
+      return 5;
+    case 'added':
+    case 'untracked':
+      return 4;
+    case 'modified':
+    case 'renamed':
+      return 3;
+    case 'ignored':
+      return 2;
+    default:
+      return 1;
+  }
+}
+
+function buildRepoFileTree(items: RepoFileListItem[]): RepoFileTreeNode[] {
+  const roots = new Map<string, RepoFileTreeNode>();
+
+  function ensureDirectory(
+    container: Map<string, RepoFileTreeNode>,
+    name: string,
+    path: string
+  ): RepoFileTreeNode {
+    const existing = container.get(name);
+    if (existing) return existing;
+    const node: RepoFileTreeNode = {
+      name,
+      path,
+      type: 'directory',
+      hasDiff: false,
+      changeKind: 'unchanged',
+      additions: 0,
+      deletions: 0,
+      children: [],
+      item: null
+    };
+    container.set(name, node);
+    return node;
+  }
+
+  for (const item of items) {
+    const isDirectoryItem = item.path.endsWith('/');
+    const normalizedPath = isDirectoryItem ? item.path.replace(/\/+$/, '') : item.path;
+    const parts = normalizedPath.split('/').filter(Boolean);
+    if (parts.length === 0) continue;
+    let currentMap = roots;
+    let currentPath = '';
+    let parent: RepoFileTreeNode | null = null;
+
+    for (let index = 0; index < parts.length; index += 1) {
+      const name = parts[index];
+      currentPath = currentPath ? `${currentPath}/${name}` : name;
+      const isTerminal = index === parts.length - 1;
+      const isFile = isTerminal && !isDirectoryItem;
+      if (isFile) {
+        const fileNode: RepoFileTreeNode = {
+          name,
+          path: normalizedPath,
+          type: 'file',
+          hasDiff: item.hasDiff,
+          changeKind: item.changeKind,
+          additions: item.additions,
+          deletions: item.deletions,
+          children: [],
+          item
+        };
+        if (parent) parent.children.push(fileNode);
+        else roots.set(name, fileNode);
+        continue;
+      }
+      const dirNode = ensureDirectory(currentMap, name, currentPath);
+      if (isTerminal && isDirectoryItem) {
+        dirNode.item = item;
+        dirNode.changeKind = item.changeKind;
+        dirNode.additions = item.additions;
+        dirNode.deletions = item.deletions;
+      }
+      if (parent && !parent.children.includes(dirNode)) parent.children.push(dirNode);
+      parent = dirNode;
+      const nextMap = new Map<string, RepoFileTreeNode>();
+      for (const child of dirNode.children.filter((child) => child.type === 'directory')) {
+        nextMap.set(child.name, child);
+      }
+      currentMap = nextMap;
+    }
+  }
+
+  function finalize(nodes: RepoFileTreeNode[]): RepoFileTreeNode[] {
+    for (const node of nodes) {
+      if (node.type === 'directory') {
+        node.children = finalize(node.children);
+        node.hasDiff = Boolean(node.item?.hasDiff) || node.children.some((child) => child.hasDiff);
+        node.additions = (node.item?.additions || 0) + node.children.reduce((sum, child) => sum + child.additions, 0);
+        node.deletions = (node.item?.deletions || 0) + node.children.reduce((sum, child) => sum + child.deletions, 0);
+        const strongestNode = [
+          ...(node.item ? [{ changeKind: node.item.changeKind }] : []),
+          ...node.children
+        ].sort((a, b) => getTreePriority(b.changeKind) - getTreePriority(a.changeKind))[0];
+        node.changeKind = strongestNode?.changeKind || 'unchanged';
+      }
+    }
+    return [...nodes].sort((a, b) => {
+      if (a.hasDiff !== b.hasDiff) return a.hasDiff ? -1 : 1;
+      if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
+  return finalize(Array.from(roots.values()));
+}
+
+function formatNumstatParts(additions: number, deletions: number): Array<{ label: string; tone: 'plus' | 'minus' }> {
+  const parts: Array<{ label: string; tone: 'plus' | 'minus' }> = [];
+  if (additions > 0) parts.push({ label: `+${additions}`, tone: 'plus' });
+  if (deletions > 0) parts.push({ label: `-${deletions}`, tone: 'minus' });
+  return parts;
+}
+
+function renderRepoFileTree(
+  nodes: RepoFileTreeNode[],
+  openRepoFile: (filePath: string, line?: number | null, replace?: boolean) => Promise<void>,
+  depth = 0
+): JSX.Element[] {
+  return nodes.map((node) => {
+    if (node.type === 'directory') {
+      return (
+        <details
+          key={node.path}
+          className={`fx-file-tree-group is-${getTreeTone(node.changeKind)}`}
+          open
+          data-testid={`file-tree-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
+        >
+          <summary className="fx-file-tree-summary" data-testid={`file-tree-label-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}>
+            <span className="fx-file-tree-caret" aria-hidden="true">
+              ▾
+            </span>
+            <span className={`fx-file-tree-label is-${getTreeTone(node.changeKind)}`} style={{ paddingLeft: `${depth * 0.9}rem` }}>
+              {node.name}
+            </span>
+          </summary>
+          <div className="fx-file-tree-children">{renderRepoFileTree(node.children, openRepoFile, depth + 1)}</div>
+        </details>
+      );
+    }
+
+    const numstatParts = formatNumstatParts(node.additions, node.deletions);
+
+    return (
+      <button
+        key={node.path}
+        type="button"
+        className={`fx-file-row is-${getTreeTone(node.changeKind)}`}
+        onClick={() => openRepoFile(node.path)}
+        data-testid={`file-row-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
+      >
+        <div className="fx-file-row-main">
+          <span
+            className={`fx-file-row-path is-${getTreeTone(node.changeKind)}`}
+            style={{ paddingLeft: `${depth * 0.9}rem` }}
+            data-testid={`file-row-label-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
+          >
+            {node.name}
+          </span>
+          {numstatParts.length > 0 ? (
+            <span className="fx-file-row-stats" data-testid={`file-row-stats-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}>
+              {numstatParts.map((part) => (
+                <span key={`${node.path}:${part.label}`} className={`fx-file-row-stat is-${part.tone}`}>
+                  {part.label}
+                </span>
+              ))}
+            </span>
+          ) : null}
+        </div>
+      </button>
+    );
+  });
+}
+
+function FilesPage() {
+  const {
+    activeRepoFullName,
+    fileListItems,
+    fileListLoading,
+    fileListError,
+    fileListIncludeUnchanged,
+    setFileListIncludeUnchanged,
+    openRepoFile,
+    navigate
+  } = useAppCtx();
+  const treeNodes = useMemo(() => buildRepoFileTree(fileListItems), [fileListItems]);
+
+  return (
+    <Page noNavbar>
+      <PageContent className="fx-page fx-page-files">
+        <div className="fx-chat-head">
+          <button
+            className="fx-back-icon"
+            type="button"
+            onClick={() => navigate('/chat/')}
+            data-testid="files-back-button"
+          >
+            ←
+          </button>
+          <div className="fx-files-title">ファイル diff</div>
+        </div>
+        <div className="fx-files-toolbar">
+          <label className="fx-files-toggle" data-testid="files-include-unchanged-toggle">
+            <input
+              type="checkbox"
+              checked={fileListIncludeUnchanged}
+              onChange={(e) => setFileListIncludeUnchanged(e.currentTarget.checked)}
+            />
+            <span>diff なしも表示</span>
+          </label>
+          <div className="fx-files-toolbar-repo">{activeRepoFullName || 'リポジトリ未選択'}</div>
+        </div>
+        <div className="fx-files-list" data-testid="files-list">
+          {fileListLoading ? <p className="fx-mini">ファイル一覧を読み込み中...</p> : null}
+          {fileListError ? <p className="fx-mini">読み込み失敗: {fileListError}</p> : null}
+          {!fileListLoading && !fileListError && fileListItems.length === 0 ? (
+            <p className="fx-mini">表示できるファイルがありません。</p>
+          ) : null}
+          {!fileListLoading && !fileListError ? renderRepoFileTree(treeNodes, openRepoFile) : null}
+        </div>
+      </PageContent>
+    </Page>
+  );
+}
+
+function FileViewPage() {
+  const { selectedFileView, selectedFileViewLoading, selectedFileViewError, fileListItems, openRepoFile, navigate } = useAppCtx();
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const params = getCurrentFileParams();
+  const diffItems = fileListItems.filter((item) => item.hasDiff);
+  const currentPath = selectedFileView?.path || params.path;
+  const currentDiffIndex = diffItems.findIndex((item) => item.path === currentPath);
+  const previousDiffPath =
+    currentDiffIndex >= 0
+      ? diffItems[(currentDiffIndex - 1 + diffItems.length) % diffItems.length]?.path || null
+      : diffItems[diffItems.length - 1]?.path || null;
+  const nextDiffPath =
+    currentDiffIndex >= 0 ? diffItems[(currentDiffIndex + 1) % diffItems.length]?.path || null : diffItems[0]?.path || null;
+  const contentLines = useMemo(
+    () => (selectedFileView?.content ? selectedFileView.content.split('\n') : []),
+    [selectedFileView?.content]
+  );
+
+  useEffect(() => {
+    if (!params.line || !contentRef.current) return;
+    const target = contentRef.current.querySelector(`[data-file-line="${params.line}"]`);
+    if (!(target instanceof HTMLElement)) return;
+    target.scrollIntoView({ behavior: 'auto', block: 'center' });
+  }, [params.line, selectedFileView?.path, selectedFileView?.content]);
+
+  return (
+    <Page noNavbar>
+      <PageContent className="fx-page fx-page-file-view">
+        <div className="fx-chat-head">
+          <button
+            className="fx-back-icon"
+            type="button"
+            onClick={() => navigate('/files/')}
+            data-testid="file-view-back-button"
+          >
+            ←
+          </button>
+          <div className="fx-files-title">diff 詳細</div>
+        </div>
+        <div className="fx-file-view-toolbar">
+          <div className="fx-file-view-path" data-testid="file-view-path">
+            {currentPath || 'ファイル未選択'}
+          </div>
+          <div className="fx-file-view-actions">
+            <button
+              type="button"
+              className="fx-file-nav-btn"
+              onClick={() => previousDiffPath && openRepoFile(previousDiffPath)}
+              disabled={!previousDiffPath}
+              data-testid="file-prev-diff-button"
+            >
+              前の diff
+            </button>
+            <button
+              type="button"
+              className="fx-file-nav-btn"
+              onClick={() => nextDiffPath && openRepoFile(nextDiffPath)}
+              disabled={!nextDiffPath}
+              data-testid="file-next-diff-button"
+            >
+              次の diff
+            </button>
+          </div>
+        </div>
+        <div className="fx-file-view-body">
+          {selectedFileViewLoading ? <p className="fx-mini">ファイルを読み込み中...</p> : null}
+          {selectedFileViewError ? <p className="fx-mini">読み込み失敗: {selectedFileViewError}</p> : null}
+          {!selectedFileViewLoading && !selectedFileViewError && selectedFileView ? (
+            <>
+              <section className="fx-file-panel" data-testid="file-content-panel">
+                <div className="fx-file-panel-head">
+                  <span>全文</span>
+                  <span className={`fx-file-row-chip is-${selectedFileView.changeKind}`}>
+                    {formatChangeKindLabel(selectedFileView.changeKind)}
+                  </span>
+                </div>
+                {selectedFileView.isDeleted ? (
+                  <div className="fx-file-empty">このファイルは削除されています。</div>
+                ) : selectedFileView.isBinary ? (
+                  <div className="fx-file-empty">バイナリファイルの本文表示には未対応です。</div>
+                ) : (
+                  <div className="fx-file-content" ref={contentRef} data-testid="file-content">
+                    {contentLines.length === 0 ? (
+                      <div className="fx-file-empty">内容は空です。</div>
+                    ) : (
+                      contentLines.map((line, index) => {
+                        const lineNumber = index + 1;
+                        return (
+                          <div
+                            key={`${selectedFileView.path}:line:${lineNumber}`}
+                            className={`fx-file-line${params.line === lineNumber ? ' is-target' : ''}`}
+                            data-file-line={lineNumber}
+                          >
+                            <span className="fx-file-line-no">{lineNumber}</span>
+                            <span className="fx-file-line-text">{line || ' '}</span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </section>
+              <section className="fx-file-panel" data-testid="file-diff-panel">
+                <div className="fx-file-panel-head">
+                  <span>diff</span>
+                  <span>{selectedFileView.hasDiff ? 'あり' : 'なし'}</span>
+                </div>
+                {selectedFileView.diff ? (
+                  <pre className="fx-diff">{selectedFileView.diff}</pre>
+                ) : (
+                  <div className="fx-file-empty">差分はありません。</div>
+                )}
+              </section>
+            </>
+          ) : null}
+        </div>
+      </PageContent>
+    </Page>
+  );
+}
+
 function renderAssistant(item: AssistantOutputItem, pending = false) {
   const answer = typeof item.answer === 'string' ? item.answer : String(item.text || '');
   const statusText = !answer ? String(item.status || item.text || '').trim() : '';
@@ -471,6 +984,7 @@ function ChatPage() {
     gitStatusLoading,
     gitStatusError,
     requestGitCommitPush,
+    openRepoFile,
     activeCollaborationMode,
     setActiveCollaborationMode,
     pendingUserInputRequests,
@@ -538,9 +1052,34 @@ function ChatPage() {
       !gitStatusError &&
       gitStatus?.actionRecommended
   );
+  const canOpenFiles = Boolean(activeRepoFullName);
   const isComposerExpanded = isInputFocused;
   const chatScrollPaddingBottom = Math.max(78, composerHeight + keyboardInset + 12);
   const composerInlineStyle = keyboardInset > 0 ? { bottom: `${keyboardInset}px` } : undefined;
+
+  function handleChatContentClick(event: React.MouseEvent<HTMLElement>): void {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const anchor = target.closest('a');
+    if (!(anchor instanceof HTMLAnchorElement)) return;
+    const rawHref = String(anchor.getAttribute('href') || '').trim();
+    if (!rawHref) return;
+
+    const repoPath = String(gitStatus?.repoPath || '').trim();
+    if (repoPath) {
+      const localFile = resolveRepoRelativeFilePath(rawHref, repoPath);
+      if (localFile?.path) {
+        event.preventDefault();
+        void openRepoFile(localFile.path, localFile.line);
+        return;
+      }
+    }
+
+    if (/^(https?:|mailto:|tel:)/i.test(rawHref)) {
+      event.preventDefault();
+      window.open(anchor.href, '_blank', 'noopener,noreferrer');
+    }
+  }
 
   function syncComposerLayout(
     target: HTMLTextAreaElement | null = composerInputRef.current,
@@ -793,17 +1332,25 @@ function ChatPage() {
             </svg>
           </button>
         </div>
-        <div
+        <button
+          type="button"
           className={`fx-git-status-line is-${gitStatusTone}`}
           data-testid="git-status-line"
           title={gitStatusSummary}
+          onClick={() => navigate('/files/')}
+          disabled={!canOpenFiles}
         >
           <span className="fx-git-status-dot" aria-hidden="true" />
           <span className="fx-git-status-text">{gitStatusSummary}</span>
           {gitStatus?.branch ? <span className="fx-git-status-branch">{gitStatus.branch}</span> : null}
-        </div>
+        </button>
 
-        <article className="fx-chat-scroll" ref={outputRef} style={{ paddingBottom: `${chatScrollPaddingBottom}px` }}>
+        <article
+          className="fx-chat-scroll"
+          ref={outputRef}
+          style={{ paddingBottom: `${chatScrollPaddingBottom}px` }}
+          onClick={handleChatContentClick}
+        >
           {displayItems.map((item) => {
             if (item.role !== 'assistant' && item.role !== 'user') {
               return (
@@ -1368,6 +1915,7 @@ export default function AppRoot() {
   const [hasAnswerStarted, setHasAnswerStarted] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
   const [currentPath, setCurrentPath] = useState(getCurrentPath());
+  const [currentSearch, setCurrentSearch] = useState(getCurrentSearch());
   const [threadByRepo, setThreadByRepo] = useState<ThreadByRepoMap>(() => {
     if (typeof window === 'undefined') return {};
     const map = loadJsonFromStorage<ThreadByRepoMap>(THREAD_BY_REPO_KEY, {});
@@ -1393,6 +1941,13 @@ export default function AppRoot() {
   const [gitStatus, setGitStatus] = useState<GitRepoStatus | null>(null);
   const [gitStatusLoading, setGitStatusLoading] = useState(false);
   const [gitStatusError, setGitStatusError] = useState('');
+  const [fileListItems, setFileListItems] = useState<RepoFileListItem[]>([]);
+  const [fileListLoading, setFileListLoading] = useState(false);
+  const [fileListError, setFileListError] = useState('');
+  const [fileListIncludeUnchanged, setFileListIncludeUnchanged] = useState(false);
+  const [selectedFileView, setSelectedFileView] = useState<RepoFileViewResponse | null>(null);
+  const [selectedFileViewLoading, setSelectedFileViewLoading] = useState(false);
+  const [selectedFileViewError, setSelectedFileViewError] = useState('');
   const [pendingUserInputRequests, setPendingUserInputRequests] = useState<PendingUserInputRequest[]>([]);
   const [pendingUserInputDrafts, setPendingUserInputDrafts] = useState<UserInputDraftMap>({});
   const [pendingUserInputBusy, setPendingUserInputBusy] = useState<PendingBusyMap>({});
@@ -1673,6 +2228,66 @@ export default function AppRoot() {
       forcedPrompt: 'commit & push',
       forcedCollaborationMode: 'default'
     });
+  }
+
+  async function fetchFileList(
+    includeUnchanged = fileListIncludeUnchanged,
+    repoFullName: string | null = activeRepoRef.current
+  ): Promise<void> {
+    if (!repoFullName) {
+      setFileListItems([]);
+      setFileListError('');
+      setFileListLoading(false);
+      return;
+    }
+    setFileListLoading(true);
+    setFileListError('');
+    try {
+      const res = await fetch(
+        `/api/repos/files?repoFullName=${encodeURIComponent(repoFullName)}&includeUnchanged=${includeUnchanged ? '1' : '0'}`
+      );
+      const data = (await res.json()) as FileListFetchResponse;
+      if (!res.ok) throw new Error(data.detail || data.error || 'repo_files_failed');
+      if (activeRepoRef.current !== repoFullName) return;
+      setFileListItems(Array.isArray(data.items) ? data.items : []);
+    } catch (e: unknown) {
+      if (activeRepoRef.current !== repoFullName) return;
+      setFileListItems([]);
+      setFileListError(getClientErrorMessage(e, 'repo_files_failed'));
+    } finally {
+      if (activeRepoRef.current === repoFullName) setFileListLoading(false);
+    }
+  }
+
+  async function fetchFileView(repoFullName: string, filePath: string): Promise<void> {
+    if (!repoFullName || !filePath) {
+      setSelectedFileView(null);
+      setSelectedFileViewError('');
+      setSelectedFileViewLoading(false);
+      return;
+    }
+    setSelectedFileViewLoading(true);
+    setSelectedFileViewError('');
+    try {
+      const res = await fetch(
+        `/api/repos/file-view?repoFullName=${encodeURIComponent(repoFullName)}&path=${encodeURIComponent(filePath)}`
+      );
+      const data = (await res.json()) as FileViewFetchResponse;
+      if (!res.ok) throw new Error(data.detail || data.error || 'repo_file_view_failed');
+      if (activeRepoRef.current !== repoFullName) return;
+      setSelectedFileView(data);
+    } catch (e: unknown) {
+      if (activeRepoRef.current !== repoFullName) return;
+      setSelectedFileView(null);
+      setSelectedFileViewError(getClientErrorMessage(e, 'repo_file_view_failed'));
+    } finally {
+      if (activeRepoRef.current === repoFullName) setSelectedFileViewLoading(false);
+    }
+  }
+
+  async function openRepoFile(filePath: string, line: number | null = null, replace = false): Promise<void> {
+    if (!activeRepoRef.current || !filePath) return;
+    navigate(buildFileViewPath(filePath, line), replace);
   }
 
   async function addImageAttachments(fileList: FileList | null): Promise<void> {
@@ -2586,7 +3201,8 @@ export default function AppRoot() {
 
   function navigate(path: string, replace = false): void {
     const next = pushPath(path, replace);
-    setCurrentPath(next);
+    setCurrentPath(normalizePath(next));
+    setCurrentSearch(extractSearch(next));
   }
 
   function scrollLastUserMessageToTopOrKeepPosition(): boolean {
@@ -2628,7 +3244,10 @@ export default function AppRoot() {
     didBootstrapRef.current = true;
     f7ready(() => {
       if (window.location.pathname === '/') navigate(chatVisible ? '/chat/' : '/repos/', true);
-      else setCurrentPath(getCurrentPath());
+      else {
+        setCurrentPath(getCurrentPath());
+        setCurrentSearch(getCurrentSearch());
+      }
       bootstrapConnection();
     });
   }, []);
@@ -2639,13 +3258,18 @@ export default function AppRoot() {
   }, []);
 
   useEffect(() => {
-    const onPopState = () => setCurrentPath(getCurrentPath());
+    const onPopState = () => {
+      setCurrentPath(getCurrentPath());
+      setCurrentSearch(getCurrentSearch());
+    };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
   useEffect(() => {
-    if (currentPath === '/chat/' && !chatVisible && connected) navigate('/repos/', true);
+    if ((currentPath === '/chat/' || currentPath === '/files/' || currentPath === '/files/view/') && !chatVisible && connected) {
+      navigate('/repos/', true);
+    }
   }, [currentPath, chatVisible, connected]);
 
   useEffect(() => {
@@ -2680,6 +3304,12 @@ export default function AppRoot() {
       setGitStatus(null);
       setGitStatusError('');
       setGitStatusLoading(false);
+      setFileListItems([]);
+      setFileListError('');
+      setFileListLoading(false);
+      setSelectedFileView(null);
+      setSelectedFileViewError('');
+      setSelectedFileViewLoading(false);
       return;
     }
     fetchGitStatus(activeRepoFullName).catch(() => {});
@@ -2688,6 +3318,31 @@ export default function AppRoot() {
     }, 15000);
     return () => window.clearInterval(timer);
   }, [chatVisible, activeRepoFullName]);
+
+  useEffect(() => {
+    if (!chatVisible || !activeRepoFullName) return;
+    if (currentPath === '/files/' || currentPath === '/files/view/') {
+      fetchFileList(fileListIncludeUnchanged, activeRepoFullName).catch(() => {});
+    }
+  }, [chatVisible, activeRepoFullName, currentPath, fileListIncludeUnchanged]);
+
+  useEffect(() => {
+    if (!chatVisible || !activeRepoFullName || currentPath !== '/files/view/') {
+      setSelectedFileView(null);
+      setSelectedFileViewError('');
+      setSelectedFileViewLoading(false);
+      return;
+    }
+    const params = new URLSearchParams(currentSearch || '');
+    const filePath = String(params.get('path') || '').trim();
+    if (!filePath) {
+      setSelectedFileView(null);
+      setSelectedFileViewError('path_missing');
+      setSelectedFileViewLoading(false);
+      return;
+    }
+    fetchFileView(activeRepoFullName, filePath).catch(() => {});
+  }, [chatVisible, activeRepoFullName, currentPath, currentSearch]);
 
   useEffect(() => {
     activeThreadRef.current = activeThreadId;
@@ -2827,7 +3482,10 @@ export default function AppRoot() {
   useEffect(() => {
     if (!chatVisible || !activeRepoFullName || streaming) return;
     fetchGitStatus(activeRepoFullName, true).catch(() => {});
-  }, [chatVisible, activeRepoFullName, streaming]);
+    if (currentPath === '/files/' || currentPath === '/files/view/') {
+      fetchFileList(fileListIncludeUnchanged, activeRepoFullName).catch(() => {});
+    }
+  }, [chatVisible, activeRepoFullName, streaming, currentPath, fileListIncludeUnchanged]);
 
   useEffect(() => {
     if (activeThreadId) return;
@@ -2970,6 +3628,16 @@ export default function AppRoot() {
       gitStatusError,
       refreshGitStatus: fetchGitStatus,
       requestGitCommitPush,
+      fileListItems,
+      fileListLoading,
+      fileListError,
+      fileListIncludeUnchanged,
+      setFileListIncludeUnchanged,
+      refreshFileList: fetchFileList,
+      selectedFileView,
+      selectedFileViewLoading,
+      selectedFileViewError,
+      openRepoFile,
       activeCollaborationMode,
       setActiveCollaborationMode,
       pendingUserInputRequests,
@@ -3012,6 +3680,13 @@ export default function AppRoot() {
       gitStatus,
       gitStatusLoading,
       gitStatusError,
+      fileListItems,
+      fileListLoading,
+      fileListError,
+      fileListIncludeUnchanged,
+      selectedFileView,
+      selectedFileViewLoading,
+      selectedFileViewError,
       pendingUserInputRequests,
       pendingUserInputBusy,
       pendingUserInputDrafts
@@ -3021,7 +3696,15 @@ export default function AppRoot() {
   return (
     <App theme="auto">
       <AppCtx.Provider value={ctx}>
-        {currentPath === '/chat/' ? <ChatPage /> : <ReposPage />}
+        {currentPath === '/chat/' ? (
+          <ChatPage />
+        ) : currentPath === '/files/' ? (
+          <FilesPage />
+        ) : currentPath === '/files/view/' ? (
+          <FileViewPage />
+        ) : (
+          <ReposPage />
+        )}
       </AppCtx.Provider>
     </App>
   );

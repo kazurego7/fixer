@@ -46,6 +46,37 @@ export interface GitRepoStatus {
   summary: string;
 }
 
+export type RepoFileChangeKind = 'modified' | 'added' | 'deleted' | 'renamed' | 'conflicted' | 'untracked' | 'ignored' | 'unchanged';
+
+export interface RepoFileListItem {
+  path: string;
+  hasDiff: boolean;
+  changeKind: RepoFileChangeKind;
+  isBinary: boolean;
+  additions: number;
+  deletions: number;
+}
+
+export interface RepoFileListResponse {
+  repoFullName: string;
+  repoPath: string;
+  items: RepoFileListItem[];
+}
+
+export interface RepoFileViewResponse {
+  repoFullName: string;
+  repoPath: string;
+  path: string;
+  hasDiff: boolean;
+  changeKind: RepoFileChangeKind;
+  isBinary: boolean;
+  isDeleted: boolean;
+  additions: number;
+  deletions: number;
+  content: string;
+  diff: string;
+}
+
 export interface ImageAttachmentDraft {
   type: 'image';
   name: string;

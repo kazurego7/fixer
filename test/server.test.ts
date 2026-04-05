@@ -10,6 +10,9 @@ const {
   repoFolderFromFullName,
   repoPathFromFullName,
   parseGitStatusOutput,
+  resolveRepoTrackedPath,
+  parseStatusPath,
+  diffKindFromStatusCode,
   normalizeCollaborationMode,
   parseV2TurnNotification,
   parseLegacyTurnNotification,
@@ -122,6 +125,34 @@ test('parseGitStatusOutput marks conflict state as danger', () => {
   assert.equal(out.conflictedCount, 1);
   assert.equal(out.tone, 'danger');
   assert.match(out.summary, /競合/);
+});
+
+test('resolveRepoTrackedPath は repo 配下の相対パスを解決する', () => {
+  const resolved = resolveRepoTrackedPath('/tmp/example-repo', 'src/app.ts');
+  assert.equal(resolved.fullPath, path.resolve('/tmp/example-repo/src/app.ts'));
+  assert.equal(resolved.relativePath, 'src/app.ts');
+});
+
+test('resolveRepoTrackedPath は repo 外パスを拒否する', () => {
+  assert.throws(() => resolveRepoTrackedPath('/tmp/example-repo', '../secret.txt'), /path_outside_repo/);
+  assert.throws(() => resolveRepoTrackedPath('/tmp/example-repo', '/tmp/example-repo'), /path_outside_repo/);
+});
+
+test('parseStatusPath は rename 行を移動先パスで返す', () => {
+  assert.deepEqual(parseStatusPath('R  old/name.ts -> new/name.ts'), {
+    code: 'R ',
+    path: 'new/name.ts'
+  });
+});
+
+test('diffKindFromStatusCode は git status のコードを changeKind に変換する', () => {
+  assert.equal(diffKindFromStatusCode('??'), 'untracked');
+  assert.equal(diffKindFromStatusCode('UU'), 'conflicted');
+  assert.equal(diffKindFromStatusCode('R '), 'renamed');
+  assert.equal(diffKindFromStatusCode(' D'), 'deleted');
+  assert.equal(diffKindFromStatusCode('A '), 'added');
+  assert.equal(diffKindFromStatusCode(' M'), 'modified');
+  assert.equal(diffKindFromStatusCode('  '), 'unchanged');
 });
 
 test('parseV2TurnNotification parses delta notification', () => {

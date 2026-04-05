@@ -22,6 +22,71 @@ interface InstallApiMocksOptions {
   threadId?: string;
 }
 
+function buildDefaultFileList(repo = DEFAULT_REPO) {
+  return {
+    repoFullName: repo,
+    repoPath: `/tmp/${repo.replace('/', '__')}`,
+    items: [
+      {
+        path: 'src/app.ts',
+        hasDiff: true,
+        changeKind: 'modified',
+        isBinary: false,
+        additions: 1,
+        deletions: 1
+      },
+      {
+        path: 'README.md',
+        hasDiff: false,
+        changeKind: 'unchanged',
+        isBinary: false,
+        additions: 0,
+        deletions: 0
+      },
+      {
+        path: 'dist/',
+        hasDiff: false,
+        changeKind: 'ignored',
+        isBinary: false,
+        additions: 0,
+        deletions: 0
+      }
+    ]
+  };
+}
+
+function buildDefaultFileView(repo = DEFAULT_REPO, filePath = 'src/app.ts') {
+  const repoPath = `/tmp/${repo.replace('/', '__')}`;
+  if (filePath === 'README.md') {
+    return {
+      repoFullName: repo,
+      repoPath,
+      path: 'README.md',
+      hasDiff: false,
+      changeKind: 'unchanged',
+      isBinary: false,
+      isDeleted: false,
+      additions: 0,
+      deletions: 0,
+      content: '# README\n\nsample',
+      diff: ''
+    };
+  }
+  return {
+    repoFullName: repo,
+    repoPath,
+    path: filePath,
+    hasDiff: true,
+    changeKind: 'modified',
+    isBinary: false,
+    isDeleted: false,
+    additions: 1,
+    deletions: 1,
+    content: 'const value = 1;\nconsole.log(value);\n',
+    diff: `diff --git a/${filePath} b/${filePath}\n@@ -1,2 +1,2 @@\n-const value = 0;\n+const value = 1;`
+  };
+}
+
 function buildImageFile(name: string): { name: string; mimeType: string; buffer: Buffer } {
   return {
     name,
@@ -101,6 +166,30 @@ async function installApiMocks(page: Page, options: InstallApiMocksOptions = {})
         tone: 'warning',
         summary: '変更あり: ステージ 1 / 未反映 1'
       })
+    });
+  });
+
+  await page.route('**/api/repos/files**', async (route) => {
+    const url = new URL(route.request().url());
+    const includeUnchanged = url.searchParams.get('includeUnchanged') === '1';
+    const payload = buildDefaultFileList(repo);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...payload,
+        items: includeUnchanged ? payload.items : payload.items.filter((item) => item.hasDiff)
+      })
+    });
+  });
+
+  await page.route('**/api/repos/file-view**', async (route) => {
+    const url = new URL(route.request().url());
+    const filePath = String(url.searchParams.get('path') || 'src/app.ts');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(buildDefaultFileView(repo, filePath))
     });
   });
 
@@ -192,6 +281,8 @@ export {
   DEFAULT_REPO,
   DEFAULT_THREAD_ID,
   buildImageFile,
+  buildDefaultFileList,
+  buildDefaultFileView,
   bootstrapChatState,
   installApiMocks
 };

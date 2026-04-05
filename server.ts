@@ -22,6 +22,10 @@ import type {
   ParsedLegacyTurnNotification,
   ParsedV2TurnNotification,
   PendingUserInputRequest,
+  RepoFileChangeKind,
+  RepoFileListItem,
+  RepoFileListResponse,
+  RepoFileViewResponse,
   RepoSummary,
   RequestId,
   SelectTurnStreamState,
@@ -1803,6 +1807,289 @@ function readGitRepoStatus(repoFullName: string): GitRepoStatus {
   return parseGitStatusOutput(repoFullName, repoPath, result.stdout || '');
 }
 
+function runGitForRepo(
+  repoPath: string,
+  args: string[],
+  options: { allowExitCodes?: number[] } = {}
+): SpawnSyncReturns<string> {
+  const result = spawnSync('git', args, {
+    cwd: repoPath,
+    encoding: 'utf8',
+    timeout: 15000,
+    maxBuffer: 8 * 1024 * 1024
+  });
+  if (result.error) throw result.error;
+  const allow = new Set([0, ...(options.allowExitCodes || [])]);
+  if (!allow.has(Number(result.status ?? 1))) {
+    const message = (result.stderr || result.stdout || '').trim() || `git_${args[0]}_failed`;
+    throw new Error(message);
+  }
+  return result;
+}
+
+function resolveRepoTrackedPath(repoPath: string, rawPath: string): { fullPath: string; relativePath: string } {
+  const trimmed = String(rawPath || '').trim();
+  if (!trimmed) throw new Error('path_required');
+  const decoded = decodeURIComponent(trimmed);
+  const candidate = path.isAbsolute(decoded) ? path.resolve(decoded) : path.resolve(repoPath, decoded);
+  const relative = path.relative(repoPath, candidate);
+  if (
+    relative.startsWith('..') ||
+    path.isAbsolute(relative) ||
+    relative === '' ||
+    candidate === repoPath
+  ) {
+    throw new Error('path_outside_repo');
+  }
+  return {
+    fullPath: candidate,
+    relativePath: relative.split(path.sep).join('/')
+  };
+}
+
+function detectBinaryBuffer(buffer: Buffer): boolean {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 8000));
+  for (const byte of sample) {
+    if (byte === 0) return true;
+  }
+  return false;
+}
+
+function diffKindFromStatusCode(code: string): RepoFileChangeKind {
+  const normalized = String(code || '').trim();
+  if (normalized === '??') return 'untracked';
+  if (/[UD]{2}|AA|DD|AU|UA|DU|UD|UU/.test(normalized) || normalized.includes('U')) return 'conflicted';
+  if (normalized.includes('R')) return 'renamed';
+  if (normalized.includes('D')) return 'deleted';
+  if (normalized.includes('A')) return 'added';
+  if (normalized.includes('M') || normalized.includes('T') || normalized.includes('C')) return 'modified';
+  return 'unchanged';
+}
+
+function parseStatusPath(line: string): { code: string; path: string } | null {
+  const text = String(line || '');
+  if (!text) return null;
+  if (text.startsWith('?? ')) return { code: '??', path: text.slice(3).trim() };
+  if (text.length < 4) return null;
+  const code = text.slice(0, 2);
+  let filePath = text.slice(3).trim();
+  const renameArrow = filePath.lastIndexOf(' -> ');
+  if (renameArrow >= 0) filePath = filePath.slice(renameArrow + 4).trim();
+  if (!filePath) return null;
+  return { code, path: filePath };
+}
+
+function collectRepoFileStatus(repoPath: string): Map<string, RepoFileChangeKind> {
+  const result = runGitForRepo(repoPath, ['status', '--porcelain']);
+  const map = new Map<string, RepoFileChangeKind>();
+  for (const line of String(result.stdout || '').split(/\r?\n/)) {
+    const parsed = parseStatusPath(line);
+    if (!parsed) continue;
+    map.set(parsed.path, diffKindFromStatusCode(parsed.code));
+  }
+  return map;
+}
+
+function collectTrackedFiles(repoPath: string): string[] {
+  const result = runGitForRepo(repoPath, ['ls-files']);
+  return String(result.stdout || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function collectIgnoredPaths(repoPath: string): string[] {
+  const result = runGitForRepo(repoPath, ['ls-files', '--others', '-i', '--exclude-standard', '--directory']);
+  return String(result.stdout || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function parseNumStatOutput(output: string, targetPath = ''): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of String(output || '').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split('\t');
+    if (parts.length < 3) continue;
+    const filePath = parts[2].trim();
+    if (targetPath && filePath !== targetPath) continue;
+    const added = parts[0] === '-' ? 0 : Number(parts[0] || 0);
+    const removed = parts[1] === '-' ? 0 : Number(parts[1] || 0);
+    additions += Number.isFinite(added) ? added : 0;
+    deletions += Number.isFinite(removed) ? removed : 0;
+  }
+  return { additions, deletions };
+}
+
+function collectDiffStats(repoPath: string, relativePath: string, trackedFiles: Set<string>): { additions: number; deletions: number } {
+  const unstaged = String(runGitForRepo(repoPath, ['diff', '--numstat', '--', relativePath]).stdout || '');
+  const staged = String(runGitForRepo(repoPath, ['diff', '--cached', '--numstat', '--', relativePath]).stdout || '');
+  const unstagedStats = parseNumStatOutput(unstaged, relativePath);
+  const stagedStats = parseNumStatOutput(staged, relativePath);
+  let additions = unstagedStats.additions + stagedStats.additions;
+  let deletions = unstagedStats.deletions + stagedStats.deletions;
+
+  const absolutePath = path.join(repoPath, relativePath);
+  if (!trackedFiles.has(relativePath) && fs.existsSync(absolutePath)) {
+    const content = fs.readFileSync(absolutePath, 'utf8');
+    additions += content.split(/\r?\n/).length;
+  }
+
+  return { additions, deletions };
+}
+
+function getChangePriority(kind: RepoFileChangeKind): number {
+  switch (kind) {
+    case 'deleted':
+    case 'conflicted':
+      return 5;
+    case 'added':
+    case 'untracked':
+      return 4;
+    case 'modified':
+    case 'renamed':
+      return 3;
+    case 'ignored':
+      return 2;
+    default:
+      return 1;
+  }
+}
+
+function collectDiffOutput(
+  repoPath: string,
+  relativePath: string,
+  trackedFiles: Set<string>
+): { diff: string; isDeleted: boolean; additions: number; deletions: number } {
+  const sections: string[] = [];
+  const unstaged = String(runGitForRepo(repoPath, ['diff', '--', relativePath]).stdout || '').trim();
+  if (unstaged) sections.push(unstaged);
+  const staged = String(runGitForRepo(repoPath, ['diff', '--cached', '--', relativePath]).stdout || '').trim();
+  if (staged) sections.push(staged);
+
+  const absolutePath = path.join(repoPath, relativePath);
+  const exists = fs.existsSync(absolutePath);
+  const tracked = trackedFiles.has(relativePath);
+  if (!exists && sections.length === 0) {
+    return { diff: '', isDeleted: true, additions: 0, deletions: 0 };
+  }
+
+  if (!tracked && exists) {
+    const untracked = runGitForRepo(repoPath, ['diff', '--no-index', '--', '/dev/null', absolutePath], { allowExitCodes: [1] });
+    const output = String(untracked.stdout || '').trim();
+    if (output) sections.push(output.replaceAll(absolutePath, relativePath));
+  }
+
+  const stats = collectDiffStats(repoPath, relativePath, trackedFiles);
+
+  return {
+    diff: sections.filter(Boolean).join('\n\n').trim(),
+    isDeleted: !exists,
+    additions: stats.additions,
+    deletions: stats.deletions
+  };
+}
+
+function readRepoFileContent(repoPath: string, relativePath: string): { content: string; isBinary: boolean } {
+  const absolutePath = path.join(repoPath, relativePath);
+  if (!fs.existsSync(absolutePath)) return { content: '', isBinary: false };
+  const buffer = fs.readFileSync(absolutePath);
+  if (detectBinaryBuffer(buffer)) return { content: '', isBinary: true };
+  return { content: buffer.toString('utf8'), isBinary: false };
+}
+
+function listRepoFiles(repoFullName: string, includeUnchanged: boolean): RepoFileListResponse {
+  const repoPath = repoPathFromFullName(repoFullName);
+  if (!fs.existsSync(path.join(repoPath, '.git'))) throw new Error('repo_not_cloned');
+  const statusMap = collectRepoFileStatus(repoPath);
+  const trackedFiles = collectTrackedFiles(repoPath);
+  const trackedFileSet = new Set(trackedFiles);
+  const ignoredPaths = collectIgnoredPaths(repoPath);
+  const itemsMap = new Map<string, RepoFileListItem>();
+
+  for (const trackedPath of trackedFiles) {
+    const changeKind = statusMap.get(trackedPath) || 'unchanged';
+    const hasDiff = changeKind !== 'unchanged';
+    if (!hasDiff && !includeUnchanged) continue;
+    const stats = hasDiff ? collectDiffStats(repoPath, trackedPath, trackedFileSet) : { additions: 0, deletions: 0 };
+    itemsMap.set(trackedPath, {
+      path: trackedPath,
+      hasDiff,
+      changeKind,
+      isBinary: false,
+      additions: stats.additions,
+      deletions: stats.deletions
+    });
+  }
+
+  for (const [changedPath, changeKind] of statusMap.entries()) {
+    const stats = collectDiffStats(repoPath, changedPath, trackedFileSet);
+    itemsMap.set(changedPath, {
+      path: changedPath,
+      hasDiff: true,
+      changeKind,
+      isBinary: false,
+      additions: stats.additions,
+      deletions: stats.deletions
+    });
+  }
+
+  if (includeUnchanged) {
+    for (const ignoredPath of ignoredPaths) {
+      if (itemsMap.has(ignoredPath)) continue;
+      itemsMap.set(ignoredPath, {
+        path: ignoredPath,
+        hasDiff: false,
+        changeKind: 'ignored',
+        isBinary: false,
+        additions: 0,
+        deletions: 0
+      });
+    }
+  }
+
+  const items = Array.from(itemsMap.values()).sort((a, b) => {
+    if (a.hasDiff !== b.hasDiff) return a.hasDiff ? -1 : 1;
+    const priorityDiff = getChangePriority(b.changeKind) - getChangePriority(a.changeKind);
+    if (priorityDiff !== 0) return priorityDiff;
+    return a.path.localeCompare(b.path);
+  });
+
+  return {
+    repoFullName,
+    repoPath,
+    items
+  };
+}
+
+function buildRepoFileView(repoFullName: string, rawPath: string): RepoFileViewResponse {
+  const repoPath = repoPathFromFullName(repoFullName);
+  if (!fs.existsSync(path.join(repoPath, '.git'))) throw new Error('repo_not_cloned');
+  const resolved = resolveRepoTrackedPath(repoPath, rawPath);
+  const statusMap = collectRepoFileStatus(repoPath);
+  const trackedFiles = new Set(collectTrackedFiles(repoPath));
+  const ignoredPaths = new Set(collectIgnoredPaths(repoPath));
+  const changeKind = statusMap.get(resolved.relativePath) || (ignoredPaths.has(resolved.relativePath) ? 'ignored' : 'unchanged');
+  const { diff, isDeleted, additions, deletions } = collectDiffOutput(repoPath, resolved.relativePath, trackedFiles);
+  const contentState = readRepoFileContent(repoPath, resolved.relativePath);
+  return {
+    repoFullName,
+    repoPath,
+    path: resolved.relativePath,
+    hasDiff: Boolean(diff),
+    changeKind,
+    isBinary: contentState.isBinary,
+    isDeleted,
+    additions,
+    deletions,
+    content: contentState.content,
+    diff
+  };
+}
+
 function runClone(fullName: string, cloneUrl: string): void {
   const repoPath = repoPathFromFullName(fullName);
   if (fs.existsSync(path.join(repoPath, '.git'))) {
@@ -1984,6 +2271,10 @@ function buildServer(): FastifyInstance {
   app.get('/repos/', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/chat', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/chat/', async (_request, reply) => reply.sendFile('index.html'));
+  app.get('/files', async (_request, reply) => reply.sendFile('index.html'));
+  app.get('/files/', async (_request, reply) => reply.sendFile('index.html'));
+  app.get('/files/view', async (_request, reply) => reply.sendFile('index.html'));
+  app.get('/files/view/', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/api/health', async () => ({
     ok: true,
     workspaceRoot: WORKSPACE_ROOT,
@@ -2143,6 +2434,56 @@ function buildServer(): FastifyInstance {
       pushRuntimeLog({ level: 'error', event: 'git_status_failed', repoFullName, message });
       reply.code(500);
       return { error: 'git_status_failed', detail: message };
+    }
+  });
+
+  app.get('/api/repos/files', async (request, reply) => {
+    const query = asObject(request.query) ?? {};
+    const repoFullName = asString(query.repoFullName);
+    if (!repoFullName) {
+      reply.code(400);
+      return { error: 'repoFullName is required' };
+    }
+    const includeUnchangedRaw = String(query.includeUnchanged || '').trim().toLowerCase();
+    const includeUnchanged =
+      includeUnchangedRaw === '1' || includeUnchangedRaw === 'true' || includeUnchangedRaw === 'yes';
+    try {
+      return listRepoFiles(repoFullName, includeUnchanged);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message === 'repo_not_cloned') {
+        reply.code(404);
+        return { error: message };
+      }
+      pushRuntimeLog({ level: 'error', event: 'repo_files_failed', repoFullName, message });
+      reply.code(500);
+      return { error: 'repo_files_failed', detail: message };
+    }
+  });
+
+  app.get('/api/repos/file-view', async (request, reply) => {
+    const query = asObject(request.query) ?? {};
+    const repoFullName = asString(query.repoFullName);
+    const rawPath = asString(query.path);
+    if (!repoFullName || !rawPath) {
+      reply.code(400);
+      return { error: 'repoFullName and path are required' };
+    }
+    try {
+      return buildRepoFileView(repoFullName, rawPath);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message === 'repo_not_cloned') {
+        reply.code(404);
+        return { error: message };
+      }
+      if (message === 'path_required' || message === 'path_outside_repo') {
+        reply.code(400);
+        return { error: message };
+      }
+      pushRuntimeLog({ level: 'error', event: 'repo_file_view_failed', repoFullName, path: rawPath, message });
+      reply.code(500);
+      return { error: 'repo_file_view_failed', detail: message };
     }
   });
 
@@ -2720,9 +3061,14 @@ export {
   buildCollaborationMode,
   repoFolderFromFullName,
   repoPathFromFullName,
+  resolveRepoTrackedPath,
+  parseStatusPath,
+  diffKindFromStatusCode,
   getCloneState,
   parseGitStatusOutput,
   readGitRepoStatus,
+  listRepoFiles,
+  buildRepoFileView,
   normalizeCollaborationMode,
   parseV2TurnNotification,
   parseLegacyTurnNotification,

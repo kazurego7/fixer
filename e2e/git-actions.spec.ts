@@ -12,8 +12,7 @@ test('Git アイコン押下で Codex にコミットと push を依頼できる
 
   await page.getByTestId('git-commit-push-button').click();
 
-  await expect.poll(() => state.lastTurnStreamBody?.input || '').toContain('コミット');
-  await expect.poll(() => state.lastTurnStreamBody?.input || '').toContain('push');
+  await expect.poll(() => state.lastTurnStreamBody?.input || '').toBe('commit & push');
   await expect.poll(() => state.lastTurnStreamBody?.collaboration_mode || '').toBe('default');
 });
 
