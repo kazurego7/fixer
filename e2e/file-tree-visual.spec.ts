@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { bootstrapChatState, installApiMocks } from './helpers';
+import { bootstrapChatState, installApiMocks, saveVisualScreenshot } from './helpers';
 
 test('ファイルツリーの各状態をスクリーンショットで確認できる', async ({ page }, testInfo) => {
   await bootstrapChatState(page);
@@ -276,11 +276,8 @@ test('ファイルツリーの各状態をスクリーンショットで確認�
   await expect(page.getByTestId('file-tree-src')).toHaveAttribute('open', '');
   await expect(page.getByTestId('files-list')).not.toContainText('notes');
 
-  const diffOnlyPath = testInfo.outputPath('file-tree-diff-only.png');
-  await page.screenshot({ path: diffOnlyPath, fullPage: false });
-  await testInfo.attach('file-tree-diff-only', {
-    path: diffOnlyPath,
-    contentType: 'image/png'
+  await saveVisualScreenshot(page, testInfo, 'file-tree-diff-only.png', {
+    attachmentName: 'file-tree-diff-only'
   });
 
   await page.getByTestId('files-include-unchanged-toggle').click();
@@ -295,11 +292,8 @@ test('ファイルツリーの各状態をスクリーンショットで確認�
   await expect(page.getByTestId('file-tree-dist')).not.toHaveAttribute('open', '');
   await expect(page.getByTestId('file-tree-notes')).not.toHaveAttribute('open', '');
 
-  const includeUnchangedPath = testInfo.outputPath('file-tree-include-unchanged.png');
-  await page.screenshot({ path: includeUnchangedPath, fullPage: false });
-  await testInfo.attach('file-tree-include-unchanged', {
-    path: includeUnchangedPath,
-    contentType: 'image/png'
+  await saveVisualScreenshot(page, testInfo, 'file-tree-include-unchanged.png', {
+    attachmentName: 'file-tree-include-unchanged'
   });
 
   await page.getByTestId('file-tree-label-dist').click();
@@ -309,10 +303,7 @@ test('ファイルツリーの各状態をスクリーンショットで確認�
   await expect(page.getByTestId('file-tree-dist_assets')).toHaveAttribute('open', '');
   await expect(page.getByTestId('files-list')).toContainText('app.css');
 
-  const ignoredExpandedPath = testInfo.outputPath('file-tree-ignored-expanded.png');
-  await page.screenshot({ path: ignoredExpandedPath, fullPage: false });
-  await testInfo.attach('file-tree-ignored-expanded', {
-    path: ignoredExpandedPath,
-    contentType: 'image/png'
+  await saveVisualScreenshot(page, testInfo, 'file-tree-ignored-expanded.png', {
+    attachmentName: 'file-tree-ignored-expanded'
   });
 });

@@ -1,4 +1,6 @@
-import type { Page } from '@playwright/test';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import type { Page, TestInfo } from '@playwright/test';
 
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p8dQAAAAASUVORK5CYII=';
@@ -20,6 +22,37 @@ interface MockRouteState {
 interface InstallApiMocksOptions {
   repoFullName?: string;
   threadId?: string;
+}
+
+const visualRunId =
+  process.env.PLAYWRIGHT_VISUAL_RUN_ID ||
+  new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
+
+function sanitizeSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'unnamed';
+}
+
+async function saveVisualScreenshot(
+  page: Page,
+  testInfo: TestInfo,
+  fileName: string,
+  options: { fullPage?: boolean; attachmentName?: string } = {}
+): Promise<string> {
+  const screenshotPath = testInfo.outputPath(fileName);
+  await page.screenshot({ path: screenshotPath, fullPage: options.fullPage ?? false });
+
+  const specDir = sanitizeSegment(path.basename(testInfo.file, path.extname(testInfo.file)));
+  const historyDir = path.join(process.cwd(), 'test-results', 'history', visualRunId, specDir);
+  const historyPath = path.join(historyDir, fileName);
+  await fs.mkdir(historyDir, { recursive: true });
+  await fs.copyFile(screenshotPath, historyPath);
+
+  await testInfo.attach(options.attachmentName || path.basename(fileName, path.extname(fileName)), {
+    path: screenshotPath,
+    contentType: 'image/png'
+  });
+
+  return screenshotPath;
 }
 
 function buildDefaultFileList(repo = DEFAULT_REPO) {
@@ -400,6 +433,7 @@ async function installApiMocks(page: Page, options: InstallApiMocksOptions = {})
 export {
   DEFAULT_REPO,
   DEFAULT_THREAD_ID,
+  saveVisualScreenshot,
   buildImageFile,
   buildDefaultFileList,
   buildDefaultFileTree,

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { bootstrapChatState, installApiMocks } from './helpers';
+import { bootstrapChatState, installApiMocks, saveVisualScreenshot } from './helpers';
 
 test('モード切替の見た目をスクリーンショットで確認できる', async ({ page }, testInfo) => {
   await bootstrapChatState(page);
@@ -13,10 +13,8 @@ test('モード切替の見た目をスクリーンショットで確認でき�
   await expect(page.getByTestId('mode-plan-button')).toHaveCSS('background-color', 'rgb(76, 175, 80)');
   await expect(page.getByTestId('mode-plan-button')).toHaveCSS('color', 'rgb(255, 255, 255)');
 
-  const screenshotPath = testInfo.outputPath('mode-toggle-plan.png');
-  await page.screenshot({ path: screenshotPath, fullPage: true });
-  await testInfo.attach('mode-toggle-plan', {
-    path: screenshotPath,
-    contentType: 'image/png'
+  await saveVisualScreenshot(page, testInfo, 'mode-toggle-plan.png', {
+    attachmentName: 'mode-toggle-plan',
+    fullPage: true
   });
 });

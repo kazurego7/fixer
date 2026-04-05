@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { bootstrapChatState, installApiMocks } from './helpers';
+import { bootstrapChatState, installApiMocks, saveVisualScreenshot } from './helpers';
 
 type GitVisualScenario = {
   name: string;
@@ -156,11 +156,8 @@ for (const scenario of scenarios) {
     if (scenario.buttonEnabled) await expect(button).toBeEnabled();
     else await expect(button).toBeDisabled();
 
-    const screenshotPath = testInfo.outputPath(`git-status-${scenario.fileSlug}.png`);
-    await page.screenshot({ path: screenshotPath, fullPage: false });
-    await testInfo.attach(`git-status-${scenario.fileSlug}`, {
-      path: screenshotPath,
-      contentType: 'image/png'
+    await saveVisualScreenshot(page, testInfo, `git-status-${scenario.fileSlug}.png`, {
+      attachmentName: `git-status-${scenario.fileSlug}`
     });
   });
 }
