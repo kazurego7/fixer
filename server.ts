@@ -170,17 +170,17 @@ const CODEX_APP_SERVER_STARTUP_TIMEOUT_MS = 15000;
 
 function resolveWorkspaceRoot(): string {
   const preferred = path.join(os.homedir(), '.fixer', 'workspace');
-  if (!fs.existsSync(preferred)) {
-    try {
+  try {
+    if (!fs.existsSync(preferred)) {
       fs.mkdirSync(preferred, { recursive: true });
-      return preferred;
-    } catch {
-      const fallback = path.join(process.cwd(), 'workspace');
-      fs.mkdirSync(fallback, { recursive: true });
-      return fallback;
     }
+    fs.accessSync(preferred, fs.constants.W_OK);
+    return preferred;
+  } catch {
+    const fallback = path.join(process.cwd(), 'workspace');
+    fs.mkdirSync(fallback, { recursive: true });
+    return fallback;
   }
-  return preferred;
 }
 
 const WORKSPACE_ROOT = resolveWorkspaceRoot();
@@ -1894,23 +1894,21 @@ function collectRepoFileStatus(repoPath: string): Map<string, RepoFileChangeKind
 }
 
 function collectTrackedFiles(repoPath: string): string[] {
-  const result = runGitForRepo(repoPath, ['ls-files']);
+  const result = runGitForRepo(repoPath, ['ls-files', '-z']);
   return String(result.stdout || '')
-    .split(/\r?\n/)
+    .split('\u0000')
     .map((line) => line.trim())
     .filter(Boolean);
 }
 
 function collectIgnoredPaths(repoPath: string, parentPath: string | null = null): string[] {
-  const args = ['ls-files', '--others', '-i', '--exclude-standard'];
-  if (!parentPath) {
-    args.push('--directory');
-  } else {
+  const args = ['ls-files', '-z', '--others', '-i', '--exclude-standard'];
+  if (parentPath) {
     args.push('--', parentPath);
   }
   const result = runGitForRepo(repoPath, args);
   return String(result.stdout || '')
-    .split(/\r?\n/)
+    .split('\u0000')
     .map((line) => line.trim())
     .filter(Boolean);
 }
@@ -2135,56 +2133,19 @@ function listRepoFiles(repoFullName: string, includeUnchanged: boolean): RepoFil
   };
 }
 
-function listRepoTree(repoFullName: string, includeUnchanged: boolean, rawParentPath: string | null | undefined): RepoFileTreeResponse {
-  const repoPath = repoPathFromFullName(repoFullName);
-  if (!fs.existsSync(path.join(repoPath, '.git'))) throw new Error('repo_not_cloned');
-  const parentPath = normalizeRepoTreeParentPath(repoPath, rawParentPath);
-  const statusMap = collectRepoFileStatus(repoPath);
-  const trackedFiles = collectTrackedFiles(repoPath);
-  const trackedFileSet = new Set(trackedFiles);
-  const ignoredPaths = includeUnchanged ? collectIgnoredPaths(repoPath, parentPath) : [];
-  const baseItems: RepoFileListItem[] = [];
+interface RepoTreeBuildNode {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  hasDiff: boolean;
+  changeKind: RepoFileChangeKind;
+  isBinary: boolean;
+  additions: number;
+  deletions: number;
+  childMap: Map<string, RepoTreeBuildNode>;
+}
 
-  for (const trackedPath of trackedFiles) {
-    const changeKind = statusMap.get(trackedPath) || 'unchanged';
-    const hasDiff = changeKind !== 'unchanged';
-    if (!hasDiff && !includeUnchanged) continue;
-    const stats = hasDiff ? collectDiffStats(repoPath, trackedPath, trackedFileSet) : { additions: 0, deletions: 0 };
-    baseItems.push({
-      path: trackedPath,
-      hasDiff,
-      changeKind,
-      isBinary: false,
-      additions: stats.additions,
-      deletions: stats.deletions
-    });
-  }
-
-  for (const [changedPath, changeKind] of statusMap.entries()) {
-    const stats = collectDiffStats(repoPath, changedPath, trackedFileSet);
-    baseItems.push({
-      path: changedPath,
-      hasDiff: true,
-      changeKind,
-      isBinary: false,
-      additions: stats.additions,
-      deletions: stats.deletions
-    });
-  }
-
-  if (includeUnchanged) {
-    for (const ignoredPath of ignoredPaths) {
-      baseItems.push({
-        path: ignoredPath,
-        hasDiff: false,
-        changeKind: 'ignored',
-        isBinary: false,
-        additions: 0,
-        deletions: 0
-      });
-    }
-  }
-
+function buildRepoTreeItemsMap(baseItems: RepoFileListItem[]): Map<string, RepoFileListItem> {
   const itemsMap = new Map<string, RepoFileListItem>();
   for (const item of baseItems) {
     const existing = itemsMap.get(item.path);
@@ -2200,103 +2161,177 @@ function listRepoTree(repoFullName: string, includeUnchanged: boolean, rawParent
       itemsMap.set(item.path, item);
     }
   }
+  return itemsMap;
+}
 
-  const childMap = new Map<string, RepoFileTreeItem>();
-  const grandchildNameSetByChildPath = new Map<string, Set<string>>();
-  const parentPrefix = parentPath ? `${parentPath}/` : '';
+function createRepoTreeBuildNode(name: string, path: string, type: 'file' | 'directory'): RepoTreeBuildNode {
+  return {
+    name,
+    path,
+    type,
+    hasDiff: false,
+    changeKind: 'unchanged',
+    isBinary: false,
+    additions: 0,
+    deletions: 0,
+    childMap: new Map<string, RepoTreeBuildNode>()
+  };
+}
 
-  for (const item of itemsMap.values()) {
-    const normalizedPath = item.path.endsWith('/') ? item.path.replace(/\/+$/, '') : item.path;
-    if (!normalizedPath) continue;
-    let remainder = normalizedPath;
-    if (parentPath) {
-      if (normalizedPath === parentPath) continue;
-      if (!normalizedPath.startsWith(parentPrefix)) continue;
-      remainder = normalizedPath.slice(parentPrefix.length);
-    }
-    const parts = remainder.split('/').filter(Boolean);
-    if (parts.length === 0) continue;
-    const childName = parts[0];
-    const childPath = parentPath ? `${parentPath}/${childName}` : childName;
-    const isDirectFile = parts.length === 1 && !item.path.endsWith('/');
-    const existing = childMap.get(childPath);
-
-    if (parts.length > 1) {
-      const nextChildName = parts[1];
-      if (nextChildName) {
-        const nameSet = grandchildNameSetByChildPath.get(childPath) || new Set<string>();
-        nameSet.add(nextChildName);
-        grandchildNameSetByChildPath.set(childPath, nameSet);
-      }
-    }
-
-    if (isDirectFile) {
-      if (!existing || existing.type === 'directory') {
-        childMap.set(childPath, {
-          name: childName,
-          path: childPath,
-          type: 'file',
-          hasDiff: item.hasDiff,
-          changeKind: item.changeKind,
-          isBinary: item.isBinary,
-          additions: item.additions,
-          deletions: item.deletions,
-          hasChildren: false
-        });
-      } else {
-        existing.hasDiff = existing.hasDiff || item.hasDiff;
-        if (getChangePriority(item.changeKind) > getChangePriority(existing.changeKind)) {
-          existing.changeKind = item.changeKind;
-        }
-        existing.additions += item.additions;
-        existing.deletions += item.deletions;
-      }
-      continue;
-    }
-
-    if (!existing) {
-      childMap.set(childPath, {
-        name: childName,
-        path: childPath,
-        type: 'directory',
-        hasDiff: item.hasDiff,
-        changeKind: item.changeKind,
-        isBinary: false,
-        additions: item.additions,
-        deletions: item.deletions,
-        hasChildren: true
-      });
-      continue;
-    }
-    existing.hasDiff = existing.hasDiff || item.hasDiff;
-    if (getChangePriority(item.changeKind) > getChangePriority(existing.changeKind)) {
-      existing.changeKind = item.changeKind;
-    }
-    existing.additions += item.additions;
-    existing.deletions += item.deletions;
-    existing.hasChildren = true;
+function applyRepoTreeItemAggregate(target: RepoTreeBuildNode, item: RepoFileListItem, treatAsLeaf: boolean): void {
+  target.hasDiff = target.hasDiff || item.hasDiff;
+  if (getChangePriority(item.changeKind) > getChangePriority(target.changeKind)) {
+    target.changeKind = item.changeKind;
   }
-
-  for (const item of childMap.values()) {
-    if (item.type !== 'directory') continue;
-    const directChildCount = grandchildNameSetByChildPath.get(item.path)?.size || 0;
-    item.eagerSafe = directChildCount <= 20;
+  target.additions += item.additions;
+  target.deletions += item.deletions;
+  if (treatAsLeaf) {
+    target.isBinary = item.isBinary;
   }
+}
 
-  const items = Array.from(childMap.values()).sort((a, b) => {
+function finalizeRepoTreeNodes(nodeMap: Map<string, RepoTreeBuildNode>): RepoFileTreeItem[] {
+  const items = Array.from(nodeMap.values()).map((node) => {
+    const children = node.type === 'directory' ? finalizeRepoTreeNodes(node.childMap) : undefined;
+    return {
+      name: node.name,
+      path: node.path,
+      type: node.type,
+      hasDiff: node.hasDiff,
+      changeKind: node.changeKind,
+      isBinary: node.isBinary,
+      additions: node.additions,
+      deletions: node.deletions,
+      hasChildren: Boolean(children && children.length > 0),
+      children
+    } satisfies RepoFileTreeItem;
+  });
+
+  return items.sort((a, b) => {
     if (a.hasDiff !== b.hasDiff) return a.hasDiff ? -1 : 1;
     const priorityDiff = getChangePriority(b.changeKind) - getChangePriority(a.changeKind);
     if (priorityDiff !== 0) return priorityDiff;
     if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
+}
+
+function buildRepoTreeResponse(repoFullName: string, baseItems: RepoFileListItem[]): RepoFileTreeResponse {
+  const repoPath = repoPathFromFullName(repoFullName);
+  if (!fs.existsSync(path.join(repoPath, '.git'))) throw new Error('repo_not_cloned');
+  const itemsMap = buildRepoTreeItemsMap(baseItems);
+  const rootMap = new Map<string, RepoTreeBuildNode>();
+  for (const item of itemsMap.values()) {
+    const normalizedPath = item.path.endsWith('/') ? item.path.replace(/\/+$/, '') : item.path;
+    if (!normalizedPath) continue;
+    const parts = normalizedPath.split('/').filter(Boolean);
+    if (parts.length === 0) continue;
+    let currentMap = rootMap;
+    let currentPath = '';
+    for (let index = 0; index < parts.length; index += 1) {
+      const name = parts[index];
+      currentPath = currentPath ? `${currentPath}/${name}` : name;
+      const isLeaf = index === parts.length - 1;
+      const nodeType: 'file' | 'directory' = isLeaf && !item.path.endsWith('/') ? 'file' : 'directory';
+      let node = currentMap.get(name);
+      if (!node) {
+        node = createRepoTreeBuildNode(name, currentPath, nodeType);
+        currentMap.set(name, node);
+      } else if (isLeaf && nodeType === 'file') {
+        node.type = 'file';
+      }
+      applyRepoTreeItemAggregate(node, item, isLeaf && nodeType === 'file');
+      currentMap = node.childMap;
+    }
+  }
+
+  const items = finalizeRepoTreeNodes(rootMap);
 
   return {
     repoFullName,
     repoPath,
-    parentPath,
     items
   };
+}
+
+function collectDiffTreeItems(repoPath: string): RepoFileListItem[] {
+  const statusMap = collectRepoFileStatus(repoPath);
+  const trackedFiles = collectTrackedFiles(repoPath);
+  const trackedFileSet = new Set(trackedFiles);
+  const items: RepoFileListItem[] = [];
+
+  for (const [changedPath, changeKind] of statusMap.entries()) {
+    const stats = collectDiffStats(repoPath, changedPath, trackedFileSet);
+    items.push({
+      path: changedPath,
+      hasDiff: true,
+      changeKind,
+      isBinary: false,
+      additions: stats.additions,
+      deletions: stats.deletions
+    });
+  }
+
+  return items;
+}
+
+function collectAllTreeItems(repoPath: string): RepoFileListItem[] {
+  const statusMap = collectRepoFileStatus(repoPath);
+  const trackedFiles = collectTrackedFiles(repoPath);
+  const trackedFileSet = new Set(trackedFiles);
+  const ignoredPaths = collectIgnoredPaths(repoPath, null);
+  const items: RepoFileListItem[] = [];
+
+  for (const trackedPath of trackedFiles) {
+    const changeKind = statusMap.get(trackedPath) || 'unchanged';
+    const hasDiff = changeKind !== 'unchanged';
+    const stats = hasDiff ? collectDiffStats(repoPath, trackedPath, trackedFileSet) : { additions: 0, deletions: 0 };
+    items.push({
+      path: trackedPath,
+      hasDiff,
+      changeKind,
+      isBinary: false,
+      additions: stats.additions,
+      deletions: stats.deletions
+    });
+  }
+
+  for (const [changedPath, changeKind] of statusMap.entries()) {
+    const stats = collectDiffStats(repoPath, changedPath, trackedFileSet);
+    items.push({
+      path: changedPath,
+      hasDiff: true,
+      changeKind,
+      isBinary: false,
+      additions: stats.additions,
+      deletions: stats.deletions
+    });
+  }
+
+  for (const ignoredPath of ignoredPaths) {
+    items.push({
+      path: ignoredPath,
+      hasDiff: false,
+      changeKind: 'ignored',
+      isBinary: false,
+      additions: 0,
+      deletions: 0
+    });
+  }
+
+  return items;
+}
+
+function listRepoTreeDiff(repoFullName: string): RepoFileTreeResponse {
+  const repoPath = repoPathFromFullName(repoFullName);
+  if (!fs.existsSync(path.join(repoPath, '.git'))) throw new Error('repo_not_cloned');
+  return buildRepoTreeResponse(repoFullName, collectDiffTreeItems(repoPath));
+}
+
+function listRepoTreeAll(repoFullName: string): RepoFileTreeResponse {
+  const repoPath = repoPathFromFullName(repoFullName);
+  if (!fs.existsSync(path.join(repoPath, '.git'))) throw new Error('repo_not_cloned');
+  return buildRepoTreeResponse(repoFullName, collectAllTreeItems(repoPath));
 }
 
 function buildRepoFileView(repoFullName: string, rawPath: string): RepoFileViewResponse {
@@ -2697,32 +2732,45 @@ function buildServer(): FastifyInstance {
     }
   });
 
-  app.get('/api/repos/file-tree', async (request, reply) => {
+  app.get('/api/repos/file-tree-diff', async (request, reply) => {
     const query = asObject(request.query) ?? {};
     const repoFullName = asString(query.repoFullName);
     if (!repoFullName) {
       reply.code(400);
       return { error: 'repoFullName is required' };
     }
-    const includeUnchangedRaw = String(query.includeUnchanged || '').trim().toLowerCase();
-    const includeUnchanged =
-      includeUnchangedRaw === '1' || includeUnchangedRaw === 'true' || includeUnchangedRaw === 'yes';
-    const rawPath = asString(query.path);
     try {
-      return listRepoTree(repoFullName, includeUnchanged, rawPath);
+      return listRepoTreeDiff(repoFullName);
     } catch (error) {
       const message = getErrorMessage(error);
       if (message === 'repo_not_cloned') {
         reply.code(404);
         return { error: message };
       }
-      if (message === 'path_outside_repo') {
-        reply.code(400);
+      pushRuntimeLog({ level: 'error', event: 'repo_file_tree_diff_failed', repoFullName, message });
+      reply.code(500);
+      return { error: 'repo_file_tree_diff_failed', detail: message };
+    }
+  });
+
+  app.get('/api/repos/file-tree-all', async (request, reply) => {
+    const query = asObject(request.query) ?? {};
+    const repoFullName = asString(query.repoFullName);
+    if (!repoFullName) {
+      reply.code(400);
+      return { error: 'repoFullName is required' };
+    }
+    try {
+      return listRepoTreeAll(repoFullName);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message === 'repo_not_cloned') {
+        reply.code(404);
         return { error: message };
       }
-      pushRuntimeLog({ level: 'error', event: 'repo_file_tree_failed', repoFullName, path: rawPath, message });
+      pushRuntimeLog({ level: 'error', event: 'repo_file_tree_all_failed', repoFullName, message });
       reply.code(500);
-      return { error: 'repo_file_tree_failed', detail: message };
+      return { error: 'repo_file_tree_all_failed', detail: message };
     }
   });
 
@@ -3333,7 +3381,8 @@ export {
   parseGitStatusOutput,
   readGitRepoStatus,
   listRepoFiles,
-  listRepoTree,
+  listRepoTreeDiff,
+  listRepoTreeAll,
   buildRepoFileView,
   isIgnoredRepoPath,
   normalizeCollaborationMode,

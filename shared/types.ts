@@ -73,13 +73,12 @@ export interface RepoFileTreeItem {
   additions: number;
   deletions: number;
   hasChildren: boolean;
-  eagerSafe?: boolean;
+  children?: RepoFileTreeItem[];
 }
 
 export interface RepoFileTreeResponse {
   repoFullName: string;
   repoPath: string;
-  parentPath: string | null;
   items: RepoFileTreeItem[];
 }
 

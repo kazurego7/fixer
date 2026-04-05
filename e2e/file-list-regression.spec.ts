@@ -8,15 +8,21 @@ test.describe('ファイル一覧の回帰', () => {
 
     const requests: Array<{ path: string; includeUnchanged: boolean }> = [];
 
-    await page.route('**/api/repos/file-tree**', async (route) => {
-      const url = new URL(route.request().url());
-      const includeUnchanged = url.searchParams.get('includeUnchanged') === '1';
-      const parentPath = String(url.searchParams.get('path') || '');
-      requests.push({ path: parentPath, includeUnchanged });
+    await page.route('**/api/repos/file-tree-diff**', async (route) => {
+      requests.push({ path: 'diff', includeUnchanged: false });
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(buildDefaultFileTree('owner/repo', parentPath, includeUnchanged))
+        body: JSON.stringify(buildDefaultFileTree('owner/repo', false))
+      });
+    });
+
+    await page.route('**/api/repos/file-tree-all**', async (route) => {
+      requests.push({ path: 'all', includeUnchanged: true });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(buildDefaultFileTree('owner/repo', true))
       });
     });
 
@@ -28,11 +34,11 @@ test.describe('ファイル一覧の回帰', () => {
     await expect(page.getByTestId('file-tree-src')).toHaveAttribute('open', '');
     await expect(page.getByTestId('files-list')).toContainText('app.ts');
     await expect
-      .poll(() => requests.some((item) => item.path === '' && item.includeUnchanged === false))
+      .poll(() => requests.some((item) => item.path === 'diff' && item.includeUnchanged === false))
       .toBe(true);
     await expect
       .poll(() => requests.some((item) => item.path === 'src' && item.includeUnchanged === false))
-      .toBe(true);
+      .toBe(false);
     await expect
       .poll(() => requests.some((item) => item.path === 'dist' && item.includeUnchanged === false))
       .toBe(false);
@@ -41,18 +47,18 @@ test.describe('ファイル一覧の回帰', () => {
     await expect(page.getByTestId('files-list')).toContainText('dist');
     await expect(page.getByTestId('file-tree-dist')).not.toHaveAttribute('open', '');
     await expect
-      .poll(() => requests.some((item) => item.path === '' && item.includeUnchanged === true))
+      .poll(() => requests.some((item) => item.path === 'all' && item.includeUnchanged === true))
       .toBe(true);
     await expect
       .poll(() => requests.some((item) => item.path === 'src' && item.includeUnchanged === true))
-      .toBe(true);
+      .toBe(false);
 
     await page.getByTestId('file-tree-label-dist').click();
     await expect(page.getByTestId('file-tree-dist')).toHaveAttribute('open', '');
     await expect(page.getByTestId('files-list')).toContainText('app.js');
     await expect
       .poll(() => requests.some((item) => item.path === 'dist' && item.includeUnchanged === true))
-      .toBe(true);
+      .toBe(false);
 
     await page.getByText('変更差分なしも表示').click();
     await expect(page.locator('#files-include-unchanged')).not.toBeChecked();
@@ -62,115 +68,72 @@ test.describe('ファイル一覧の回帰', () => {
     await bootstrapChatState(page);
     await installApiMocks(page);
 
-    await page.route('**/api/repos/file-tree**', async (route) => {
-      const url = new URL(route.request().url());
-      const includeUnchanged = url.searchParams.get('includeUnchanged') === '1';
-      const parentPath = String(url.searchParams.get('path') || '');
-      if (!includeUnchanged) {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify(buildDefaultFileTree('owner/repo', parentPath, includeUnchanged))
-        });
-        return;
-      }
-      if (!parentPath) {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            repoFullName: 'owner/repo',
-            repoPath: '/tmp/owner__repo',
-            parentPath: null,
-            items: [
-              {
-                name: 'public',
-                path: 'public',
-                type: 'directory',
-                hasDiff: false,
-                changeKind: 'ignored',
-                isBinary: false,
-                additions: 0,
-                deletions: 0,
-                hasChildren: true,
-                eagerSafe: true
-              },
-              {
-                name: 'node_modules',
-                path: 'node_modules',
-                type: 'directory',
-                hasDiff: false,
-                changeKind: 'ignored',
-                isBinary: false,
-                additions: 0,
-                deletions: 0,
-                hasChildren: true,
-                eagerSafe: false
-              }
-            ]
-          })
-        });
-        return;
-      }
-      if (parentPath === 'public') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            repoFullName: 'owner/repo',
-            repoPath: '/tmp/owner__repo',
-            parentPath: 'public',
-            items: [
-              {
-                name: 'index.html',
-                path: 'public/index.html',
-                type: 'file',
-                hasDiff: false,
-                changeKind: 'ignored',
-                isBinary: false,
-                additions: 0,
-                deletions: 0,
-                hasChildren: false
-              }
-            ]
-          })
-        });
-        return;
-      }
-      if (parentPath === 'node_modules') {
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            repoFullName: 'owner/repo',
-            repoPath: '/tmp/owner__repo',
-            parentPath: 'node_modules',
-            items: [
-              {
-                name: '.bin',
-                path: 'node_modules/.bin',
-                type: 'directory',
-                hasDiff: false,
-                changeKind: 'ignored',
-                isBinary: false,
-                additions: 0,
-                deletions: 0,
-                hasChildren: true
-              }
-            ]
-          })
-        });
-        return;
-      }
+    await page.route('**/api/repos/file-tree-diff**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(buildDefaultFileTree('owner/repo', false))
+      });
+    });
+
+    await page.route('**/api/repos/file-tree-all**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           repoFullName: 'owner/repo',
           repoPath: '/tmp/owner__repo',
-          parentPath,
-          items: []
+          items: [
+            {
+              name: 'public',
+              path: 'public',
+              type: 'directory',
+              hasDiff: false,
+              changeKind: 'ignored',
+              isBinary: false,
+              additions: 0,
+              deletions: 0,
+              hasChildren: true,
+              children: [
+                {
+                  name: 'index.html',
+                  path: 'public/index.html',
+                  type: 'file',
+                  hasDiff: false,
+                  changeKind: 'ignored',
+                  isBinary: false,
+                  additions: 0,
+                  deletions: 0,
+                  hasChildren: false
+                }
+              ]
+            },
+            {
+              name: 'node_modules',
+              path: 'node_modules',
+              type: 'directory',
+              hasDiff: false,
+              changeKind: 'ignored',
+              isBinary: false,
+              additions: 0,
+              deletions: 0,
+              hasChildren: true,
+              children: [
+                {
+                  name: '.bin',
+                  path: 'node_modules/.bin',
+                  type: 'directory',
+                  hasDiff: false,
+                  changeKind: 'ignored',
+                  isBinary: false,
+                  additions: 0,
+                  deletions: 0,
+                  hasChildren: true,
+                  children: []
+                }
+              ]
+            }
+          ]
         })
       });
     });
@@ -180,8 +143,6 @@ test.describe('ファイル一覧の回帰', () => {
 
     await expect(page.getByTestId('files-list')).toContainText('public');
     await expect(page.getByTestId('files-list')).toContainText('node_modules');
-    await expect(page.getByTestId('files-list')).not.toContainText('読み込み中...');
-
     await page.getByTestId('file-tree-label-node_modules').click();
     await expect(page.getByTestId('files-list')).not.toContainText('読み込み中...');
     await expect(page.getByTestId('files-list')).toContainText('.bin');
@@ -233,7 +194,7 @@ test.describe('ファイル一覧の回帰', () => {
     await page.getByTestId('file-row-dist_app_js').click();
 
     await expect(page).toHaveURL(/\/files\/view\/\?path=dist%2Fapp\.js/);
-    await expect(page.getByTestId('file-view-path')).toContainText('dist/app.js');
+    await expect(page.getByTestId('file-view-path')).toContainText('app.js');
     await expect(page.locator('.fx-file-row-chip')).toContainText('除外');
     await expect(page.getByTestId('file-content-panel')).toContainText('console.log("ignored");');
     await expect(page.getByTestId('file-content-panel').locator('.fx-file-line.is-added')).toHaveCount(0);
