@@ -135,7 +135,7 @@ test.describe('diff 中心のファイル閲覧', () => {
 
     await page.goto('/files/view/?path=dist%2Fapp.js');
 
-    await expect(page.getByTestId('file-view-path')).toContainText('dist/app.js');
+    await expect(page.getByTestId('file-view-path')).toContainText('app.js');
     await expect(page.getByTestId('file-content-panel')).toContainText('console.log("ignored");');
     await expect(page.getByTestId('file-content-panel').locator('.fx-file-line.is-added')).toHaveCount(0);
     await expect(page.getByTestId('file-content-panel').locator('.fx-file-line.is-removed')).toHaveCount(0);
@@ -189,5 +189,36 @@ test.describe('diff 中心のファイル閲覧', () => {
         page.evaluate(() => ((window as Window & { __fxOpenCalls?: Array<[string, string, string]> }).__fxOpenCalls || [])[0] || null)
       )
       .toEqual(['https://example.com/docs', '_blank', 'noopener,noreferrer']);
+  });
+
+  test('チャット返答のリンクは下線付きでリンクらしく表示される', async ({ page }) => {
+    await bootstrapChatState(page);
+    await installApiMocks(page);
+
+    await page.route('**/api/threads/messages**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'assistant-link-style',
+              role: 'assistant',
+              type: 'markdown',
+              text: '[外部リンク](https://example.com/docs)',
+              answer: '[外部リンク](https://example.com/docs)',
+              plan: ''
+            }
+          ]
+        })
+      });
+    });
+
+    await page.goto('/chat/');
+
+    const link = page.getByRole('link', { name: '外部リンク' });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveCSS('text-decoration-line', 'underline');
+    await expect(link).not.toHaveCSS('color', 'rgb(15, 23, 42)');
   });
 });

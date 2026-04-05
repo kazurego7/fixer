@@ -993,6 +993,18 @@ body {
   margin-bottom: 0;
 }
 
+.fx-msg-assistant .fx-msg-bubble a {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-decoration-thickness: 0.05em;
+  text-underline-offset: 0.1em;
+}
+
+.fx-msg-assistant .fx-msg-bubble a:hover,
+.fx-msg-assistant .fx-msg-bubble a:focus-visible {
+  color: #1e40af;
+}
+
 .fx-assistant-rich {
   display: flex;
   flex-direction: column;
