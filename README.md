@@ -2,6 +2,11 @@
 
 Fixer は、Codex用のモバイル向け Web UI です。
 
+> [!WARNING]
+> Fixer はデフォルトで Codex を `danger-full-access` で起動します。
+> `git commit`、`git push`、依存関係のインストールのような制約の少ない操作を優先する代わりに、Codex がローカル環境へ広い権限でアクセスします。
+> 信頼できるローカル環境でのみ使用してください。
+
 ## 背景と目的
 
 Codex Web は応答や確認に待ちが入りやすく、CI/CD 待ちも含めて確認ループが遅くなりやすいです。

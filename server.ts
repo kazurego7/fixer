@@ -199,6 +199,7 @@ const liveTurnStateByThreadId = new Map<string, LiveTurnState>();
 let liveTurnSeq = 1;
 const DEFAULT_MODEL_FALLBACK = 'gpt-5-codex';
 const DEFAULT_REASONING_SUMMARY = 'concise';
+const DEFAULT_THREAD_SANDBOX = 'danger-full-access';
 
 let codexServerProcess: ChildProcess | null = null;
 let codexStartPromise: Promise<void> | null = null;
@@ -2867,7 +2868,7 @@ function buildServer(): FastifyInstance {
     const params: JsonRecord = {
       cwd: repoPath,
       approvalPolicy: 'never',
-      sandbox: 'workspace-write'
+      sandbox: DEFAULT_THREAD_SANDBOX
     };
     if (model) params.model = model;
     const result = await rpcRequest<{ thread?: { id?: string; model?: string } }>('thread/start', params);
@@ -2903,7 +2904,7 @@ function buildServer(): FastifyInstance {
     const params: JsonRecord = {
       cwd: repoPath,
       approvalPolicy: 'never',
-      sandbox: 'workspace-write'
+      sandbox: DEFAULT_THREAD_SANDBOX
     };
     if (model) params.model = model;
     const result = await rpcRequest<{ thread?: { id?: string; model?: string } }>('thread/start', params);
