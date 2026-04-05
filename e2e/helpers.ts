@@ -73,7 +73,8 @@ function buildDefaultFileTree(repo = DEFAULT_REPO, parentPath = '', includeUncha
               isBinary: false,
               additions: 1,
               deletions: 1,
-              hasChildren: true
+              hasChildren: true,
+              eagerSafe: true
             },
             {
               name: 'README.md',
@@ -95,7 +96,8 @@ function buildDefaultFileTree(repo = DEFAULT_REPO, parentPath = '', includeUncha
               isBinary: false,
               additions: 0,
               deletions: 0,
-              hasChildren: true
+              hasChildren: true,
+              eagerSafe: true
             }
           ]
         : [
@@ -108,7 +110,8 @@ function buildDefaultFileTree(repo = DEFAULT_REPO, parentPath = '', includeUncha
               isBinary: false,
               additions: 1,
               deletions: 1,
-              hasChildren: true
+              hasChildren: true,
+              eagerSafe: true
             }
           ]
     };

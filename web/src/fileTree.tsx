@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import type { RepoFileListItem, RepoFileTreeItem, RepoFileTreeResponse } from '../../shared/types';
 
 type TreeTone = 'deleted' | 'added' | 'modified' | 'ignored' | 'normal';
@@ -17,6 +17,7 @@ interface UseFileTreeStateResult {
   rootItems: RepoFileTreeItem[];
   rootLoading: boolean;
   rootError: string;
+  eagerLoadPaths: Record<string, boolean>;
   childrenByParent: Record<string, RepoFileTreeItem[]>;
   loadingByParent: Record<string, boolean>;
   errorByParent: Record<string, string>;
@@ -133,11 +134,28 @@ export function useFileTreeState({ repoFullName, includeUnchanged }: UseFileTree
   }, [repoFullName, includeUnchanged, invalidateTree, loadChildren]);
 
   const rootKey = getTreeParentKey(null);
+  const rootItems = childrenByParent[rootKey] || [];
+  const eagerLoadPaths = useMemo(() => {
+    const next: Record<string, boolean> = {};
+    for (const node of rootItems) {
+      if (node.type === 'directory' && node.eagerSafe) next[node.path] = true;
+    }
+    return next;
+  }, [rootItems]);
+
+  useEffect(() => {
+    if (rootItems.length === 0) return;
+    for (const node of rootItems) {
+      if (!eagerLoadPaths[node.path]) continue;
+      loadChildren(node.path).catch(() => {});
+    }
+  }, [rootItems, eagerLoadPaths, loadChildren]);
 
   return {
-    rootItems: childrenByParent[rootKey] || [],
+    rootItems,
     rootLoading: Boolean(loadingByParent[rootKey]),
     rootError: errorByParent[rootKey] || '',
+    eagerLoadPaths,
     childrenByParent,
     loadingByParent,
     errorByParent,

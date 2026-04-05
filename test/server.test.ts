@@ -15,6 +15,7 @@ const {
   parseGitStatusOutput,
   isIgnoredRepoPath,
   resolveRepoTrackedPath,
+  listRepoTree,
   parseStatusPath,
   diffKindFromStatusCode,
   normalizeCollaborationMode,
@@ -152,6 +153,54 @@ test('isIgnoredRepoPath は ignore ディレクトリ配下のファイルも判
 
   assert.equal(isIgnoredRepoPath(repoPath, 'public/index.html'), true);
   assert.equal(isIgnoredRepoPath(repoPath, 'src/app.ts'), false);
+
+  fs.rmSync(repoPath, { recursive: true, force: true });
+});
+
+test('listRepoTree はディレクトリごとの eagerSafe を直下子件数で判定する', () => {
+  const fullName = 'test/eager-safe';
+  const repoPath = repoPathFromFullName(fullName);
+  fs.rmSync(repoPath, { recursive: true, force: true });
+  fs.mkdirSync(repoPath, { recursive: true });
+
+  const init = spawnSync('git', ['init'], { cwd: repoPath, encoding: 'utf8' });
+  assert.equal(init.status, 0, init.stderr || init.stdout);
+
+  fs.mkdirSync(path.join(repoPath, 'small'), { recursive: true });
+  fs.mkdirSync(path.join(repoPath, 'large'), { recursive: true });
+  for (let index = 1; index <= 20; index += 1) {
+    fs.writeFileSync(path.join(repoPath, 'small', `file-${index}.txt`), `${index}\n`);
+  }
+  for (let index = 1; index <= 21; index += 1) {
+    fs.writeFileSync(path.join(repoPath, 'large', `file-${index}.txt`), `${index}\n`);
+  }
+  fs.writeFileSync(path.join(repoPath, 'root.txt'), 'root\n');
+
+  const add = spawnSync('git', ['add', '.'], { cwd: repoPath, encoding: 'utf8' });
+  assert.equal(add.status, 0, add.stderr || add.stdout);
+  const commit = spawnSync('git', ['commit', '-m', 'テスト初期化'], {
+    cwd: repoPath,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Test User',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'Test User',
+      GIT_COMMITTER_EMAIL: 'test@example.com'
+    }
+  });
+  assert.equal(commit.status, 0, commit.stderr || commit.stdout);
+
+  const tree = listRepoTree(fullName, true, null);
+  const small = tree.items.find((item) => item.path === 'small');
+  const large = tree.items.find((item) => item.path === 'large');
+
+  assert.ok(small);
+  assert.ok(large);
+  assert.equal(small?.type, 'directory');
+  assert.equal(large?.type, 'directory');
+  assert.equal(small?.eagerSafe, true);
+  assert.equal(large?.eagerSafe, false);
 
   fs.rmSync(repoPath, { recursive: true, force: true });
 });

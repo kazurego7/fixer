@@ -37,16 +37,12 @@ test.describe('ファイル一覧の回帰', () => {
     await page.getByTestId('files-include-unchanged-toggle').click();
     await expect(page.getByTestId('files-list')).toContainText('dist');
     await expect(page.getByTestId('file-tree-dist')).not.toHaveAttribute('open', '');
-    await expect(page.getByTestId('files-list')).not.toContainText('app.js');
     await expect
       .poll(() => requests.some((item) => item.path === '' && item.includeUnchanged === true))
       .toBe(true);
     await expect
       .poll(() => requests.some((item) => item.path === 'src' && item.includeUnchanged === true))
       .toBe(true);
-    await expect
-      .poll(() => requests.some((item) => item.path === 'dist' && item.includeUnchanged === true))
-      .toBe(false);
 
     await page.getByTestId('file-tree-label-dist').click();
     await expect(page.getByTestId('file-tree-dist')).toHaveAttribute('open', '');
@@ -54,6 +50,140 @@ test.describe('ファイル一覧の回帰', () => {
     await expect
       .poll(() => requests.some((item) => item.path === 'dist' && item.includeUnchanged === true))
       .toBe(true);
+  });
+
+  test('未先読みフォルダでも展開時に読み込み中を表示しない', async ({ page }) => {
+    await bootstrapChatState(page);
+    await installApiMocks(page);
+
+    await page.route('**/api/repos/file-tree**', async (route) => {
+      const url = new URL(route.request().url());
+      const includeUnchanged = url.searchParams.get('includeUnchanged') === '1';
+      const parentPath = String(url.searchParams.get('path') || '');
+      if (!includeUnchanged) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(buildDefaultFileTree('owner/repo', parentPath, includeUnchanged))
+        });
+        return;
+      }
+      if (!parentPath) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            repoFullName: 'owner/repo',
+            repoPath: '/tmp/owner__repo',
+            parentPath: null,
+            items: [
+              {
+                name: 'public',
+                path: 'public',
+                type: 'directory',
+                hasDiff: false,
+                changeKind: 'ignored',
+                isBinary: false,
+                additions: 0,
+                deletions: 0,
+                hasChildren: true,
+                eagerSafe: true
+              },
+              {
+                name: 'node_modules',
+                path: 'node_modules',
+                type: 'directory',
+                hasDiff: false,
+                changeKind: 'ignored',
+                isBinary: false,
+                additions: 0,
+                deletions: 0,
+                hasChildren: true,
+                eagerSafe: false
+              }
+            ]
+          })
+        });
+        return;
+      }
+      if (parentPath === 'public') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            repoFullName: 'owner/repo',
+            repoPath: '/tmp/owner__repo',
+            parentPath: 'public',
+            items: [
+              {
+                name: 'index.html',
+                path: 'public/index.html',
+                type: 'file',
+                hasDiff: false,
+                changeKind: 'ignored',
+                isBinary: false,
+                additions: 0,
+                deletions: 0,
+                hasChildren: false
+              }
+            ]
+          })
+        });
+        return;
+      }
+      if (parentPath === 'node_modules') {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            repoFullName: 'owner/repo',
+            repoPath: '/tmp/owner__repo',
+            parentPath: 'node_modules',
+            items: [
+              {
+                name: '.bin',
+                path: 'node_modules/.bin',
+                type: 'directory',
+                hasDiff: false,
+                changeKind: 'ignored',
+                isBinary: false,
+                additions: 0,
+                deletions: 0,
+                hasChildren: true
+              }
+            ]
+          })
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          repoFullName: 'owner/repo',
+          repoPath: '/tmp/owner__repo',
+          parentPath,
+          items: []
+        })
+      });
+    });
+
+    await page.goto('/files/');
+    await page.getByTestId('files-include-unchanged-toggle').click();
+
+    await expect(page.getByTestId('files-list')).toContainText('public');
+    await expect(page.getByTestId('files-list')).toContainText('node_modules');
+    await expect(page.getByTestId('files-list')).not.toContainText('読み込み中...');
+
+    await page.getByTestId('file-tree-label-node_modules').click();
+    await expect(page.getByTestId('files-list')).not.toContainText('読み込み中...');
+    await expect(page.getByTestId('files-list')).toContainText('.bin');
+    await expect(page.getByTestId('files-list')).not.toContainText('読み込み中...');
+
+    await page.getByTestId('file-tree-label-public').click();
+    await expect(page.getByTestId('files-list')).toContainText('index.html');
+    await expect(page.getByTestId('files-list')).not.toContainText('読み込み中...');
   });
 
   test('差分なしと除外ファイルをトグルで表示し、除外ファイル詳細は本文のみ表示する', async ({ page }) => {

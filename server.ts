@@ -2162,6 +2162,7 @@ function listRepoTree(repoFullName: string, includeUnchanged: boolean, rawParent
   }
 
   const childMap = new Map<string, RepoFileTreeItem>();
+  const grandchildNameSetByChildPath = new Map<string, Set<string>>();
   const parentPrefix = parentPath ? `${parentPath}/` : '';
 
   for (const item of itemsMap.values()) {
@@ -2179,6 +2180,15 @@ function listRepoTree(repoFullName: string, includeUnchanged: boolean, rawParent
     const childPath = parentPath ? `${parentPath}/${childName}` : childName;
     const isDirectFile = parts.length === 1 && !item.path.endsWith('/');
     const existing = childMap.get(childPath);
+
+    if (parts.length > 1) {
+      const nextChildName = parts[1];
+      if (nextChildName) {
+        const nameSet = grandchildNameSetByChildPath.get(childPath) || new Set<string>();
+        nameSet.add(nextChildName);
+        grandchildNameSetByChildPath.set(childPath, nameSet);
+      }
+    }
 
     if (isDirectFile) {
       if (!existing || existing.type === 'directory') {
@@ -2225,6 +2235,12 @@ function listRepoTree(repoFullName: string, includeUnchanged: boolean, rawParent
     existing.additions += item.additions;
     existing.deletions += item.deletions;
     existing.hasChildren = true;
+  }
+
+  for (const item of childMap.values()) {
+    if (item.type !== 'directory') continue;
+    const directChildCount = grandchildNameSetByChildPath.get(item.path)?.size || 0;
+    item.eagerSafe = directChildCount <= 20;
   }
 
   const items = Array.from(childMap.values()).sort((a, b) => {
@@ -3275,6 +3291,7 @@ export {
   parseGitStatusOutput,
   readGitRepoStatus,
   listRepoFiles,
+  listRepoTree,
   buildRepoFileView,
   isIgnoredRepoPath,
   normalizeCollaborationMode,

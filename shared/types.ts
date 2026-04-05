@@ -73,6 +73,7 @@ export interface RepoFileTreeItem {
   additions: number;
   deletions: number;
   hasChildren: boolean;
+  eagerSafe?: boolean;
 }
 
 export interface RepoFileTreeResponse {
