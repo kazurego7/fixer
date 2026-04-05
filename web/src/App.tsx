@@ -6,8 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type Dispatch,
-  type SetStateAction,
   type ChangeEvent,
   type FocusEvent,
   type KeyboardEvent,
@@ -31,8 +29,6 @@ import type {
   PendingUserInputRequest,
   RepoFileListItem,
   RepoFileListResponse,
-  RepoFileTreeItem,
-  RepoFileTreeResponse,
   RepoFileViewResponse,
   RepoSummary,
   RequestId,
@@ -44,6 +40,7 @@ import type {
   UserInputQuestion,
   UserOutputItem
 } from '../../shared/types';
+import { FileTreeNode, useFileTreeState } from './fileTree';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -161,11 +158,6 @@ interface ThreadMessagesResponse {
   items?: OutputItem[];
   model?: string | null;
   error?: string;
-}
-
-interface FileTreeFetchResponse extends RepoFileTreeResponse {
-  error?: string;
-  detail?: string;
 }
 
 interface EnsureThreadResponse {
@@ -879,163 +871,13 @@ function buildFileRenderLines(content: string, diffText: string): FileRenderLine
   return out;
 }
 
-function getTreeParentKey(path: string | null): string {
-  return path || '__root__';
-}
-
-interface LazyRepoFileTreeNodeProps {
-  node: RepoFileTreeItem;
-  depth: number;
-  childrenByParent: Record<string, RepoFileTreeItem[]>;
-  loadingByParent: Record<string, boolean>;
-  errorByParent: Record<string, string>;
-  expandedByPath: Record<string, boolean>;
-  setExpandedByPath: Dispatch<SetStateAction<Record<string, boolean>>>;
-  loadChildren: (parentPath: string | null, force?: boolean) => Promise<void>;
-  openRepoFile: (filePath: string, line?: number | null, replace?: boolean) => Promise<void>;
-}
-
-function LazyRepoFileTreeNode({
-  node,
-  depth,
-  childrenByParent,
-  loadingByParent,
-  errorByParent,
-  expandedByPath,
-  setExpandedByPath,
-  loadChildren,
-  openRepoFile
-}: LazyRepoFileTreeNodeProps) {
-  const pathKey = getTreeParentKey(node.path);
-  const childItems = childrenByParent[pathKey] || [];
-  const childrenLoaded = Object.prototype.hasOwnProperty.call(childrenByParent, pathKey);
-  const childrenLoading = Boolean(loadingByParent[pathKey]);
-  const childrenError = errorByParent[pathKey] || '';
-  const isOpen = expandedByPath[node.path] ?? node.hasDiff;
-  const numstatParts = formatNumstatParts(node.additions, node.deletions);
-
-  useEffect(() => {
-    if (node.type !== 'directory' || !isOpen || childrenLoaded || childrenLoading) return;
-    loadChildren(node.path).catch(() => {});
-  }, [node.type, node.path, isOpen, childrenLoaded, childrenLoading, loadChildren]);
-
-  if (node.type === 'directory') {
-    return (
-      <details
-        className={`fx-file-tree-group is-${getTreeTone(node.changeKind)}`}
-        open={isOpen}
-        onToggle={(event) => {
-          const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-          setExpandedByPath((prev) => {
-            if (prev[node.path] === nextOpen) return prev;
-            return { ...prev, [node.path]: nextOpen };
-          });
-        }}
-        data-testid={`file-tree-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
-      >
-        <summary className="fx-file-tree-summary" data-testid={`file-tree-label-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}>
-          <span className="fx-file-tree-caret" aria-hidden="true">
-            ▾
-          </span>
-          <span className={`fx-file-tree-label is-${getTreeTone(node.changeKind)}`} style={{ paddingLeft: `${depth * 0.9}rem` }}>
-            {node.name}
-          </span>
-        </summary>
-        <div className="fx-file-tree-children">
-          {childrenLoading ? <p className="fx-mini">読み込み中...</p> : null}
-          {childrenError ? <p className="fx-mini">読み込み失敗: {childrenError}</p> : null}
-          {!childrenLoading && !childrenError
-            ? childItems.map((child) => (
-                <LazyRepoFileTreeNode
-                  key={child.path}
-                  node={child}
-                  depth={depth + 1}
-                  childrenByParent={childrenByParent}
-                  loadingByParent={loadingByParent}
-                  errorByParent={errorByParent}
-                  expandedByPath={expandedByPath}
-                  setExpandedByPath={setExpandedByPath}
-                  loadChildren={loadChildren}
-                  openRepoFile={openRepoFile}
-                />
-              ))
-            : null}
-        </div>
-      </details>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      className={`fx-file-row is-${getTreeTone(node.changeKind)}`}
-      onClick={() => openRepoFile(node.path)}
-      data-testid={`file-row-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
-    >
-      <div className="fx-file-row-main">
-        <span
-          className={`fx-file-row-path is-${getTreeTone(node.changeKind)}`}
-          style={{ paddingLeft: `${depth * 0.9}rem` }}
-          data-testid={`file-row-label-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
-        >
-          {node.name}
-        </span>
-        {numstatParts.length > 0 ? (
-          <span className="fx-file-row-stats" data-testid={`file-row-stats-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}>
-            {numstatParts.map((part) => (
-              <span key={`${node.path}:${part.label}`} className={`fx-file-row-stat is-${part.tone}`}>
-                {part.label}
-              </span>
-            ))}
-          </span>
-        ) : null}
-      </div>
-    </button>
-  );
-}
-
 function FilesPage() {
   const { activeRepoFullName, fileListIncludeUnchanged, setFileListIncludeUnchanged, openRepoFile, navigate } = useAppCtx();
-  const [childrenByParent, setChildrenByParent] = useState<Record<string, RepoFileTreeItem[]>>({});
-  const [loadingByParent, setLoadingByParent] = useState<Record<string, boolean>>({});
-  const [errorByParent, setErrorByParent] = useState<Record<string, string>>({});
-  const [expandedByPath, setExpandedByPath] = useState<Record<string, boolean>>({});
-  const rootKey = getTreeParentKey(null);
-  const rootItems = childrenByParent[rootKey] || [];
-  const rootLoading = Boolean(loadingByParent[rootKey]);
-  const rootError = errorByParent[rootKey] || '';
-
-  async function loadChildren(parentPath: string | null, force = false): Promise<void> {
-    if (!activeRepoFullName) return;
-    const key = getTreeParentKey(parentPath);
-    if (!force && (loadingByParent[key] || Object.prototype.hasOwnProperty.call(childrenByParent, key))) return;
-    setLoadingByParent((prev) => ({ ...prev, [key]: true }));
-    setErrorByParent((prev) => ({ ...prev, [key]: '' }));
-    try {
-      const qs = new URLSearchParams({
-        repoFullName: activeRepoFullName,
-        includeUnchanged: fileListIncludeUnchanged ? '1' : '0'
-      });
-      if (parentPath) qs.set('path', parentPath);
-      const res = await fetch(`/api/repos/file-tree?${qs.toString()}`);
-      const data = (await res.json()) as FileTreeFetchResponse;
-      if (!res.ok) throw new Error(data.detail || data.error || 'repo_file_tree_failed');
-      setChildrenByParent((prev) => ({ ...prev, [key]: Array.isArray(data.items) ? data.items : [] }));
-    } catch (e: unknown) {
-      setErrorByParent((prev) => ({ ...prev, [key]: getClientErrorMessage(e, 'repo_file_tree_failed') }));
-    } finally {
-      setLoadingByParent((prev) => ({ ...prev, [key]: false }));
-    }
-  }
-
-  useEffect(() => {
-    setChildrenByParent({});
-    setLoadingByParent({});
-    setErrorByParent({});
-    setExpandedByPath({});
-    if (!activeRepoFullName) return;
-    loadChildren(null, true).catch(() => {});
-  }, [activeRepoFullName, fileListIncludeUnchanged]);
+  const treeState = useFileTreeState({
+    repoFullName: activeRepoFullName,
+    includeUnchanged: fileListIncludeUnchanged
+  });
+  const { rootItems, rootLoading, rootError } = treeState;
 
   return (
     <Page noNavbar>
@@ -1068,18 +910,7 @@ function FilesPage() {
           {!rootLoading && !rootError && rootItems.length === 0 ? <p className="fx-mini">表示できるファイルがありません。</p> : null}
           {!rootLoading && !rootError
             ? rootItems.map((node) => (
-                <LazyRepoFileTreeNode
-                  key={node.path}
-                  node={node}
-                  depth={0}
-                  childrenByParent={childrenByParent}
-                  loadingByParent={loadingByParent}
-                  errorByParent={errorByParent}
-                  expandedByPath={expandedByPath}
-                  setExpandedByPath={setExpandedByPath}
-                  loadChildren={loadChildren}
-                  openRepoFile={openRepoFile}
-                />
+                <FileTreeNode key={node.path} node={node} depth={0} treeState={treeState} openRepoFile={openRepoFile} />
               ))
             : null}
         </div>
