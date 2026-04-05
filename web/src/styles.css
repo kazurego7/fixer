@@ -560,10 +560,6 @@ body {
   display: none;
 }
 
-.fx-file-tree-summary:hover {
-  background: #f8fafc;
-}
-
 .fx-file-tree-caret {
   flex: 0 0 auto;
   color: #64748b;
@@ -610,6 +606,8 @@ body {
   margin: 0.08rem 0 0.16rem 1.2rem;
   padding: 0 0 0 0.4rem;
   border-left: 1px solid #dbeafe;
+  content-visibility: auto;
+  contain-intrinsic-size: 8rem;
 }
 
 .fx-file-row {
@@ -623,10 +621,6 @@ body {
   padding: 0.38rem 0.76rem;
   color: #0f172a;
   text-align: left;
-}
-
-.fx-file-row:hover {
-  background: #f8fafc;
 }
 
 .fx-file-row-main {

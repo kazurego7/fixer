@@ -137,11 +137,13 @@ export function FileTreeNode({ node, depth, treeState, openRepoFile }: FileTreeN
             {node.name}
           </span>
         </summary>
-        <div className="fx-file-tree-children">
-          {childItems.map((child) => (
-            <FileTreeNode key={child.path} node={child} depth={depth + 1} treeState={treeState} openRepoFile={openRepoFile} />
-          ))}
-        </div>
+        {isOpen ? (
+          <div className="fx-file-tree-children">
+            {childItems.map((child) => (
+              <FileTreeNode key={child.path} node={child} depth={depth + 1} treeState={treeState} openRepoFile={openRepoFile} />
+            ))}
+          </div>
+        ) : null}
       </details>
     );
   }

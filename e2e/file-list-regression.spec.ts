@@ -153,6 +153,69 @@ test.describe('ファイル一覧の回帰', () => {
     await expect(page.getByTestId('files-list')).not.toContainText('読み込み中...');
   });
 
+  test('閉じている大量フォルダは子要素を DOM に載せない', async ({ page }) => {
+    await bootstrapChatState(page);
+    await installApiMocks(page);
+
+    const largeChildren = Array.from({ length: 400 }, (_, index) => ({
+      name: `pkg-${String(index + 1).padStart(4, '0')}.js`,
+      path: `node_modules/pkg-${String(index + 1).padStart(4, '0')}.js`,
+      type: 'file' as const,
+      hasDiff: false,
+      changeKind: 'ignored' as const,
+      isBinary: false,
+      additions: 0,
+      deletions: 0,
+      hasChildren: false
+    }));
+
+    await page.route('**/api/repos/file-tree-diff**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(buildDefaultFileTree('owner/repo', false))
+      });
+    });
+
+    await page.route('**/api/repos/file-tree-all**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          repoFullName: 'owner/repo',
+          repoPath: '/tmp/owner__repo',
+          items: [
+            {
+              name: 'node_modules',
+              path: 'node_modules',
+              type: 'directory',
+              hasDiff: false,
+              changeKind: 'ignored',
+              isBinary: false,
+              additions: 0,
+              deletions: 0,
+              hasChildren: true,
+              children: largeChildren
+            }
+          ]
+        })
+      });
+    });
+
+    await page.goto('/files/');
+    await page.getByTestId('files-include-unchanged-toggle').click();
+
+    await expect(page.getByTestId('file-tree-node_modules')).not.toHaveAttribute('open', '');
+    await expect(page.getByTestId('file-row-node_modules_pkg-0001_js')).toHaveCount(0);
+    await expect(page.getByTestId('file-row-node_modules_pkg-0400_js')).toHaveCount(0);
+
+    await page.getByTestId('file-tree-label-node_modules').click();
+
+    await expect(page.getByTestId('file-tree-node_modules')).toHaveAttribute('open', '');
+    await expect(page.getByTestId('file-row-node_modules_pkg-0001_js')).toBeVisible();
+    await expect(page.getByTestId('file-row-node_modules_pkg-0400_js')).toBeVisible();
+  });
+
   test('差分なしと除外ファイルをトグルで表示し、除外ファイル詳細は本文のみ表示する', async ({ page }) => {
     await bootstrapChatState(page);
     await installApiMocks(page);
