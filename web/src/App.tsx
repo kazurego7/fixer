@@ -937,7 +937,8 @@ function FileViewPage() {
     () => buildFileRenderLines(selectedFileView?.content || '', selectedFileView?.diff || ''),
     [selectedFileView?.content, selectedFileView?.diff]
   );
-  const fileTitle = currentPath || 'ファイル未選択';
+  const fileTitle = currentPath ? currentPath.split('/').filter(Boolean).pop() || currentPath : 'ファイル未選択';
+  const canPreviewImage = Boolean(selectedFileView?.imageDataUrl && selectedFileView?.mimeType?.startsWith('image/'));
 
   useEffect(() => {
     if (!params.line || !contentRef.current) return;
@@ -986,15 +987,35 @@ function FileViewPage() {
           {selectedFileViewLoading ? <p className="fx-mini">ファイルを読み込み中...</p> : null}
           {selectedFileViewError ? <p className="fx-mini">読み込み失敗: {selectedFileViewError}</p> : null}
           {!selectedFileViewLoading && !selectedFileViewError && selectedFileView ? (
-            <section className="fx-file-panel" data-testid="file-content-panel">
+            <section className={`fx-file-panel${canPreviewImage ? ' is-image-preview' : ''}`} data-testid="file-content-panel">
               <div className="fx-file-panel-head">
-                <span>全文</span>
-                <span className={`fx-file-row-chip is-${selectedFileView.changeKind}`}>
-                  {formatChangeKindLabel(selectedFileView.changeKind)}
-                </span>
+                {canPreviewImage ? (
+                  <>
+                    <span>画像</span>
+                    <span className={`fx-file-row-chip is-${selectedFileView.changeKind}`}>
+                      {formatChangeKindLabel(selectedFileView.changeKind)}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span>テキスト</span>
+                    <span className={`fx-file-row-chip is-${selectedFileView.changeKind}`}>
+                      {formatChangeKindLabel(selectedFileView.changeKind)}
+                    </span>
+                  </>
+                )}
               </div>
               {selectedFileView.isDeleted ? (
                 <div className="fx-file-empty">このファイルは削除されています。</div>
+              ) : canPreviewImage ? (
+                <div className="fx-file-image-wrap" data-testid="file-image-panel">
+                  <img
+                    src={selectedFileView.imageDataUrl}
+                    alt={selectedFileView.path}
+                    className="fx-file-image"
+                    data-testid="file-image-preview"
+                  />
+                </div>
               ) : selectedFileView.isBinary ? (
                 <div className="fx-file-empty">バイナリファイルの本文表示には未対応です。</div>
               ) : (

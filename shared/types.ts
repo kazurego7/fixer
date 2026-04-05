@@ -95,6 +95,8 @@ export interface RepoFileViewResponse {
   deletions: number;
   content: string;
   diff: string;
+  mimeType?: string;
+  imageDataUrl?: string;
 }
 
 export interface ImageAttachmentDraft {

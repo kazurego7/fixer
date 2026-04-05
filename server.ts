@@ -2023,11 +2023,50 @@ function collectDiffOutput(
   };
 }
 
-function readRepoFileContent(repoPath: string, relativePath: string): { content: string; isBinary: boolean } {
+function getMimeTypeFromPath(relativePath: string): string | null {
+  const ext = path.extname(relativePath).toLowerCase();
+  switch (ext) {
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.bmp':
+      return 'image/bmp';
+    case '.ico':
+      return 'image/x-icon';
+    case '.avif':
+      return 'image/avif';
+    default:
+      return null;
+  }
+}
+
+function readRepoFileContent(
+  repoPath: string,
+  relativePath: string
+): { content: string; isBinary: boolean; mimeType?: string; imageDataUrl?: string } {
   const absolutePath = path.join(repoPath, relativePath);
   if (!fs.existsSync(absolutePath)) return { content: '', isBinary: false };
   const buffer = fs.readFileSync(absolutePath);
-  if (detectBinaryBuffer(buffer)) return { content: '', isBinary: true };
+  if (detectBinaryBuffer(buffer)) {
+    const mimeType = getMimeTypeFromPath(relativePath);
+    if (mimeType?.startsWith('image/')) {
+      return {
+        content: '',
+        isBinary: true,
+        mimeType,
+        imageDataUrl: `data:${mimeType};base64,${buffer.toString('base64')}`
+      };
+    }
+    return { content: '', isBinary: true };
+  }
   return { content: buffer.toString('utf8'), isBinary: false };
 }
 
@@ -2280,7 +2319,9 @@ function buildRepoFileView(repoFullName: string, rawPath: string): RepoFileViewR
     additions,
     deletions,
     content: contentState.content,
-    diff
+    diff,
+    mimeType: contentState.mimeType,
+    imageDataUrl: contentState.imageDataUrl
   };
 }
 

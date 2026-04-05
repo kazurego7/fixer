@@ -820,6 +820,28 @@ body {
   line-height: 1.45;
 }
 
+.fx-file-image-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 0.85rem;
+  background: #ffffff;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+}
+
+.fx-file-panel.is-image-preview .fx-file-image-wrap {
+  min-height: 16rem;
+  align-items: center;
+}
+
+.fx-file-image {
+  display: block;
+  max-width: 100%;
+  max-height: min(70vh, 40rem);
+  object-fit: contain;
+  border-radius: 8px;
+}
+
 .fx-model-list {
   display: flex;
   flex-direction: column;
