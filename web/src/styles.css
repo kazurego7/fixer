@@ -512,10 +512,7 @@ body {
   flex-direction: column;
   gap: 0.18rem;
   padding-top: 0.45rem;
-  border: 1px solid #dbeafe;
-  border-radius: 16px;
   background: #ffffff;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
 }
 
 .fx-file-tree-group {
@@ -683,17 +680,10 @@ body {
 
 .fx-file-view-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  justify-content: flex-end;
   padding: 0.7rem 0.75rem 0.55rem;
   border-bottom: 1px solid #e2e8f0;
   background: rgba(255, 255, 255, 0.9);
-}
-
-.fx-file-view-path {
-  font-size: 0.82rem;
-  color: #0f172a;
-  line-height: 1.45;
 }
 
 .fx-file-view-actions {
@@ -719,14 +709,14 @@ body {
 .fx-file-view-body {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.35rem;
 }
 
 .fx-file-panel {
-  border: 1px solid #dbeafe;
-  border-radius: 14px;
-  background: #ffffff;
-  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
 }
 
 .fx-file-panel-head {
@@ -734,44 +724,81 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.65rem 0.76rem;
-  border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
+  padding: 0.2rem 0.1rem 0.45rem;
+  border-bottom: 0;
+  background: transparent;
   color: #334155;
   font-size: 0.76rem;
   font-weight: 700;
 }
 
 .fx-file-content {
-  max-height: 45vh;
+  max-height: none;
   overflow: auto;
   background: #ffffff;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+}
+
+.fx-file-content.is-diff-inline {
+  max-height: none;
 }
 
 .fx-file-line {
   display: grid;
-  grid-template-columns: 3.2rem minmax(0, 1fr);
-  gap: 0.72rem;
+  grid-template-columns: 1.7rem 1.7rem minmax(0, 1fr);
+  gap: 0.28rem;
+  align-items: baseline;
   padding: 0.16rem 0.76rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 0.8rem;
   line-height: 1.5;
 }
 
+.fx-file-content.is-plain .fx-file-line {
+  grid-template-columns: 1.9rem minmax(0, 1fr);
+}
+
 .fx-file-line.is-target {
   background: #dbeafe;
 }
 
+.fx-file-line.is-added {
+  background: #f0fdf4;
+}
+
+.fx-file-line.is-removed {
+  background: #fef2f2;
+}
+
+.fx-file-line.is-added .fx-file-line-no {
+  background: #dcfce7;
+}
+
+.fx-file-line.is-removed .fx-file-line-no {
+  background: #fee2e2;
+}
+
 .fx-file-line-no {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
   color: #94a3b8;
   text-align: right;
   user-select: none;
+  padding-right: 0.08rem;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
 }
 
 .fx-file-line-text {
+  display: block;
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  line-height: 1.5;
 }
 
 .fx-file-empty {

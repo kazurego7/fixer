@@ -63,6 +63,25 @@ export interface RepoFileListResponse {
   items: RepoFileListItem[];
 }
 
+export interface RepoFileTreeItem {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  hasDiff: boolean;
+  changeKind: RepoFileChangeKind;
+  isBinary: boolean;
+  additions: number;
+  deletions: number;
+  hasChildren: boolean;
+}
+
+export interface RepoFileTreeResponse {
+  repoFullName: string;
+  repoPath: string;
+  parentPath: string | null;
+  items: RepoFileTreeItem[];
+}
+
 export interface RepoFileViewResponse {
   repoFullName: string;
   repoPath: string;

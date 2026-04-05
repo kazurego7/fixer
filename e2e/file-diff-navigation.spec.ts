@@ -79,7 +79,8 @@ test.describe('diff 中心のファイル閲覧', () => {
     await page.getByTestId('file-row-src_app_ts').click();
     await expect(page).toHaveURL(/\/files\/view\/\?path=src%2Fapp\.ts/);
     await expect(page.getByTestId('file-content-panel')).toContainText('const value = 1;');
-    await expect(page.getByTestId('file-diff-panel')).toContainText('diff --git a/src/app.ts b/src/app.ts');
+    await expect(page.getByTestId('file-content-panel').locator('.fx-file-line.is-added')).toHaveCount(1);
+    await expect(page.getByTestId('file-content-panel').locator('.fx-file-line.is-removed')).toHaveCount(1);
 
     await page.getByTestId('file-next-diff-button').click();
     await expect(page).toHaveURL(/\/files\/view\/\?path=src%2Ffeature\.ts/);
@@ -99,7 +100,46 @@ test.describe('diff 中心のファイル閲覧', () => {
 
     await expect(page).toHaveURL(/\/files\/view\/\?path=README\.md/);
     await expect(page.getByTestId('file-content-panel')).toContainText('# README');
-    await expect(page.getByTestId('file-diff-panel')).toContainText('差分はありません。');
+    await expect(page.locator('[data-testid="file-diff-panel"]')).toHaveCount(0);
+  });
+
+  test('除外ファイルは本文だけを表示し、新規 diff のようには見せない', async ({ page }) => {
+    await bootstrapChatState(page);
+    await installApiMocks(page);
+
+    await page.route('**/api/repos/file-view**', async (route) => {
+      const url = new URL(route.request().url());
+      const filePath = String(url.searchParams.get('path') || '');
+      if (filePath !== 'dist/app.js') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          repoFullName: 'owner/repo',
+          repoPath: '/tmp/owner__repo',
+          path: 'dist/app.js',
+          hasDiff: false,
+          changeKind: 'ignored',
+          isBinary: false,
+          isDeleted: false,
+          additions: 0,
+          deletions: 0,
+          content: 'console.log("ignored");\n',
+          diff: ''
+        })
+      });
+    });
+
+    await page.goto('/files/view/?path=dist%2Fapp.js');
+
+    await expect(page.getByTestId('file-view-path')).toContainText('dist/app.js');
+    await expect(page.getByTestId('file-content-panel')).toContainText('console.log("ignored");');
+    await expect(page.getByTestId('file-content-panel').locator('.fx-file-line.is-added')).toHaveCount(0);
+    await expect(page.getByTestId('file-content-panel').locator('.fx-file-line.is-removed')).toHaveCount(0);
+    await expect(page.getByText('除外')).toBeVisible();
   });
 
   test('チャット返答のローカルファイルリンクは diff 詳細へ飛び、外部リンクは新規タブで開く', async ({ page }) => {

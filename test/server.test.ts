@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { OutputItem } from '../shared/types';
@@ -10,6 +13,7 @@ const {
   repoFolderFromFullName,
   repoPathFromFullName,
   parseGitStatusOutput,
+  isIgnoredRepoPath,
   resolveRepoTrackedPath,
   parseStatusPath,
   diffKindFromStatusCode,
@@ -136,6 +140,20 @@ test('resolveRepoTrackedPath は repo 配下の相対パスを解決する', () 
 test('resolveRepoTrackedPath は repo 外パスを拒否する', () => {
   assert.throws(() => resolveRepoTrackedPath('/tmp/example-repo', '../secret.txt'), /path_outside_repo/);
   assert.throws(() => resolveRepoTrackedPath('/tmp/example-repo', '/tmp/example-repo'), /path_outside_repo/);
+});
+
+test('isIgnoredRepoPath は ignore ディレクトリ配下のファイルも判定できる', () => {
+  const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), 'fixer-ignore-test-'));
+  const init = spawnSync('git', ['init'], { cwd: repoPath, encoding: 'utf8' });
+  assert.equal(init.status, 0, init.stderr || init.stdout);
+  fs.writeFileSync(path.join(repoPath, '.gitignore'), '/public/\n');
+  fs.mkdirSync(path.join(repoPath, 'public'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, 'public', 'index.html'), '<html></html>\n');
+
+  assert.equal(isIgnoredRepoPath(repoPath, 'public/index.html'), true);
+  assert.equal(isIgnoredRepoPath(repoPath, 'src/app.ts'), false);
+
+  fs.rmSync(repoPath, { recursive: true, force: true });
 });
 
 test('parseStatusPath は rename 行を移動先パスで返す', () => {

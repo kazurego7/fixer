@@ -44,7 +44,7 @@ function buildDefaultFileList(repo = DEFAULT_REPO) {
         deletions: 0
       },
       {
-        path: 'dist/',
+        path: 'dist/app.js',
         hasDiff: false,
         changeKind: 'ignored',
         isBinary: false,
@@ -52,6 +52,112 @@ function buildDefaultFileList(repo = DEFAULT_REPO) {
         deletions: 0
       }
     ]
+  };
+}
+
+function buildDefaultFileTree(repo = DEFAULT_REPO, parentPath = '', includeUnchanged = false) {
+  const repoPath = `/tmp/${repo.replace('/', '__')}`;
+  if (!parentPath) {
+    return {
+      repoFullName: repo,
+      repoPath,
+      parentPath: null,
+      items: includeUnchanged
+        ? [
+            {
+              name: 'src',
+              path: 'src',
+              type: 'directory',
+              hasDiff: true,
+              changeKind: 'modified',
+              isBinary: false,
+              additions: 1,
+              deletions: 1,
+              hasChildren: true
+            },
+            {
+              name: 'README.md',
+              path: 'README.md',
+              type: 'file',
+              hasDiff: false,
+              changeKind: 'unchanged',
+              isBinary: false,
+              additions: 0,
+              deletions: 0,
+              hasChildren: false
+            },
+            {
+              name: 'dist',
+              path: 'dist',
+              type: 'directory',
+              hasDiff: false,
+              changeKind: 'ignored',
+              isBinary: false,
+              additions: 0,
+              deletions: 0,
+              hasChildren: true
+            }
+          ]
+        : [
+            {
+              name: 'src',
+              path: 'src',
+              type: 'directory',
+              hasDiff: true,
+              changeKind: 'modified',
+              isBinary: false,
+              additions: 1,
+              deletions: 1,
+              hasChildren: true
+            }
+          ]
+    };
+  }
+  if (parentPath === 'src') {
+    return {
+      repoFullName: repo,
+      repoPath,
+      parentPath: 'src',
+      items: [
+        {
+          name: 'app.ts',
+          path: 'src/app.ts',
+          type: 'file',
+          hasDiff: true,
+          changeKind: 'modified',
+          isBinary: false,
+          additions: 1,
+          deletions: 1,
+          hasChildren: false
+        }
+      ]
+    };
+  }
+  if (parentPath === 'dist' && includeUnchanged) {
+    return {
+      repoFullName: repo,
+      repoPath,
+      parentPath: 'dist',
+      items: [
+        {
+          name: 'app.js',
+          path: 'dist/app.js',
+          type: 'file',
+          hasDiff: false,
+          changeKind: 'ignored',
+          isBinary: false,
+          additions: 0,
+          deletions: 0,
+          hasChildren: false
+        }
+      ]
+    };
+  }
+  return {
+    repoFullName: repo,
+    repoPath,
+    parentPath: parentPath || null,
+    items: []
   };
 }
 
@@ -183,6 +289,17 @@ async function installApiMocks(page: Page, options: InstallApiMocksOptions = {})
     });
   });
 
+  await page.route('**/api/repos/file-tree**', async (route) => {
+    const url = new URL(route.request().url());
+    const includeUnchanged = url.searchParams.get('includeUnchanged') === '1';
+    const parentPath = String(url.searchParams.get('path') || '');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(buildDefaultFileTree(repo, parentPath, includeUnchanged))
+    });
+  });
+
   await page.route('**/api/repos/file-view**', async (route) => {
     const url = new URL(route.request().url());
     const filePath = String(url.searchParams.get('path') || 'src/app.ts');
@@ -282,6 +399,7 @@ export {
   DEFAULT_THREAD_ID,
   buildImageFile,
   buildDefaultFileList,
+  buildDefaultFileTree,
   buildDefaultFileView,
   bootstrapChatState,
   installApiMocks

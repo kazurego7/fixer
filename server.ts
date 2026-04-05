@@ -25,6 +25,8 @@ import type {
   RepoFileChangeKind,
   RepoFileListItem,
   RepoFileListResponse,
+  RepoFileTreeItem,
+  RepoFileTreeResponse,
   RepoFileViewResponse,
   RepoSummary,
   RequestId,
@@ -1898,12 +1900,36 @@ function collectTrackedFiles(repoPath: string): string[] {
     .filter(Boolean);
 }
 
-function collectIgnoredPaths(repoPath: string): string[] {
-  const result = runGitForRepo(repoPath, ['ls-files', '--others', '-i', '--exclude-standard', '--directory']);
+function collectIgnoredPaths(repoPath: string, parentPath: string | null = null): string[] {
+  const args = ['ls-files', '--others', '-i', '--exclude-standard'];
+  if (!parentPath) {
+    args.push('--directory');
+  } else {
+    args.push('--', parentPath);
+  }
+  const result = runGitForRepo(repoPath, args);
   return String(result.stdout || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+function isIgnoredRepoPath(repoPath: string, relativePath: string): boolean {
+  const target = String(relativePath || '').trim();
+  if (!target) return false;
+  const result = runGitForRepo(repoPath, ['check-ignore', '-q', '--', target], { allowExitCodes: [1] });
+  return Number(result.status ?? 1) === 0;
+}
+
+function normalizeRepoTreeParentPath(repoPath: string, rawPath: string | null | undefined): string | null {
+  const trimmed = String(rawPath || '').trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!normalized) return null;
+  const resolved = path.resolve(repoPath, normalized);
+  const repoRoot = path.resolve(repoPath);
+  if (resolved !== repoRoot && !resolved.startsWith(repoRoot + path.sep)) throw new Error('path_outside_repo');
+  return normalized;
 }
 
 function parseNumStatOutput(output: string, targetPath = ''): { additions: number; deletions: number } {
@@ -1962,9 +1988,13 @@ function getChangePriority(kind: RepoFileChangeKind): number {
 function collectDiffOutput(
   repoPath: string,
   relativePath: string,
-  trackedFiles: Set<string>
+  trackedFiles: Set<string>,
+  changeKind: RepoFileChangeKind = 'unchanged'
 ): { diff: string; isDeleted: boolean; additions: number; deletions: number } {
   const sections: string[] = [];
+  if (changeKind === 'ignored') {
+    return { diff: '', isDeleted: false, additions: 0, deletions: 0 };
+  }
   const unstaged = String(runGitForRepo(repoPath, ['diff', '--', relativePath]).stdout || '').trim();
   if (unstaged) sections.push(unstaged);
   const staged = String(runGitForRepo(repoPath, ['diff', '--cached', '--', relativePath]).stdout || '').trim();
@@ -2065,15 +2095,163 @@ function listRepoFiles(repoFullName: string, includeUnchanged: boolean): RepoFil
   };
 }
 
+function listRepoTree(repoFullName: string, includeUnchanged: boolean, rawParentPath: string | null | undefined): RepoFileTreeResponse {
+  const repoPath = repoPathFromFullName(repoFullName);
+  if (!fs.existsSync(path.join(repoPath, '.git'))) throw new Error('repo_not_cloned');
+  const parentPath = normalizeRepoTreeParentPath(repoPath, rawParentPath);
+  const statusMap = collectRepoFileStatus(repoPath);
+  const trackedFiles = collectTrackedFiles(repoPath);
+  const trackedFileSet = new Set(trackedFiles);
+  const ignoredPaths = includeUnchanged ? collectIgnoredPaths(repoPath, parentPath) : [];
+  const baseItems: RepoFileListItem[] = [];
+
+  for (const trackedPath of trackedFiles) {
+    const changeKind = statusMap.get(trackedPath) || 'unchanged';
+    const hasDiff = changeKind !== 'unchanged';
+    if (!hasDiff && !includeUnchanged) continue;
+    const stats = hasDiff ? collectDiffStats(repoPath, trackedPath, trackedFileSet) : { additions: 0, deletions: 0 };
+    baseItems.push({
+      path: trackedPath,
+      hasDiff,
+      changeKind,
+      isBinary: false,
+      additions: stats.additions,
+      deletions: stats.deletions
+    });
+  }
+
+  for (const [changedPath, changeKind] of statusMap.entries()) {
+    const stats = collectDiffStats(repoPath, changedPath, trackedFileSet);
+    baseItems.push({
+      path: changedPath,
+      hasDiff: true,
+      changeKind,
+      isBinary: false,
+      additions: stats.additions,
+      deletions: stats.deletions
+    });
+  }
+
+  if (includeUnchanged) {
+    for (const ignoredPath of ignoredPaths) {
+      baseItems.push({
+        path: ignoredPath,
+        hasDiff: false,
+        changeKind: 'ignored',
+        isBinary: false,
+        additions: 0,
+        deletions: 0
+      });
+    }
+  }
+
+  const itemsMap = new Map<string, RepoFileListItem>();
+  for (const item of baseItems) {
+    const existing = itemsMap.get(item.path);
+    if (!existing) {
+      itemsMap.set(item.path, item);
+      continue;
+    }
+    if (item.hasDiff && !existing.hasDiff) {
+      itemsMap.set(item.path, item);
+      continue;
+    }
+    if (getChangePriority(item.changeKind) > getChangePriority(existing.changeKind)) {
+      itemsMap.set(item.path, item);
+    }
+  }
+
+  const childMap = new Map<string, RepoFileTreeItem>();
+  const parentPrefix = parentPath ? `${parentPath}/` : '';
+
+  for (const item of itemsMap.values()) {
+    const normalizedPath = item.path.endsWith('/') ? item.path.replace(/\/+$/, '') : item.path;
+    if (!normalizedPath) continue;
+    let remainder = normalizedPath;
+    if (parentPath) {
+      if (normalizedPath === parentPath) continue;
+      if (!normalizedPath.startsWith(parentPrefix)) continue;
+      remainder = normalizedPath.slice(parentPrefix.length);
+    }
+    const parts = remainder.split('/').filter(Boolean);
+    if (parts.length === 0) continue;
+    const childName = parts[0];
+    const childPath = parentPath ? `${parentPath}/${childName}` : childName;
+    const isDirectFile = parts.length === 1 && !item.path.endsWith('/');
+    const existing = childMap.get(childPath);
+
+    if (isDirectFile) {
+      if (!existing || existing.type === 'directory') {
+        childMap.set(childPath, {
+          name: childName,
+          path: childPath,
+          type: 'file',
+          hasDiff: item.hasDiff,
+          changeKind: item.changeKind,
+          isBinary: item.isBinary,
+          additions: item.additions,
+          deletions: item.deletions,
+          hasChildren: false
+        });
+      } else {
+        existing.hasDiff = existing.hasDiff || item.hasDiff;
+        if (getChangePriority(item.changeKind) > getChangePriority(existing.changeKind)) {
+          existing.changeKind = item.changeKind;
+        }
+        existing.additions += item.additions;
+        existing.deletions += item.deletions;
+      }
+      continue;
+    }
+
+    if (!existing) {
+      childMap.set(childPath, {
+        name: childName,
+        path: childPath,
+        type: 'directory',
+        hasDiff: item.hasDiff,
+        changeKind: item.changeKind,
+        isBinary: false,
+        additions: item.additions,
+        deletions: item.deletions,
+        hasChildren: true
+      });
+      continue;
+    }
+    existing.hasDiff = existing.hasDiff || item.hasDiff;
+    if (getChangePriority(item.changeKind) > getChangePriority(existing.changeKind)) {
+      existing.changeKind = item.changeKind;
+    }
+    existing.additions += item.additions;
+    existing.deletions += item.deletions;
+    existing.hasChildren = true;
+  }
+
+  const items = Array.from(childMap.values()).sort((a, b) => {
+    if (a.hasDiff !== b.hasDiff) return a.hasDiff ? -1 : 1;
+    const priorityDiff = getChangePriority(b.changeKind) - getChangePriority(a.changeKind);
+    if (priorityDiff !== 0) return priorityDiff;
+    if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  return {
+    repoFullName,
+    repoPath,
+    parentPath,
+    items
+  };
+}
+
 function buildRepoFileView(repoFullName: string, rawPath: string): RepoFileViewResponse {
   const repoPath = repoPathFromFullName(repoFullName);
   if (!fs.existsSync(path.join(repoPath, '.git'))) throw new Error('repo_not_cloned');
   const resolved = resolveRepoTrackedPath(repoPath, rawPath);
   const statusMap = collectRepoFileStatus(repoPath);
   const trackedFiles = new Set(collectTrackedFiles(repoPath));
-  const ignoredPaths = new Set(collectIgnoredPaths(repoPath));
-  const changeKind = statusMap.get(resolved.relativePath) || (ignoredPaths.has(resolved.relativePath) ? 'ignored' : 'unchanged');
-  const { diff, isDeleted, additions, deletions } = collectDiffOutput(repoPath, resolved.relativePath, trackedFiles);
+  const ignored = isIgnoredRepoPath(repoPath, resolved.relativePath);
+  const changeKind = statusMap.get(resolved.relativePath) || (ignored ? 'ignored' : 'unchanged');
+  const { diff, isDeleted, additions, deletions } = collectDiffOutput(repoPath, resolved.relativePath, trackedFiles, changeKind);
   const contentState = readRepoFileContent(repoPath, resolved.relativePath);
   return {
     repoFullName,
@@ -2458,6 +2636,35 @@ function buildServer(): FastifyInstance {
       pushRuntimeLog({ level: 'error', event: 'repo_files_failed', repoFullName, message });
       reply.code(500);
       return { error: 'repo_files_failed', detail: message };
+    }
+  });
+
+  app.get('/api/repos/file-tree', async (request, reply) => {
+    const query = asObject(request.query) ?? {};
+    const repoFullName = asString(query.repoFullName);
+    if (!repoFullName) {
+      reply.code(400);
+      return { error: 'repoFullName is required' };
+    }
+    const includeUnchangedRaw = String(query.includeUnchanged || '').trim().toLowerCase();
+    const includeUnchanged =
+      includeUnchangedRaw === '1' || includeUnchangedRaw === 'true' || includeUnchangedRaw === 'yes';
+    const rawPath = asString(query.path);
+    try {
+      return listRepoTree(repoFullName, includeUnchanged, rawPath);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message === 'repo_not_cloned') {
+        reply.code(404);
+        return { error: message };
+      }
+      if (message === 'path_outside_repo') {
+        reply.code(400);
+        return { error: message };
+      }
+      pushRuntimeLog({ level: 'error', event: 'repo_file_tree_failed', repoFullName, path: rawPath, message });
+      reply.code(500);
+      return { error: 'repo_file_tree_failed', detail: message };
     }
   });
 
@@ -3069,6 +3276,7 @@ export {
   readGitRepoStatus,
   listRepoFiles,
   buildRepoFileView,
+  isIgnoredRepoPath,
   normalizeCollaborationMode,
   parseV2TurnNotification,
   parseLegacyTurnNotification,
