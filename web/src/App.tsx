@@ -891,16 +891,17 @@ function FilesPage() {
           >
             ←
           </button>
-          <div className="fx-files-title">ファイル diff</div>
+          <div className="fx-files-title">ファイル一覧</div>
         </div>
         <div className="fx-files-toolbar">
-          <label className="fx-files-toggle" data-testid="files-include-unchanged-toggle">
+          <label className="fx-files-toggle" htmlFor="files-include-unchanged" data-testid="files-include-unchanged-toggle">
             <input
+              id="files-include-unchanged"
               type="checkbox"
               checked={fileListIncludeUnchanged}
               onChange={(e) => setFileListIncludeUnchanged(e.currentTarget.checked)}
             />
-            <span>diff なしも表示</span>
+            <span>変更差分なしも表示</span>
           </label>
           <div className="fx-files-toolbar-repo">{activeRepoFullName || 'リポジトリ未選択'}</div>
         </div>

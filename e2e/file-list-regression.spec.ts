@@ -22,6 +22,9 @@ test.describe('ファイル一覧の回帰', () => {
 
     await page.goto('/files/');
 
+    await expect(page.locator('.fx-files-title')).toHaveText('ファイル一覧');
+    await expect(page.getByTestId('files-include-unchanged-toggle')).toContainText('変更差分なしも表示');
+
     await expect(page.getByTestId('file-tree-src')).toHaveAttribute('open', '');
     await expect(page.getByTestId('files-list')).toContainText('app.ts');
     await expect
@@ -50,6 +53,9 @@ test.describe('ファイル一覧の回帰', () => {
     await expect
       .poll(() => requests.some((item) => item.path === 'dist' && item.includeUnchanged === true))
       .toBe(true);
+
+    await page.getByText('変更差分なしも表示').click();
+    await expect(page.locator('#files-include-unchanged')).not.toBeChecked();
   });
 
   test('未先読みフォルダでも展開時に読み込み中を表示しない', async ({ page }) => {

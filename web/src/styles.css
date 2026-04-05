@@ -483,10 +483,22 @@ body {
   color: #334155;
   font-size: 0.78rem;
   font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  padding: 0.08rem 0;
 }
 
 .fx-files-toggle input {
   margin: 0;
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.fx-files-toggle span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.1rem;
 }
 
 .fx-files-toolbar-repo {
@@ -1311,9 +1323,9 @@ body {
 }
 
 .fx-mode-btn.is-plan.is-active {
-  background: #dcfce7;
-  color: #166534;
-  border: 1px solid #86efac;
+  background: #4caf50;
+  color: #ffffff;
+  border: 1px solid #4caf50;
 }
 
 .fx-mode-btn.is-default.is-active {
