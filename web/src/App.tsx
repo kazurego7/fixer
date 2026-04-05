@@ -1455,14 +1455,14 @@ function ChatPage() {
                 strokeLinejoin="round"
               />
               <path
-                d="M12 16V11.5"
+                d="M8 19.5V14.5A1 1 0 0 1 9 13.5H15A1 1 0 0 1 16 14.5V19.5"
                 stroke="currentColor"
                 strokeWidth="1.7"
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
               <path
-                d="M9.75 13.75L12 11.5L14.25 13.75"
+                d="M10 16.5H14"
                 stroke="currentColor"
                 strokeWidth="1.7"
                 strokeLinecap="round"
