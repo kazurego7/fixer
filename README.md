@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="web/public/icons/icon-1000.png" alt="Fixer アイコン" width="128" height="128" />
+</p>
+
 # Fixer
 
 Fixer は、Codex用のモバイル向け Web アプリです。
