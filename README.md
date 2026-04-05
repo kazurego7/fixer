@@ -1,11 +1,6 @@
 # Fixer
 
-Fixer は、Codex用のモバイル向け Web UI です。
-
-> [!WARNING]
-> Fixer はデフォルトで Codex を `danger-full-access` で起動します。
-> `git commit`、`git push`、依存関係のインストールのような制約の少ない操作を優先する代わりに、Codex がローカル環境へ広い権限でアクセスします。
-> 信頼できるローカル環境でのみ使用してください。
+Fixer は、Codex用のモバイル向け Web アプリです。
 
 ## 背景と目的
 
@@ -51,6 +46,11 @@ flowchart LR
 PC 環境では Fixer、Codex App Server、Git リポジトリが動きます。スマートフォン環境からは Tailscale 経由で Fixer に HTTPS アクセスし、PC 側でローカル Codex を動かします。
 
 ## 使い方
+
+> [!WARNING]
+> Fixer はデフォルトで Codex を `danger-full-access` で起動します。
+> `git commit`、`git push`、依存関係のインストールのような制約の少ない操作を優先する代わりに、Codex がローカル環境へ広い権限でアクセスします。
+> 信頼できるローカル環境でのみ使用してください。
 
 ### 依存ツール
 
