@@ -62,7 +62,7 @@ const scenarios: GitVisualScenario[] = [
         hasChanges: true,
         actionRecommended: true,
         tone: 'warning',
-        summary: '変更あり: ステージ 1 / 未反映 2 / 未追跡 1'
+        summary: '変更あり: ステージ 1 / 未反映 2 / 新規追加 1'
       }
     },
     expectedText: '変更あり',

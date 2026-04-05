@@ -16,6 +16,7 @@ const {
   isIgnoredRepoPath,
   resolveRepoTrackedPath,
   listRepoTree,
+  listRepoFiles,
   parseStatusPath,
   diffKindFromStatusCode,
   normalizeCollaborationMode,
@@ -114,6 +115,7 @@ test('parseGitStatusOutput collects変更件数と ahead/behind を判定する'
   assert.equal(out.actionRecommended, true);
   assert.equal(out.tone, 'warning');
   assert.match(out.summary, /変更あり/);
+  assert.match(out.summary, /新規追加 1/);
 });
 
 test('parseGitStatusOutput marks conflict state as danger', () => {
@@ -201,6 +203,83 @@ test('listRepoTree はディレクトリごとの eagerSafe を直下子件数�
   assert.equal(large?.type, 'directory');
   assert.equal(small?.eagerSafe, true);
   assert.equal(large?.eagerSafe, false);
+
+  fs.rmSync(repoPath, { recursive: true, force: true });
+});
+
+test('listRepoFiles と listRepoTree は未追跡ディレクトリがあっても EISDIR で失敗しない', () => {
+  const fullName = 'test/untracked-dir';
+  const repoPath = repoPathFromFullName(fullName);
+  fs.rmSync(repoPath, { recursive: true, force: true });
+  fs.mkdirSync(repoPath, { recursive: true });
+
+  const init = spawnSync('git', ['init'], { cwd: repoPath, encoding: 'utf8' });
+  assert.equal(init.status, 0, init.stderr || init.stdout);
+
+  fs.writeFileSync(path.join(repoPath, 'README.md'), '# test\n');
+  const add = spawnSync('git', ['add', '.'], { cwd: repoPath, encoding: 'utf8' });
+  assert.equal(add.status, 0, add.stderr || add.stdout);
+  const commit = spawnSync('git', ['commit', '-m', 'テスト初期化'], {
+    cwd: repoPath,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Test User',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'Test User',
+      GIT_COMMITTER_EMAIL: 'test@example.com'
+    }
+  });
+  assert.equal(commit.status, 0, commit.stderr || commit.stdout);
+
+  fs.mkdirSync(path.join(repoPath, 'docs', 'images'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, 'docs', 'images', 'repos.png'), 'png\n');
+
+  const files = listRepoFiles(fullName, false);
+  assert.ok(files.items.some((item) => item.path === 'docs/images/repos.png'));
+
+  const tree = listRepoTree(fullName, false, null);
+  assert.ok(tree.items.some((item) => item.path === 'docs' && item.type === 'directory'));
+
+  fs.rmSync(repoPath, { recursive: true, force: true });
+});
+
+test('listRepoTree は未追跡ディレクトリ内の新規追加ファイルまで辿れる', () => {
+  const fullName = 'test/untracked-nested-files';
+  const repoPath = repoPathFromFullName(fullName);
+  fs.rmSync(repoPath, { recursive: true, force: true });
+  fs.mkdirSync(repoPath, { recursive: true });
+
+  const init = spawnSync('git', ['init'], { cwd: repoPath, encoding: 'utf8' });
+  assert.equal(init.status, 0, init.stderr || init.stdout);
+
+  fs.writeFileSync(path.join(repoPath, 'README.md'), '# test\n');
+  const add = spawnSync('git', ['add', '.'], { cwd: repoPath, encoding: 'utf8' });
+  assert.equal(add.status, 0, add.stderr || add.stdout);
+  const commit = spawnSync('git', ['commit', '-m', 'テスト初期化'], {
+    cwd: repoPath,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Test User',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'Test User',
+      GIT_COMMITTER_EMAIL: 'test@example.com'
+    }
+  });
+  assert.equal(commit.status, 0, commit.stderr || commit.stdout);
+
+  fs.mkdirSync(path.join(repoPath, 'docs', 'images'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, 'docs', 'images', 'repos.png'), 'png\n');
+
+  const root = listRepoTree(fullName, false, null);
+  assert.ok(root.items.some((item) => item.path === 'docs' && item.type === 'directory'));
+
+  const docs = listRepoTree(fullName, false, 'docs');
+  assert.ok(docs.items.some((item) => item.path === 'docs/images' && item.type === 'directory'));
+
+  const images = listRepoTree(fullName, false, 'docs/images');
+  assert.ok(images.items.some((item) => item.path === 'docs/images/repos.png' && item.type === 'file'));
 
   fs.rmSync(repoPath, { recursive: true, force: true });
 });

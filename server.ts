@@ -1759,7 +1759,7 @@ function parseGitStatusOutput(repoFullName: string, repoPath: string, raw: strin
     const parts: string[] = [];
     if (stagedCount > 0) parts.push(`ステージ ${stagedCount}`);
     if (unstagedCount > 0) parts.push(`未反映 ${unstagedCount}`);
-    if (untrackedCount > 0) parts.push(`未追跡 ${untrackedCount}`);
+    if (untrackedCount > 0) parts.push(`新規追加 ${untrackedCount}`);
     summary = `変更あり: ${parts.join(' / ')}`;
     if (!upstream) summary += ' / upstream 未設定';
     else if (ahead > 0 || behind > 0) summary += ` / +${ahead} -${behind}`;
@@ -1882,7 +1882,7 @@ function parseStatusPath(line: string): { code: string; path: string } | null {
 }
 
 function collectRepoFileStatus(repoPath: string): Map<string, RepoFileChangeKind> {
-  const result = runGitForRepo(repoPath, ['status', '--porcelain']);
+  const result = runGitForRepo(repoPath, ['status', '--porcelain', '--untracked-files=all']);
   const map = new Map<string, RepoFileChangeKind>();
   for (const line of String(result.stdout || '').split(/\r?\n/)) {
     const parsed = parseStatusPath(line);
@@ -1959,7 +1959,7 @@ function collectDiffStats(repoPath: string, relativePath: string, trackedFiles: 
   let deletions = unstagedStats.deletions + stagedStats.deletions;
 
   const absolutePath = path.join(repoPath, relativePath);
-  if (!trackedFiles.has(relativePath) && fs.existsSync(absolutePath)) {
+  if (!trackedFiles.has(relativePath) && fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
     const content = fs.readFileSync(absolutePath, 'utf8');
     additions += content.split(/\r?\n/).length;
   }
