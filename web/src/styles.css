@@ -382,6 +382,19 @@ body {
   opacity: 0.8;
 }
 
+.fx-git-status-chevron {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: 0 0 auto;
+  opacity: 0.72;
+}
+
+.fx-git-status-chevron svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
 .fx-chat-settings-overlay {
   position: fixed;
   inset: 0;
