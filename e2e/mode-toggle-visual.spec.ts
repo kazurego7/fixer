@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { bootstrapChatState, installApiMocks, saveVisualScreenshot } from './helpers';
+import { E2E_MOBILE_VIEWPORT, bootstrapChatState, installApiMocks, saveVisualScreenshot } from './helpers';
 
 test('モード切替の見た目をスクリーンショットで確認できる', async ({ page }, testInfo) => {
   await bootstrapChatState(page);
   await installApiMocks(page);
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize(E2E_MOBILE_VIEWPORT);
 
   await page.goto('/chat/');
   await page.getByTestId('composer-textarea').click();

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { bootstrapChatState, installApiMocks, saveVisualScreenshot } from './helpers';
+import { E2E_MOBILE_VIEWPORT, bootstrapChatState, installApiMocks, saveVisualScreenshot } from './helpers';
 
 type GitVisualScenario = {
   name: string;
@@ -137,7 +137,7 @@ for (const scenario of scenarios) {
   test(`Git ステータスの見た目を確認できる: ${scenario.name}`, async ({ page }, testInfo) => {
     await bootstrapChatState(page);
     await installApiMocks(page);
-    await page.setViewportSize({ width: 390, height: 844 });
+    await page.setViewportSize(E2E_MOBILE_VIEWPORT);
 
     await page.route('**/api/repos/git-status**', async (route) => {
       await route.fulfill({

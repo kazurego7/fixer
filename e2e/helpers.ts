@@ -5,6 +5,7 @@ import type { Page, TestInfo } from '@playwright/test';
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p8dQAAAAASUVORK5CYII=';
 
+const E2E_MOBILE_VIEWPORT = { width: 375, height: 667 } as const;
 const DEFAULT_REPO = 'owner/repo';
 const DEFAULT_THREAD_ID = 'thread-e2e-1';
 
@@ -431,6 +432,7 @@ async function installApiMocks(page: Page, options: InstallApiMocksOptions = {})
 }
 
 export {
+  E2E_MOBILE_VIEWPORT,
   DEFAULT_REPO,
   DEFAULT_THREAD_ID,
   saveVisualScreenshot,

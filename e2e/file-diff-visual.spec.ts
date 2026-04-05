@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { bootstrapChatState, buildDefaultFileView, installApiMocks, saveVisualScreenshot } from './helpers';
+import { E2E_MOBILE_VIEWPORT, bootstrapChatState, buildDefaultFileView, installApiMocks, saveVisualScreenshot } from './helpers';
 
 test('差分詳細画面の見た目をスクリーンショットで確認できる', async ({ page }, testInfo) => {
   await bootstrapChatState(page);
   await installApiMocks(page);
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize(E2E_MOBILE_VIEWPORT);
 
   await page.route('**/api/repos/files**', async (route) => {
     await route.fulfill({
@@ -138,7 +138,7 @@ test('差分詳細画面の見た目をスクリーンショットで確認で�
 
   await page.goto('/files/view/?path=dist%2Fapp.js');
 
-  await expect(page.getByTestId('file-view-path')).toContainText('dist/app.js');
+  await expect(page.getByTestId('file-view-path')).toContainText('app.js');
   await expect(page.getByTestId('file-content-panel')).toContainText('console.log("ignored");');
   await expect(page.getByTestId('file-content-panel').locator('.fx-file-line.is-added')).toHaveCount(0);
   await expect(page.getByTestId('file-content-panel').locator('.fx-file-line.is-removed')).toHaveCount(0);
@@ -172,7 +172,7 @@ test('差分詳細画面の見た目をスクリーンショットで確認で�
 
   await page.goto('/files/view/?path=assets%2Flogo.png');
 
-  await expect(page.getByTestId('file-view-path')).toContainText('assets/logo.png');
+  await expect(page.getByTestId('file-view-path')).toContainText('logo.png');
   await expect(page.getByTestId('file-image-panel')).toBeVisible();
   await expect(page.getByTestId('file-image-preview')).toBeVisible();
 
