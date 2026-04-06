@@ -956,6 +956,7 @@ body {
 .fx-msg-user .fx-msg-bubble p,
 .fx-user-line {
   margin: 0;
+  white-space: pre-wrap;
 }
 
 .fx-user-attachments {
@@ -1657,7 +1658,7 @@ body {
 }
 
 .fx-composer textarea.is-expanded {
-  min-height: 6.5rem;
+  min-height: 8.75rem;
 }
 
 .fx-composer textarea:focus {

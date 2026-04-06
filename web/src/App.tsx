@@ -1104,6 +1104,7 @@ function expandAssistantItems(items: OutputItem[]): OutputItem[] {
 }
 
 function ChatPage() {
+  const EXPANDED_COMPOSER_MAX_HEIGHT = 140;
   const {
     connected,
     busy,
@@ -1250,11 +1251,16 @@ function ChatPage() {
     const expanded = typeof options.expanded === 'boolean' ? options.expanded : isComposerExpanded;
     const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
     const minHeight = expanded ? 104 : 36;
-    const maxHeight = Math.max(expanded ? 180 : 120, Math.floor(viewportHeight * (expanded ? 0.38 : 0.18)));
+    const composerStyles = window.getComputedStyle(target);
+    const borderTop = Number.parseFloat(composerStyles.borderTopWidth || '0') || 0;
+    const borderBottom = Number.parseFloat(composerStyles.borderBottomWidth || '0') || 0;
+    const borderHeight = borderTop + borderBottom;
+    const maxHeight = expanded ? EXPANDED_COMPOSER_MAX_HEIGHT : Math.max(120, Math.floor(viewportHeight * 0.18));
     target.style.height = 'auto';
-    const nextHeight = Math.max(target.scrollHeight, minHeight);
-    target.style.height = `${Math.min(nextHeight, maxHeight)}px`;
-    target.style.overflowY = expanded && target.scrollHeight > maxHeight ? 'auto' : 'hidden';
+    const nextHeight = Math.max(target.scrollHeight + borderHeight, minHeight);
+    const appliedHeight = Math.min(nextHeight, maxHeight);
+    target.style.height = `${appliedHeight}px`;
+    target.style.overflowY = target.scrollHeight + borderHeight > appliedHeight ? 'auto' : 'hidden';
   }
 
   function syncComposerMetrics(): void {
