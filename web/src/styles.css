@@ -1267,8 +1267,6 @@ body {
 
 .fx-stream-live {
   margin: 0;
-  white-space: pre-wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 0.9rem;
   line-height: 1.5;
   color: #1f2937;

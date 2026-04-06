@@ -194,6 +194,77 @@ test('ライブ出力中でも追加入力を送れる', async ({ page }) => {
   await expect(page.locator('.fx-msg-assistant .fx-msg-bubble')).toContainText('追加入力を受け付けました');
 });
 
+test('ライブ出力途中でもマークダウンを整形表示する', async ({ page }) => {
+  await bootstrapChatState(page);
+  await installApiMocks(page);
+  await page.addInitScript(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.includes('/api/turns/stream')) return originalFetch(input, init);
+
+      const encoder = new TextEncoder();
+      const chunks = [
+        JSON.stringify({ type: 'started', turnId: 'turn-live-markdown-1' }) + '\n',
+        JSON.stringify({
+          type: 'turn_state',
+          seq: 1,
+          turnId: 'turn-live-markdown-1',
+          liveReasoningText: '',
+          items: [
+            {
+              id: 'turn-live-markdown-1:user:0',
+              role: 'user',
+              type: 'plain',
+              text: '途中表示確認'
+            },
+            {
+              id: 'turn-live-markdown-1:assistant:0',
+              role: 'assistant',
+              type: 'markdown',
+              text: '**進行中**\n\n- 項目A\n- 項目B',
+              answer: '**進行中**\n\n- 項目A\n- 項目B',
+              plan: ''
+            }
+          ]
+        }) + '\n',
+        JSON.stringify({ type: 'done' }) + '\n'
+      ];
+
+      let index = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const pushNext = () => {
+            if (index >= chunks.length) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(encoder.encode(chunks[index]));
+            index += 1;
+            setTimeout(pushNext, index === 1 ? 40 : index === 2 ? 500 : 40);
+          };
+          pushNext();
+        }
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'application/x-ndjson; charset=utf-8' }
+      });
+    };
+  });
+
+  await page.goto('/chat/');
+  await page.getByTestId('composer-textarea').fill('途中表示確認');
+  await page.getByTestId('send-button').click();
+
+  await expect(page.getByTestId('stream-loading-indicator')).toBeVisible();
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble strong')).toHaveText('進行中');
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble ul li')).toHaveCount(2);
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble')).toContainText('項目A');
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble')).toContainText('項目B');
+});
+
 test('ライブ出力が増え続ける間は末尾へ自動スクロールする', async ({ page }) => {
   await bootstrapChatState(page);
   await installApiMocks(page);

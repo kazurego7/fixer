@@ -1391,7 +1391,12 @@ function renderAssistant(item: AssistantOutputItem, pending = false) {
   if (statusText === '・・・') return null;
   if (!answer && statusText) return <div className="fx-stream-status">{statusText}</div>;
   if (pending && answer) {
-    return <pre className="fx-stream-live">{answer}</pre>;
+    return (
+      <div
+        className="fx-assistant-rich fx-stream-live"
+        dangerouslySetInnerHTML={{ __html: String(marked.parse(answer)) }}
+      />
+    );
   }
   return <div dangerouslySetInnerHTML={{ __html: String(marked.parse(answer)) }} />;
 }
