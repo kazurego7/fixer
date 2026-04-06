@@ -3296,10 +3296,10 @@ export default function AppRoot() {
       }
 
       await consumeTurnStreamResponse(res, threadId, controller.signal, { markStreaming: true });
-      restoreOutputForThread(threadId).catch(() => {});
+      restoreOutputForThread(threadId, activeRepoRef.current, { useCache: false }).catch(() => {});
     } catch (e: unknown) {
       if (!(e instanceof DOMException && e.name === 'AbortError')) {
-        restoreOutputForThread(threadId).catch(() => {});
+        restoreOutputForThread(threadId, activeRepoRef.current, { useCache: false }).catch(() => {});
       }
     } finally {
       if (resumeStreamAbortRef.current === controller) {
@@ -3486,12 +3486,14 @@ export default function AppRoot() {
   async function restoreOutputForThread(
     threadId: string,
     repoFullName: string | null = activeRepoRef.current,
-    options: { resumeLive?: boolean } = {}
+    options: { resumeLive?: boolean; useCache?: boolean } = {}
   ): Promise<void> {
     if (!threadId) return;
     activeThreadRef.current = threadId;
-    const cached = loadThreadMessages(threadId);
-    setOutputItems(cached);
+    if (options.useCache !== false) {
+      const cached = loadThreadMessages(threadId);
+      setOutputItems(cached);
+    }
     fetchPendingUserInputRequests(threadId).catch(() => {
       // 取得失敗時は既存表示を維持する。
     });
@@ -3659,7 +3661,7 @@ export default function AppRoot() {
       }
 
       await consumeTurnStreamResponse(res, threadIdToUse, controller.signal, { markStreaming: true });
-      restoreOutputForThread(threadIdToUse).catch(() => {});
+      restoreOutputForThread(threadIdToUse, repoFullName, { useCache: false }).catch(() => {});
     } catch (e: unknown) {
       if (e instanceof DOMException && e.name === 'AbortError') {
         if (!backgroundInterruptedTurnRef.current && !silentStreamAbortRef.current) {
