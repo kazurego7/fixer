@@ -48,6 +48,7 @@ const CLONE_TIMEOUT_MS = 180000;
 const LAST_THREAD_ID_KEY = 'fx:lastThreadId';
 const LAST_REPO_FULLNAME_KEY = 'fx:lastRepoFullName';
 const THREAD_BY_REPO_KEY = 'fx:threadByRepo';
+const THREAD_SCROLL_TOP_BY_THREAD_KEY = 'fx:threadScrollTopByThread';
 const COLLABORATION_MODE_BY_REPO_KEY = 'fx:collaborationModeByRepo';
 const MODEL_BY_REPO_KEY = 'fx:modelByRepo';
 const PUSH_ENDPOINT_KEY = 'fx:pushEndpoint';
@@ -2277,6 +2278,10 @@ export default function AppRoot() {
   const chatEntryPathRef = useRef(getCurrentPath());
   const lastChatEntryAlignKeyRef = useRef('');
   const chatEntryScrollTopRef = useRef(0);
+  const chatScrollTopByThreadRef = useRef<Record<string, number>>(
+    typeof window === 'undefined' ? {} : loadJsonFromStorage<Record<string, number>>(THREAD_SCROLL_TOP_BY_THREAD_KEY, {})
+  );
+  const chatScrollPersistTimerRef = useRef<number | null>(null);
   const activeThreadRef = useRef<string | null>(activeThreadId);
   const activeTurnIdRef = useRef('');
   const compactionStatusTimerRef = useRef<number | null>(null);
@@ -3585,9 +3590,39 @@ export default function AppRoot() {
   }
 
   function navigate(path: string, replace = false): void {
+    rememberCurrentChatScrollPosition();
     const next = pushPath(path, replace);
     setCurrentPath(normalizePath(next));
     setCurrentSearch(extractSearch(next));
+  }
+
+  function schedulePersistChatScrollPositions(): void {
+    if (typeof window === 'undefined') return;
+    if (chatScrollPersistTimerRef.current !== null) window.clearTimeout(chatScrollPersistTimerRef.current);
+    chatScrollPersistTimerRef.current = window.setTimeout(() => {
+      window.localStorage.setItem(THREAD_SCROLL_TOP_BY_THREAD_KEY, JSON.stringify(chatScrollTopByThreadRef.current));
+      chatScrollPersistTimerRef.current = null;
+    }, 120);
+  }
+
+  function rememberChatScrollPosition(threadId: string | null, scrollTop: number | null | undefined): void {
+    const normalizedThreadId = String(threadId || '').trim();
+    const normalizedScrollTop = Number(scrollTop);
+    if (!normalizedThreadId || !Number.isFinite(normalizedScrollTop) || normalizedScrollTop < 0) return;
+    const nextScrollTop = Math.max(0, Math.floor(normalizedScrollTop));
+    if (chatScrollTopByThreadRef.current[normalizedThreadId] === nextScrollTop) return;
+    chatScrollTopByThreadRef.current = {
+      ...chatScrollTopByThreadRef.current,
+      [normalizedThreadId]: nextScrollTop
+    };
+    schedulePersistChatScrollPositions();
+  }
+
+  function rememberCurrentChatScrollPosition(): void {
+    if (currentPath !== '/chat/') return;
+    const container = outputRef.current;
+    if (!(container instanceof HTMLElement)) return;
+    rememberChatScrollPosition(activeThreadRef.current, container.scrollTop);
   }
 
   function scrollLastUserMessageToTopOrKeepPosition(): boolean {
@@ -3674,6 +3709,7 @@ export default function AppRoot() {
   useEffect(() => {
     const prevPath = chatEntryPathRef.current;
     chatEntryPathRef.current = currentPath;
+    if (prevPath === '/chat/' && currentPath !== '/chat/') rememberCurrentChatScrollPosition();
     if (currentPath !== '/chat/' || prevPath === '/chat/') return;
     lastChatEntryAlignKeyRef.current = '';
     const node = outputRef.current;
@@ -3730,6 +3766,10 @@ export default function AppRoot() {
   }, [chatVisible, activeRepoFullName, currentPath, currentSearch]);
 
   useEffect(() => {
+    const previousThreadId = activeThreadRef.current;
+    if (previousThreadId && previousThreadId !== activeThreadId) {
+      rememberChatScrollPosition(previousThreadId, chatEntryScrollTopRef.current);
+    }
     activeThreadRef.current = activeThreadId;
     setActiveTurnId('');
     activeTurnIdRef.current = '';
@@ -3745,6 +3785,12 @@ export default function AppRoot() {
   useEffect(() => {
     return () => {
       clearCompactionStatusTimer();
+      rememberCurrentChatScrollPosition();
+      if (chatScrollPersistTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(chatScrollPersistTimerRef.current);
+        chatScrollPersistTimerRef.current = null;
+        window.localStorage.setItem(THREAD_SCROLL_TOP_BY_THREAD_KEY, JSON.stringify(chatScrollTopByThreadRef.current));
+      }
       if (resumeStreamAbortRef.current) resumeStreamAbortRef.current.abort();
     };
   }, []);
@@ -3834,11 +3880,26 @@ export default function AppRoot() {
   }, [outputItems, streaming]);
 
   useEffect(() => {
-    if (currentPath !== '/chat/' || !chatVisible) return;
-    if (pendingChatScrollRestoreRef.current === null) return;
+    if (currentPath !== '/chat/' || !chatVisible || !activeThreadId) return;
     const container = outputRef.current;
     if (!(container instanceof HTMLElement)) return;
-    container.scrollTop = pendingChatScrollRestoreRef.current;
+    const onScroll = () => {
+      chatEntryScrollTopRef.current = container.scrollTop;
+      rememberChatScrollPosition(activeThreadId, container.scrollTop);
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => container.removeEventListener('scroll', onScroll);
+  }, [currentPath, chatVisible, activeThreadId, outputItems.length]);
+
+  useEffect(() => {
+    if (currentPath !== '/chat/' || !chatVisible) return;
+    const savedScrollTop = activeThreadId ? chatScrollTopByThreadRef.current[String(activeThreadId || '')] : undefined;
+    const preferredScrollTop = pendingChatScrollRestoreRef.current ?? (Number.isFinite(savedScrollTop) ? savedScrollTop : null);
+    if (preferredScrollTop === null) return;
+    const container = outputRef.current;
+    if (!(container instanceof HTMLElement)) return;
+    container.scrollTop = preferredScrollTop;
+    chatEntryScrollTopRef.current = preferredScrollTop;
     pendingChatScrollRestoreRef.current = null;
     lastChatEntryAlignKeyRef.current = `${String(activeThreadId || '')}:${currentPath}`;
   }, [currentPath, chatVisible, outputItems, activeThreadId]);
