@@ -3,6 +3,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -127,7 +128,7 @@ interface AppContextValue {
   selectedFileView: RepoFileViewResponse | null;
   selectedFileViewLoading: boolean;
   selectedFileViewError: string;
-  openRepoFile: (filePath: string, line?: number | null, replace?: boolean) => Promise<void>;
+  openRepoFile: (filePath: string, line?: number | null, replace?: boolean, jumpToFirstDiff?: boolean) => Promise<void>;
   returnFromFileView: () => void;
   activeCollaborationMode: CollaborationMode;
   setActiveCollaborationMode: (mode: CollaborationMode) => void;
@@ -292,21 +293,23 @@ function extractSearch(rawPath: string): string {
   return queryIndex >= 0 ? String(rawPath || '').slice(queryIndex) : '';
 }
 
-function getCurrentFileParams(): { path: string; line: number | null } {
-  if (typeof window === 'undefined') return { path: '', line: null };
+function getCurrentFileParams(): { path: string; line: number | null; jumpToFirstDiff: boolean } {
+  if (typeof window === 'undefined') return { path: '', line: null, jumpToFirstDiff: false };
   const params = new URLSearchParams(window.location.search || '');
   const filePath = String(params.get('path') || '').trim();
   const lineRaw = Number(params.get('line') || '');
   return {
     path: filePath,
-    line: Number.isInteger(lineRaw) && lineRaw > 0 ? lineRaw : null
+    line: Number.isInteger(lineRaw) && lineRaw > 0 ? lineRaw : null,
+    jumpToFirstDiff: params.get('jump') === 'first-diff'
   };
 }
 
-function buildFileViewPath(filePath: string, line: number | null = null): string {
+function buildFileViewPath(filePath: string, line: number | null = null, jumpToFirstDiff = false): string {
   const params = new URLSearchParams();
   params.set('path', filePath);
   if (line && line > 0) params.set('line', String(line));
+  if (jumpToFirstDiff && !(line && line > 0)) params.set('jump', 'first-diff');
   return `/files/view/?${params.toString()}`;
 }
 
@@ -790,7 +793,7 @@ function formatNumstatParts(additions: number, deletions: number): Array<{ label
 
 function renderRepoFileTree(
   nodes: RepoFileTreeNode[],
-  openRepoFile: (filePath: string, line?: number | null, replace?: boolean) => Promise<void>,
+  openRepoFile: (filePath: string, line?: number | null, replace?: boolean, jumpToFirstDiff?: boolean) => Promise<void>,
   depth = 0
 ): JSX.Element[] {
   return nodes.map((node) => {
@@ -849,6 +852,15 @@ function renderRepoFileTree(
 }
 
 type FileRenderLineKind = 'context' | 'added' | 'removed';
+
+const FILE_VIEW_VIRTUAL_LINE_HEIGHT_PX = 26;
+const FILE_VIEW_VIRTUAL_OVERSCAN = 24;
+const FILE_VIEW_VIRTUALIZE_THRESHOLD = 300;
+const FILE_VIEW_VIRTUAL_CHAR_WIDTH_PX = 7.4;
+const FILE_VIEW_VIRTUAL_PLAIN_GUTTER_PX = 54;
+const FILE_VIEW_VIRTUAL_DIFF_GUTTER_PX = 82;
+const FILE_VIEW_VIRTUAL_CONTENT_PADDING_PX = 28;
+const FILE_VIEW_DIFF_JUMP_TOP_OFFSET_PX = 8;
 
 interface FileRenderLine {
   key: string;
@@ -985,6 +997,30 @@ function buildFileRenderLines(content: string, diffText: string): FileRenderLine
   return out;
 }
 
+function estimateWrappedLineRows(text: string, charsPerLine: number): number {
+  const normalized = String(text || '');
+  if (charsPerLine <= 0) return 1;
+  if (!normalized) return 1;
+  return normalized
+    .split('\n')
+    .reduce((sum, part) => sum + Math.max(1, Math.ceil(Math.max(part.length, 1) / charsPerLine)), 0);
+}
+
+function findVirtualLineIndex(offsets: number[], targetOffset: number): number {
+  if (offsets.length <= 1) return 0;
+  let low = 0;
+  let high = offsets.length - 1;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (offsets[mid] <= targetOffset) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  return Math.max(0, Math.min(offsets.length - 2, low - 1));
+}
+
 function FilesPage() {
   const { activeRepoFullName, fileListIncludeUnchanged, setFileListIncludeUnchanged, openRepoFile, navigate } = useAppCtx();
   const treeState = useFileTreeState({
@@ -1037,6 +1073,9 @@ function FilesPage() {
 function FileViewPage() {
   const { selectedFileView, selectedFileViewLoading, selectedFileViewError, fileListItems, openRepoFile, returnFromFileView } = useAppCtx();
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const lastJumpKeyRef = useRef('');
+  const pendingVirtualJumpIndexRef = useRef<number | null>(null);
+  const pendingVirtualJumpKeyRef = useRef('');
   const params = getCurrentFileParams();
   const diffItems = fileListItems.filter((item) => item.hasDiff);
   const currentPath = selectedFileView?.path || params.path;
@@ -1051,15 +1090,166 @@ function FileViewPage() {
     () => buildFileRenderLines(selectedFileView?.content || '', selectedFileView?.diff || ''),
     [selectedFileView?.content, selectedFileView?.diff]
   );
+  const [contentScrollTop, setContentScrollTop] = useState(0);
+  const [contentViewportHeight, setContentViewportHeight] = useState(0);
+  const [contentViewportWidth, setContentViewportWidth] = useState(0);
   const fileTitle = currentPath ? currentPath.split('/').filter(Boolean).pop() || currentPath : 'ファイル未選択';
   const canPreviewImage = Boolean(selectedFileView?.imageDataUrl && selectedFileView?.mimeType?.startsWith('image/'));
+  const canVirtualizeLines = Boolean(
+    selectedFileView &&
+      !selectedFileView.isDeleted &&
+      !canPreviewImage &&
+      !selectedFileView.isBinary &&
+      renderLines.length > FILE_VIEW_VIRTUALIZE_THRESHOLD
+  );
+  const virtualLineHeights = useMemo(() => {
+    if (!canVirtualizeLines) return [] as number[];
+    const gutterWidth = selectedFileView?.hasDiff ? FILE_VIEW_VIRTUAL_DIFF_GUTTER_PX : FILE_VIEW_VIRTUAL_PLAIN_GUTTER_PX;
+    const availableWidth = Math.max(120, contentViewportWidth - gutterWidth - FILE_VIEW_VIRTUAL_CONTENT_PADDING_PX);
+    const charsPerLine = Math.max(12, Math.floor(availableWidth / FILE_VIEW_VIRTUAL_CHAR_WIDTH_PX));
+    return renderLines.map((line) => estimateWrappedLineRows(line.text, charsPerLine) * FILE_VIEW_VIRTUAL_LINE_HEIGHT_PX);
+  }, [canVirtualizeLines, contentViewportWidth, renderLines, selectedFileView?.hasDiff]);
+  const virtualLineOffsets = useMemo(() => {
+    if (!canVirtualizeLines) return [0];
+    const offsets = [0];
+    for (const height of virtualLineHeights) {
+      offsets.push(offsets[offsets.length - 1] + height);
+    }
+    return offsets;
+  }, [canVirtualizeLines, virtualLineHeights]);
+  const virtualRange = useMemo(() => {
+    if (!canVirtualizeLines) {
+      return { start: 0, end: renderLines.length };
+    }
+    const pendingJumpIndex = pendingVirtualJumpIndexRef.current;
+    if (params.jumpToFirstDiff && pendingJumpIndex != null) {
+      return {
+        start: Math.max(0, pendingJumpIndex - FILE_VIEW_VIRTUAL_OVERSCAN),
+        end: Math.min(renderLines.length, pendingJumpIndex + FILE_VIEW_VIRTUAL_OVERSCAN + 1)
+      };
+    }
+    const viewportHeight = Math.max(contentViewportHeight, FILE_VIEW_VIRTUAL_LINE_HEIGHT_PX);
+    const overscanHeight = FILE_VIEW_VIRTUAL_OVERSCAN * FILE_VIEW_VIRTUAL_LINE_HEIGHT_PX;
+    const start = findVirtualLineIndex(virtualLineOffsets, Math.max(0, contentScrollTop - overscanHeight));
+    const end = Math.min(
+      renderLines.length,
+      findVirtualLineIndex(virtualLineOffsets, contentScrollTop + viewportHeight + overscanHeight) + 1
+    );
+    return { start, end };
+  }, [canVirtualizeLines, contentScrollTop, contentViewportHeight, params.jumpToFirstDiff, renderLines.length, virtualLineOffsets]);
+  const visibleRenderLines = useMemo(() => renderLines.slice(virtualRange.start, virtualRange.end), [renderLines, virtualRange.end, virtualRange.start]);
+  const topSpacerHeight = canVirtualizeLines ? virtualLineOffsets[virtualRange.start] || 0 : 0;
+  const bottomSpacerHeight = canVirtualizeLines
+    ? Math.max(0, (virtualLineOffsets[renderLines.length] || 0) - (virtualLineOffsets[virtualRange.end] || 0))
+    : 0;
+  const diffJumpBottomSpacerHeight = params.jumpToFirstDiff ? Math.max(0, contentViewportHeight - FILE_VIEW_VIRTUAL_LINE_HEIGHT_PX) : 0;
+
+  useLayoutEffect(() => {
+    if (!contentRef.current) return;
+    const measure = () => {
+      if (!contentRef.current) return;
+      setContentViewportHeight(contentRef.current.clientHeight);
+      setContentViewportWidth(contentRef.current.clientWidth);
+      setContentScrollTop(contentRef.current.scrollTop);
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    observer?.observe(contentRef.current);
+    window.addEventListener('resize', measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [selectedFileView?.path]);
 
   useEffect(() => {
-    if (!params.line || !contentRef.current) return;
-    const target = contentRef.current.querySelector(`[data-file-line="${params.line}"]`);
-    if (!(target instanceof HTMLElement)) return;
-    target.scrollIntoView({ behavior: 'auto', block: 'center' });
-  }, [params.line, selectedFileView?.path, selectedFileView?.content]);
+    if (!contentRef.current || !selectedFileView?.path) return;
+    const shouldJumpToFirstDiff = !params.line && params.jumpToFirstDiff;
+    const firstDiffIndex = shouldJumpToFirstDiff ? renderLines.findIndex((line) => line.kind !== 'context') : -1;
+    const targetLineNumber = shouldJumpToFirstDiff
+      ? firstDiffIndex >= 0
+        ? renderLines[firstDiffIndex]?.newLine ?? renderLines[firstDiffIndex]?.oldLine ?? null
+        : null
+      : params.line;
+    if (!targetLineNumber) return;
+    const jumpKey = `${selectedFileView.path}:${shouldJumpToFirstDiff ? `first-diff:${firstDiffIndex}` : `line:${targetLineNumber}`}`;
+    if (lastJumpKeyRef.current === jumpKey) return;
+    const targetIndex = shouldJumpToFirstDiff
+      ? firstDiffIndex
+      : renderLines.findIndex((line) => line.newLine === targetLineNumber || line.oldLine === targetLineNumber);
+    if (targetIndex < 0) return;
+    const container = contentRef.current;
+    if (!canVirtualizeLines) {
+      pendingVirtualJumpIndexRef.current = null;
+      pendingVirtualJumpKeyRef.current = '';
+      let rafId = 0;
+      const applyNonVirtualJump = () => {
+        const targetNode = shouldJumpToFirstDiff
+          ? container.querySelector('.fx-file-line.is-removed, .fx-file-line.is-added')
+          : container.querySelector(`[data-file-render-index="${targetIndex}"]`);
+        if (!(targetNode instanceof HTMLElement)) return false;
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = targetNode.getBoundingClientRect();
+        const targetAbsoluteTop = container.scrollTop + (targetRect.top - containerRect.top);
+        const targetTop = shouldJumpToFirstDiff
+          ? Math.max(0, targetAbsoluteTop - FILE_VIEW_DIFF_JUMP_TOP_OFFSET_PX)
+          : Math.max(0, targetAbsoluteTop - Math.max(0, Math.floor((container.clientHeight - targetNode.offsetHeight) / 2)));
+        container.scrollTop = targetTop;
+        setContentScrollTop(targetTop);
+        return true;
+      };
+      if (applyNonVirtualJump()) {
+        lastJumpKeyRef.current = jumpKey;
+        rafId = window.requestAnimationFrame(() => {
+          applyNonVirtualJump();
+        });
+      }
+      return () => {
+        if (rafId) window.cancelAnimationFrame(rafId);
+      };
+    }
+    if (canVirtualizeLines) {
+      const targetHeight = virtualLineHeights[targetIndex] || FILE_VIEW_VIRTUAL_LINE_HEIGHT_PX;
+      const targetOffset = virtualLineOffsets[targetIndex] || 0;
+      const targetTop = shouldJumpToFirstDiff
+        ? Math.max(0, targetOffset - FILE_VIEW_DIFF_JUMP_TOP_OFFSET_PX)
+        : Math.max(0, targetOffset - Math.max(0, Math.floor((container.clientHeight - targetHeight) / 2)));
+      container.scrollTop = targetTop;
+      setContentScrollTop(targetTop);
+      pendingVirtualJumpIndexRef.current = targetIndex;
+      pendingVirtualJumpKeyRef.current = jumpKey;
+      lastJumpKeyRef.current = jumpKey;
+      return;
+    }
+  }, [canVirtualizeLines, params.jumpToFirstDiff, params.line, renderLines, selectedFileView?.path, virtualLineHeights, virtualLineOffsets]);
+
+  useLayoutEffect(() => {
+    if (!canVirtualizeLines || !params.jumpToFirstDiff || !contentRef.current) return;
+    const targetIndex = pendingVirtualJumpIndexRef.current;
+    const targetKey = pendingVirtualJumpKeyRef.current;
+    if (targetIndex == null || !targetKey || targetKey !== lastJumpKeyRef.current) return;
+    if (targetIndex < virtualRange.start || targetIndex >= virtualRange.end) return;
+    const targetNode = contentRef.current.querySelector(`[data-file-render-index="${targetIndex}"]`);
+    if (!(targetNode instanceof HTMLElement)) return;
+    const container = contentRef.current;
+    const containerRect = container.getBoundingClientRect();
+    const targetRect = targetNode.getBoundingClientRect();
+    const targetAbsoluteTop = container.scrollTop + (targetRect.top - containerRect.top);
+    const correctedTop = Math.max(0, targetAbsoluteTop - FILE_VIEW_DIFF_JUMP_TOP_OFFSET_PX);
+    if (Math.abs(container.scrollTop - correctedTop) > 1) {
+      container.scrollTop = correctedTop;
+      setContentScrollTop(correctedTop);
+    }
+    pendingVirtualJumpIndexRef.current = null;
+    pendingVirtualJumpKeyRef.current = '';
+  }, [canVirtualizeLines, params.jumpToFirstDiff, virtualRange.end, virtualRange.start]);
+
+  useEffect(() => {
+    if (params.line || params.jumpToFirstDiff) return;
+    lastJumpKeyRef.current = '';
+    pendingVirtualJumpIndexRef.current = null;
+    pendingVirtualJumpKeyRef.current = '';
+  }, [params.jumpToFirstDiff, params.line, selectedFileView?.path]);
 
   return (
     <Page noNavbar>
@@ -1080,7 +1270,7 @@ function FileViewPage() {
             <button
               type="button"
               className="fx-file-nav-btn"
-              onClick={() => previousDiffPath && openRepoFile(previousDiffPath)}
+              onClick={() => previousDiffPath && openRepoFile(previousDiffPath, null, false, true)}
               disabled={!previousDiffPath}
               data-testid="file-prev-diff-button"
             >
@@ -1089,7 +1279,7 @@ function FileViewPage() {
             <button
               type="button"
               className="fx-file-nav-btn"
-              onClick={() => nextDiffPath && openRepoFile(nextDiffPath)}
+              onClick={() => nextDiffPath && openRepoFile(nextDiffPath, null, false, true)}
               disabled={!nextDiffPath}
               data-testid="file-next-diff-button"
             >
@@ -1137,37 +1327,48 @@ function FileViewPage() {
                   className={`fx-file-content is-diff-inline${selectedFileView.hasDiff ? '' : ' is-plain'}`}
                   ref={contentRef}
                   data-testid="file-content"
+                  onScroll={(event) => setContentScrollTop(event.currentTarget.scrollTop)}
                 >
                   {renderLines.length === 0 ? (
                     <div className="fx-file-empty">内容は空です。</div>
                   ) : (
-                    renderLines.map((line) => {
-                      const targetLine = params.line && line.newLine === params.line;
-                      const displayLine = line.newLine || line.oldLine || undefined;
-                      if (!selectedFileView.hasDiff) {
-                        return (
-                          <div
-                            key={`${selectedFileView.path}:${line.key}`}
+                    <>
+                      {topSpacerHeight > 0 ? <div style={{ height: `${topSpacerHeight}px` }} aria-hidden="true" /> : null}
+                      {visibleRenderLines.map((line, visibleIndex) => {
+                        const actualIndex = virtualRange.start + visibleIndex;
+                        const itemKey = `${selectedFileView.path}:${line.key}:${actualIndex}`;
+                        const targetLine = params.line ? line.newLine === params.line || line.oldLine === params.line : false;
+                        const displayLine = line.newLine || line.oldLine || undefined;
+                        if (!selectedFileView.hasDiff) {
+                          return (
+                            <div
+                            key={itemKey}
                             className={`fx-file-line is-${line.kind}${targetLine ? ' is-target' : ''}`}
                             data-file-line={displayLine}
+                            data-file-render-index={actualIndex}
                           >
                             <span className="fx-file-line-no">{displayLine ?? ''}</span>
                             <span className="fx-file-line-text">{line.text || ' '}</span>
-                          </div>
-                        );
-                      }
-                      return (
-                        <div
-                          key={`${selectedFileView.path}:${line.key}`}
+                            </div>
+                          );
+                        }
+                        return (
+                          <div
+                          key={itemKey}
                           className={`fx-file-line is-${line.kind}${targetLine ? ' is-target' : ''}`}
                           data-file-line={displayLine}
+                          data-file-render-index={actualIndex}
                         >
-                          <span className="fx-file-line-no">{line.oldLine ?? ''}</span>
-                          <span className="fx-file-line-no">{line.newLine ?? ''}</span>
-                          <span className="fx-file-line-text">{line.text || ' '}</span>
-                        </div>
-                      );
-                    })
+                            <span className="fx-file-line-no">{line.oldLine ?? ''}</span>
+                            <span className="fx-file-line-no">{line.newLine ?? ''}</span>
+                            <span className="fx-file-line-text">{line.text || ' '}</span>
+                          </div>
+                        );
+                      })}
+                      {bottomSpacerHeight + diffJumpBottomSpacerHeight > 0 ? (
+                        <div style={{ height: `${bottomSpacerHeight + diffJumpBottomSpacerHeight}px` }} aria-hidden="true" />
+                      ) : null}
+                    </>
                   )}
                 </div>
               )}
@@ -2636,7 +2837,7 @@ export default function AppRoot() {
     }
   }
 
-  async function openRepoFile(filePath: string, line: number | null = null, replace = false): Promise<void> {
+  async function openRepoFile(filePath: string, line: number | null = null, replace = false, jumpToFirstDiff = false): Promise<void> {
     if (!activeRepoRef.current || !filePath) return;
     if (currentPath !== '/files/view/') {
       if (currentPath === '/chat/') {
@@ -2648,7 +2849,7 @@ export default function AppRoot() {
         fileViewReturnChatScrollTopRef.current = null;
       }
     }
-    navigate(buildFileViewPath(filePath, line), replace);
+    navigate(buildFileViewPath(filePath, line, jumpToFirstDiff), replace);
   }
 
   function returnFromFileView(): void {

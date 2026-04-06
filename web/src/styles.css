@@ -843,10 +843,16 @@ body {
 .fx-file-view-body {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 0.35rem;
 }
 
 .fx-file-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -867,15 +873,18 @@ body {
 }
 
 .fx-file-content {
-  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
   background: #ffffff;
   border: 1px solid #dbeafe;
   border-radius: 12px;
+  overscroll-behavior: contain;
 }
 
 .fx-file-content.is-diff-inline {
-  max-height: none;
+  min-height: 0;
 }
 
 .fx-file-line {
@@ -887,6 +896,8 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 0.8rem;
   line-height: 1.5;
+  min-height: 25px;
+  box-sizing: border-box;
 }
 
 .fx-file-content.is-plain .fx-file-line {

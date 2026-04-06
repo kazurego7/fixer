@@ -63,8 +63,9 @@ test.describe('diff 中心のファイル閲覧', () => {
               changeKind: 'added',
               additions: 1,
               deletions: 0,
-              content: 'export const feature = true;\n',
-              diff: 'diff --git a/src/feature.ts b/src/feature.ts\n@@ -0,0 +1 @@\n+export const feature = true;'
+              content: `${Array.from({ length: 119 }, (_, index) => `before ${index + 1}`).join('\n')}\nexport const feature = true;\n`,
+              diff:
+                'diff --git a/src/feature.ts b/src/feature.ts\n@@ -0,0 +120,1 @@\n+export const feature = true;'
             }
           : buildDefaultFileView(repo, filePath);
       await route.fulfill({
@@ -83,8 +84,18 @@ test.describe('diff 中心のファイル閲覧', () => {
     await expect(page.getByTestId('file-content-panel').locator('.fx-file-line.is-removed')).toHaveCount(1);
 
     await page.getByTestId('file-next-diff-button').click();
-    await expect(page).toHaveURL(/\/files\/view\/\?path=src%2Ffeature\.ts/);
+    await expect(page).toHaveURL(/\/files\/view\/\?path=src%2Ffeature\.ts(?:&jump=first-diff)?/);
     await expect(page.getByTestId('file-content-panel')).toContainText('feature = true');
+    await expect(page.locator('[data-file-line="120"]')).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const panel = document.querySelector('[data-testid="file-content"]');
+          if (!(panel instanceof HTMLElement)) return -1;
+          return panel.scrollTop;
+        })
+      )
+      .toBeGreaterThan(2200);
 
     await page.getByTestId('file-prev-diff-button').click();
     await expect(page).toHaveURL(/\/files\/view\/\?path=src%2Fapp\.ts/);
@@ -216,7 +227,8 @@ test.describe('diff 中心のファイル閲覧', () => {
     });
 
     await page.goto('/chat/');
-    await page.getByRole('link', { name: 'src/app.ts:2' }).scrollIntoViewIfNeeded();
+    const fileLink = page.getByRole('link', { name: 'src/app.ts:2' });
+    await expect(fileLink).toBeVisible();
 
     const scrollTopBefore = await page.evaluate(() => {
       const container = document.querySelector('.fx-chat-scroll');
@@ -226,7 +238,7 @@ test.describe('diff 中心のファイル閲覧', () => {
     });
     expect(scrollTopBefore).toBeGreaterThan(0);
 
-    await page.getByRole('link', { name: 'src/app.ts:2' }).click();
+    await fileLink.click();
     await expect(page).toHaveURL(/\/files\/view\/\?path=src%2Fapp\.ts&line=2/);
 
     await page.getByTestId('file-view-back-button').click();
@@ -241,7 +253,7 @@ test.describe('diff 中心のファイル閲覧', () => {
         })
       )
       .toBe(scrollTopBefore);
-    await expect(page.getByRole('link', { name: 'src/app.ts:2' })).toBeVisible();
+    await expect(fileLink).toBeVisible();
   });
 
   test('チャット返答のリンクは下線付きでリンクらしく表示される', async ({ page }) => {
