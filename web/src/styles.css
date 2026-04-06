@@ -1249,6 +1249,20 @@ body {
   margin-bottom: 0.2rem;
 }
 
+.fx-message-body-copy input[type='checkbox'] {
+  width: 0.92rem;
+  height: 0.92rem;
+  margin: 0 0.42rem 0 0;
+  vertical-align: text-top;
+  accent-color: #2563eb;
+  pointer-events: none;
+}
+
+.fx-message-body-copy li:has(> input[type='checkbox']) {
+  list-style: none;
+  margin-left: -1rem;
+}
+
 .fx-msg-assistant .fx-msg-bubble pre {
   margin: 0.45rem 0;
   white-space: pre-wrap;

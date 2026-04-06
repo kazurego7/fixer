@@ -97,6 +97,7 @@ test('プラン実現ボタン下に操作説明を表示し、問UIでは説明
   await page.goto('/chat/');
   await expect(page.getByTestId('plan-edit-help')).toContainText('※ プランを修正する場合は');
   await expect(page.getByTestId('plan-inline-block')).toContainText('1. 調査');
+  await expect(page.getByTestId('plan-inline-block')).toContainText('2. 実装');
   await page.getByTestId('composer-textarea').fill('確認したい');
   await page.getByTestId('send-button').click();
 
