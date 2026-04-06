@@ -127,6 +127,7 @@ interface AppContextValue {
   selectedFileViewLoading: boolean;
   selectedFileViewError: string;
   openRepoFile: (filePath: string, line?: number | null, replace?: boolean) => Promise<void>;
+  returnFromFileView: () => void;
   activeCollaborationMode: CollaborationMode;
   setActiveCollaborationMode: (mode: CollaborationMode) => void;
   pendingUserInputRequests: PendingUserInputRequest[];
@@ -1033,7 +1034,7 @@ function FilesPage() {
 }
 
 function FileViewPage() {
-  const { selectedFileView, selectedFileViewLoading, selectedFileViewError, fileListItems, openRepoFile, navigate } = useAppCtx();
+  const { selectedFileView, selectedFileViewLoading, selectedFileViewError, fileListItems, openRepoFile, returnFromFileView } = useAppCtx();
   const contentRef = useRef<HTMLDivElement | null>(null);
   const params = getCurrentFileParams();
   const diffItems = fileListItems.filter((item) => item.hasDiff);
@@ -1066,7 +1067,7 @@ function FileViewPage() {
           <button
             className="fx-back-icon"
             type="button"
-            onClick={() => navigate('/files/')}
+            onClick={returnFromFileView}
             data-testid="file-view-back-button"
           >
             ←
@@ -2280,6 +2281,9 @@ export default function AppRoot() {
   const activeTurnIdRef = useRef('');
   const compactionStatusTimerRef = useRef<number | null>(null);
   const activeRepoRef = useRef<string | null>(activeRepoFullName);
+  const fileViewReturnPathRef = useRef<'/files/' | '/chat/'>('/files/');
+  const fileViewReturnChatScrollTopRef = useRef<number | null>(null);
+  const pendingChatScrollRestoreRef = useRef<number | null>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const activeLiveTurnSeqRef = useRef(0);
   const unboundPendingUserIdsRef = useRef<string[]>([]);
@@ -2628,7 +2632,26 @@ export default function AppRoot() {
 
   async function openRepoFile(filePath: string, line: number | null = null, replace = false): Promise<void> {
     if (!activeRepoRef.current || !filePath) return;
+    if (currentPath !== '/files/view/') {
+      if (currentPath === '/chat/') {
+        const node = outputRef.current;
+        fileViewReturnPathRef.current = '/chat/';
+        fileViewReturnChatScrollTopRef.current = node instanceof HTMLElement ? node.scrollTop : 0;
+      } else {
+        fileViewReturnPathRef.current = '/files/';
+        fileViewReturnChatScrollTopRef.current = null;
+      }
+    }
     navigate(buildFileViewPath(filePath, line), replace);
+  }
+
+  function returnFromFileView(): void {
+    if (fileViewReturnPathRef.current === '/chat/') {
+      pendingChatScrollRestoreRef.current = fileViewReturnChatScrollTopRef.current;
+      navigate('/chat/');
+      return;
+    }
+    navigate('/files/');
   }
 
   async function addImageAttachments(fileList: FileList | null): Promise<void> {
@@ -3812,6 +3835,16 @@ export default function AppRoot() {
 
   useEffect(() => {
     if (currentPath !== '/chat/' || !chatVisible) return;
+    if (pendingChatScrollRestoreRef.current === null) return;
+    const container = outputRef.current;
+    if (!(container instanceof HTMLElement)) return;
+    container.scrollTop = pendingChatScrollRestoreRef.current;
+    pendingChatScrollRestoreRef.current = null;
+    lastChatEntryAlignKeyRef.current = `${String(activeThreadId || '')}:${currentPath}`;
+  }, [currentPath, chatVisible, outputItems, activeThreadId]);
+
+  useEffect(() => {
+    if (currentPath !== '/chat/' || !chatVisible) return;
     if (typeof window === 'undefined') return;
     if (outputItems.length === 0) return;
     const alignKey = `${String(activeThreadId || '')}:${currentPath}`;
@@ -4004,6 +4037,7 @@ export default function AppRoot() {
       selectedFileViewLoading,
       selectedFileViewError,
       openRepoFile,
+      returnFromFileView,
       activeCollaborationMode,
       setActiveCollaborationMode,
       pendingUserInputRequests,
@@ -4056,6 +4090,7 @@ export default function AppRoot() {
       selectedFileView,
       selectedFileViewLoading,
       selectedFileViewError,
+      returnFromFileView,
       pendingUserInputRequests,
       pendingUserInputBusy,
       pendingUserInputDrafts

@@ -191,6 +191,59 @@ test.describe('diff 中心のファイル閲覧', () => {
       .toEqual(['https://example.com/docs', '_blank', 'noopener,noreferrer']);
   });
 
+  test('チャット起点のファイル詳細から戻るとチャット画面と元のスクロール位置へ戻る', async ({ page }) => {
+    await bootstrapChatState(page);
+    await installApiMocks(page);
+
+    await page.unroute('**/api/threads/messages**');
+    await page.route('**/api/threads/messages**', async (route) => {
+      const items: Array<Record<string, string>> = [];
+      for (let i = 1; i <= 16; i += 1) {
+        items.push({ id: `u-${i}`, role: 'user', type: 'plain', text: `user-${i}` });
+        items.push({ id: `a-${i}`, role: 'assistant', type: 'markdown', text: `assistant-${i}` });
+      }
+      items.push({ id: 'a-link', role: 'assistant', type: 'markdown', text: '[src/app.ts:2](/tmp/owner__repo/src/app.ts:2)' });
+      items.push({ id: 'u-last', role: 'user', type: 'plain', text: 'user-last' });
+      for (let i = 1; i <= 40; i += 1) {
+        items.push({ id: `tail-${i}`, role: 'assistant', type: 'markdown', text: `tail-${i}` });
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items })
+      });
+    });
+
+    await page.goto('/chat/');
+    await page.getByRole('link', { name: 'src/app.ts:2' }).scrollIntoViewIfNeeded();
+
+    const scrollTopBefore = await page.evaluate(() => {
+      const container = document.querySelector('.fx-chat-scroll');
+      if (!(container instanceof HTMLElement)) return -1;
+      container.scrollTop = Math.max(0, Math.floor(container.scrollHeight * 0.32));
+      return container.scrollTop;
+    });
+    expect(scrollTopBefore).toBeGreaterThan(0);
+
+    await page.getByRole('link', { name: 'src/app.ts:2' }).click();
+    await expect(page).toHaveURL(/\/files\/view\/\?path=src%2Fapp\.ts&line=2/);
+
+    await page.getByTestId('file-view-back-button').click();
+    await expect(page).toHaveURL(/\/chat\/$/);
+
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const container = document.querySelector('.fx-chat-scroll');
+          if (!(container instanceof HTMLElement)) return -1;
+          return container.scrollTop;
+        })
+      )
+      .toBe(scrollTopBefore);
+    await expect(page.getByRole('link', { name: 'src/app.ts:2' })).toBeVisible();
+  });
+
   test('チャット返答のリンクは下線付きでリンクらしく表示される', async ({ page }) => {
     await bootstrapChatState(page);
     await installApiMocks(page);
