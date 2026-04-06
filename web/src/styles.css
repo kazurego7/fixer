@@ -87,16 +87,16 @@ body {
 }
 
 .fx-repo-create-nav-btn {
-  flex: 0 0 2.8rem;
-  width: 2.8rem;
-  min-width: 2.8rem;
-  height: 2.8rem;
+  flex: 0 0 2.45rem;
+  width: 2.45rem;
+  min-width: 2.45rem;
+  height: 2.45rem;
   padding: 0;
-  border-radius: 10px;
+  border-radius: 9px;
   border: 1px solid #d1d5db;
   background: #ffffff;
   color: #334155;
-  font-size: 1.15rem;
+  font-size: 1rem;
   line-height: 1;
 }
 
