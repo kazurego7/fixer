@@ -2289,6 +2289,7 @@ export default function AppRoot() {
   const fileViewReturnPathRef = useRef<'/files/' | '/chat/'>('/files/');
   const fileViewReturnChatScrollTopRef = useRef<number | null>(null);
   const pendingChatScrollRestoreRef = useRef<number | null>(null);
+  const shouldRestoreSavedChatScrollRef = useRef(false);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const activeLiveTurnSeqRef = useRef(0);
   const unboundPendingUserIdsRef = useRef<string[]>([]);
@@ -3711,6 +3712,7 @@ export default function AppRoot() {
     chatEntryPathRef.current = currentPath;
     if (prevPath === '/chat/' && currentPath !== '/chat/') rememberCurrentChatScrollPosition();
     if (currentPath !== '/chat/' || prevPath === '/chat/') return;
+    shouldRestoreSavedChatScrollRef.current = true;
     lastChatEntryAlignKeyRef.current = '';
     const node = outputRef.current;
     chatEntryScrollTopRef.current = node instanceof HTMLElement ? node.scrollTop : 0;
@@ -3771,6 +3773,7 @@ export default function AppRoot() {
       rememberChatScrollPosition(previousThreadId, chatEntryScrollTopRef.current);
     }
     activeThreadRef.current = activeThreadId;
+    shouldRestoreSavedChatScrollRef.current = true;
     setActiveTurnId('');
     activeTurnIdRef.current = '';
     if (
@@ -3894,13 +3897,18 @@ export default function AppRoot() {
   useEffect(() => {
     if (currentPath !== '/chat/' || !chatVisible) return;
     const savedScrollTop = activeThreadId ? chatScrollTopByThreadRef.current[String(activeThreadId || '')] : undefined;
-    const preferredScrollTop = pendingChatScrollRestoreRef.current ?? (Number.isFinite(savedScrollTop) ? savedScrollTop : null);
+    const preferredScrollTop =
+      pendingChatScrollRestoreRef.current ?? (shouldRestoreSavedChatScrollRef.current && Number.isFinite(savedScrollTop) ? savedScrollTop : null);
     if (preferredScrollTop === null) return;
     const container = outputRef.current;
     if (!(container instanceof HTMLElement)) return;
-    container.scrollTop = preferredScrollTop;
-    chatEntryScrollTopRef.current = preferredScrollTop;
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const nextScrollTop = Math.min(Math.max(0, preferredScrollTop), maxScrollTop);
+    if (preferredScrollTop > 0 && nextScrollTop === 0 && outputItems.length === 0) return;
+    container.scrollTop = nextScrollTop;
+    chatEntryScrollTopRef.current = nextScrollTop;
     pendingChatScrollRestoreRef.current = null;
+    shouldRestoreSavedChatScrollRef.current = false;
     lastChatEntryAlignKeyRef.current = `${String(activeThreadId || '')}:${currentPath}`;
   }, [currentPath, chatVisible, outputItems, activeThreadId]);
 
@@ -3916,6 +3924,7 @@ export default function AppRoot() {
       attempts += 1;
       const done = scrollLastUserMessageToTopOrKeepPosition();
       if (done) {
+        shouldRestoreSavedChatScrollRef.current = false;
         lastChatEntryAlignKeyRef.current = alignKey;
         return;
       }

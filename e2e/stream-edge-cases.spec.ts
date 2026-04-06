@@ -194,6 +194,106 @@ test('ライブ出力中でも追加入力を送れる', async ({ page }) => {
   await expect(page.locator('.fx-msg-assistant .fx-msg-bubble')).toContainText('追加入力を受け付けました');
 });
 
+test('ライブ出力が増え続ける間は末尾へ自動スクロールする', async ({ page }) => {
+  await bootstrapChatState(page);
+  await installApiMocks(page);
+  await page.addInitScript(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.includes('/api/turns/stream')) return originalFetch(input, init);
+
+      const lines = Array.from({ length: 28 }, (_, idx) => `行 ${idx + 1}`).join('\n');
+      const updatedLines = Array.from({ length: 80 }, (_, idx) => `追記 ${idx + 1}`).join('\n');
+      const encoder = new TextEncoder();
+      const chunks = [
+        JSON.stringify({ type: 'started', turnId: 'turn-autoscroll-1' }) + '\n',
+        JSON.stringify({
+          type: 'turn_state',
+          seq: 1,
+          turnId: 'turn-autoscroll-1',
+          liveReasoningText: '',
+          items: [
+            {
+              id: 'turn-autoscroll-1:user:0',
+              role: 'user',
+              type: 'plain',
+              text: '自動スクロール確認'
+            },
+            {
+              id: 'turn-autoscroll-1:assistant:0',
+              role: 'assistant',
+              type: 'markdown',
+              text: lines,
+              answer: lines,
+              plan: ''
+            }
+          ]
+        }) + '\n',
+        JSON.stringify({
+          type: 'turn_state',
+          seq: 2,
+          turnId: 'turn-autoscroll-1',
+          liveReasoningText: '',
+          items: [
+            {
+              id: 'turn-autoscroll-1:user:0',
+              role: 'user',
+              type: 'plain',
+              text: '自動スクロール確認'
+            },
+            {
+              id: 'turn-autoscroll-1:assistant:0',
+              role: 'assistant',
+              type: 'markdown',
+              text: `${lines}\n${updatedLines}`,
+              answer: `${lines}\n${updatedLines}`,
+              plan: ''
+            }
+          ]
+        }) + '\n',
+        JSON.stringify({ type: 'done' }) + '\n'
+      ];
+
+      let index = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const pushNext = () => {
+            if (index >= chunks.length) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(encoder.encode(chunks[index]));
+            index += 1;
+            setTimeout(pushNext, index === 1 ? 50 : index === 2 ? 120 : index === 3 ? 250 : 60);
+          };
+          pushNext();
+        }
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'application/x-ndjson; charset=utf-8' }
+      });
+    };
+  });
+
+  await page.goto('/chat/');
+  await page.getByTestId('composer-textarea').fill('自動スクロール確認');
+  await page.getByTestId('send-button').click();
+
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble')).toContainText('追記 80');
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const container = document.querySelector('.fx-chat-scroll');
+        if (!(container instanceof HTMLElement)) return 9999;
+        return Math.abs(container.scrollHeight - container.clientHeight - container.scrollTop);
+      })
+    )
+    .toBeLessThan(8);
+});
+
 test('ライブ出力中でも入力欄へ再入力できて複数行で広がる', async ({ page }) => {
   await bootstrapChatState(page);
   await installApiMocks(page);
