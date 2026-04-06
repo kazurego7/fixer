@@ -94,7 +94,7 @@ test('ライブ出力中でもリポジトリ一覧へ戻れる', async ({ page 
   await page.getByTestId('composer-textarea').fill('戻る確認');
   await page.getByTestId('send-button').click();
 
-  await expect(page.getByTestId('new-thread-button')).toBeEnabled();
+  await expect(page.getByTestId('back-button')).toBeVisible();
   await page.getByTestId('back-button').click();
   await expect(page).toHaveURL(/\/repos\/?$/);
 });

@@ -2338,7 +2338,14 @@ export default function AppRoot() {
       delete pendingUserIdsByTurnRef.current[turnId];
     }
     const turnPrefix = `${turnId}:`;
+    const includesOtherTurnItems = normalizedItems.some((item) => {
+      const itemId = String(item.id || '');
+      return Boolean(itemId) && !itemId.startsWith(turnPrefix) && !pendingIds.includes(itemId);
+    });
     setOutputItems((prev) => {
+      if (includesOtherTurnItems) {
+        return normalizedItems;
+      }
       const nextBase = prev.filter((item) => {
         const itemId = String(item.id || '');
         if (itemId.startsWith(turnPrefix)) return false;
