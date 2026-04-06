@@ -148,6 +148,17 @@ interface GithubRepoApiItem {
   updated_at: string;
 }
 
+interface GithubRepoCreateResponse {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  clone_url: string;
+  default_branch: string;
+  updated_at: string;
+  message?: string;
+}
+
 function getErrorMessage(error: unknown, fallback = 'unknown_error'): string {
   if (error instanceof Error && error.message) return error.message;
   const record = asObject(error);
@@ -2481,6 +2492,39 @@ async function githubRepos(token: string, query: string): Promise<RepoSummary[]>
   }));
 }
 
+async function githubCreateRepo(token: string, name: string, isPrivate: boolean): Promise<RepoSummary> {
+  const response = await fetch('https://api.github.com/user/repos', {
+    method: 'POST',
+    headers: {
+      'User-Agent': 'codex-mobile-ui',
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      name,
+      private: isPrivate,
+      auto_init: false
+    })
+  });
+
+  const data = (await response.json()) as GithubRepoCreateResponse;
+  if (!response.ok) {
+    throw new Error(String(data.message || `github_repo_create_error:${response.status}`));
+  }
+
+  return {
+    id: data.id,
+    name: data.name,
+    fullName: data.full_name,
+    private: data.private,
+    cloneUrl: data.clone_url,
+    defaultBranch: data.default_branch,
+    updatedAt: data.updated_at,
+    cloneState: getCloneState(data.full_name)
+  };
+}
+
 function buildServer(): FastifyInstance {
   pushSubscriptions = loadPushSubscriptions();
   try {
@@ -2540,6 +2584,8 @@ function buildServer(): FastifyInstance {
   app.get('/', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/repos', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/repos/', async (_request, reply) => reply.sendFile('index.html'));
+  app.get('/repos/new', async (_request, reply) => reply.sendFile('index.html'));
+  app.get('/repos/new/', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/chat', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/chat/', async (_request, reply) => reply.sendFile('index.html'));
   app.get('/files', async (_request, reply) => reply.sendFile('index.html'));
@@ -2662,6 +2708,52 @@ function buildServer(): FastifyInstance {
     const query = asString(queryRecord.query) || '';
     const repos = await githubRepos(status.token, query);
     return { repos };
+  });
+
+  app.post('/api/github/repos', async (request, reply) => {
+    const body = asObject(request.body) ?? {};
+    const status = getGhStatus();
+    if (!status.available) {
+      reply.code(503);
+      return { error: 'gh_not_available', hint: status.hint };
+    }
+    if (!status.connected) {
+      reply.code(401);
+      return { error: 'gh_not_logged_in', hint: status.hint };
+    }
+
+    const name = asString(body.name).trim();
+    const visibility = asString(body.visibility).trim();
+    if (!name) {
+      reply.code(400);
+      return { error: 'repo_name_required' };
+    }
+    if (visibility !== 'public' && visibility !== 'private') {
+      reply.code(400);
+      return { error: 'visibility_invalid' };
+    }
+
+    try {
+      const repo = await githubCreateRepo(status.token, name, visibility === 'private');
+      pushRuntimeLog({
+        level: 'info',
+        event: 'github_repo_created',
+        fullName: repo.fullName,
+        visibility
+      });
+      return { repo };
+    } catch (error) {
+      const message = getErrorMessage(error);
+      pushRuntimeLog({
+        level: 'error',
+        event: 'github_repo_create_failed',
+        name,
+        visibility,
+        message
+      });
+      reply.code(400);
+      return { error: 'github_repo_create_failed', detail: message };
+    }
   });
 
   app.post('/api/repos/clone', async (request, reply) => {
