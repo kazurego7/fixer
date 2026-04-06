@@ -1277,6 +1277,19 @@ body {
   gap: 0.45rem;
 }
 
+.fx-compaction-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.fx-compaction-panel.is-completed {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
 .fx-working-dots {
   display: inline-flex;
   align-items: center;
@@ -1313,6 +1326,16 @@ body {
   font-size: 0.8rem;
   line-height: 1.4;
   color: #334155;
+}
+
+.fx-compaction-status-text {
+  font-size: 0.84rem;
+  line-height: 1.4;
+  color: #1e3a8a;
+}
+
+.fx-compaction-panel.is-completed .fx-compaction-status-text {
+  color: #166534;
 }
 
 .fx-msg-assistant .fx-msg-bubble > :first-child {

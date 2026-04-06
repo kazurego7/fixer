@@ -207,6 +207,8 @@ const pendingUserInputRequestById = new Map<string, PendingUserInputRequest & { 
 const handledTerminalTurnKeys = new Set<string>();
 const handledPushTurnKeys = new Set<string>();
 const liveTurnStateByThreadId = new Map<string, LiveTurnState>();
+const autoCompactInFlightThreadIds = new Set<string>();
+const lastAutoCompactTokenTotalByThreadId = new Map<string, number>();
 let liveTurnSeq = 1;
 const DEFAULT_MODEL_FALLBACK = 'gpt-5-codex';
 const DEFAULT_REASONING_SUMMARY = 'concise';
@@ -226,6 +228,7 @@ let pushSubscriptions: PushSubscriptionRecord[] = [];
 let pushPublicKey = '';
 let pushPrivateKey = '';
 let pushEnabled = false;
+let cachedModelAutoCompactTokenLimit: number | null | undefined;
 
 function pushRuntimeLog(entry: { level: RuntimeLogLevel; event: string; [key: string]: unknown }): void {
   runtimeLogs.push({ timestamp: new Date().toISOString(), ...entry });
@@ -702,6 +705,14 @@ function applyLiveTurnNotification(msg: unknown): void {
   const lifecycle = parseV2ItemLifecycleNotification(msg);
   if (lifecycle) {
     const state = ensureLiveTurnState(lifecycle.threadId, lifecycle.turnId);
+    if (lifecycle.item.type === 'contextCompaction') {
+      emitLiveTurnEvent(state, {
+        type: 'status',
+        phase: lifecycle.method === 'item/started' ? 'compacting' : 'compacted',
+        message:
+          lifecycle.method === 'item/started' ? '会話履歴を圧縮しています...' : '会話履歴を圧縮しました'
+      });
+    }
     upsertLiveTurnItem(state, lifecycle.item);
     const reasoningRaw = extractReasoningRawFromItem(lifecycle.item);
     if (reasoningRaw) state.liveReasoningRaw = reasoningRaw;
@@ -818,6 +829,7 @@ function attachWsHandlers(ws: WebSocket): void {
     const userInputRequest = parseToolRequestUserInput(record);
     if (userInputRequest) rememberPendingUserInputRequest(userInputRequest);
     applyLiveTurnNotification(record);
+    void maybeTriggerAutoCompaction(record);
 
     if (
       Object.prototype.hasOwnProperty.call(record, 'id') &&
@@ -1150,6 +1162,18 @@ function parseToolRequestUserInput(msg: unknown): PendingUserInputRequest | null
   };
 }
 
+function parseThreadTokenUsageUpdatedNotification(msg: unknown): { threadId: string; totalTokens: number } | null {
+  const record = asObject(msg);
+  if (!record || asString(record.method) !== 'thread/tokenUsage/updated') return null;
+  const params = asObject(record.params);
+  const threadId = asString(params?.threadId);
+  const tokenUsage = asObject(params?.tokenUsage);
+  const totalRaw = tokenUsage?.total;
+  const totalTokens = typeof totalRaw === 'number' ? totalRaw : Number(totalRaw);
+  if (!threadId || !Number.isFinite(totalTokens)) return null;
+  return { threadId, totalTokens };
+}
+
 function rememberPendingUserInputRequest(request: PendingUserInputRequest): void {
   if (!request?.requestId) return;
   pendingUserInputRequestById.set(String(request.requestId), {
@@ -1336,6 +1360,7 @@ function handleTurnTerminalNotification(terminal: TurnTerminalNotification | nul
       : null;
 
   runningTurnByThreadId.delete(terminal.threadId);
+  autoCompactInFlightThreadIds.delete(terminal.threadId);
   clearPendingUserInputForThread(terminal.threadId);
 
   if (liveState) {
@@ -1382,6 +1407,72 @@ function handleTurnTerminalNotification(terminal: TurnTerminalNotification | nul
         message: String(error?.message || 'unknown_error')
       });
     });
+}
+
+async function resolveModelAutoCompactTokenLimit(): Promise<number | null> {
+  if (typeof cachedModelAutoCompactTokenLimit !== 'undefined') return cachedModelAutoCompactTokenLimit;
+  try {
+    const config = await rpcRequest<{ config?: { model_auto_compact_token_limit?: unknown } }>('config/read', {
+      includeLayers: false
+    });
+    const rawLimit = config?.config?.model_auto_compact_token_limit;
+    const limit = typeof rawLimit === 'number' ? rawLimit : Number(rawLimit);
+    cachedModelAutoCompactTokenLimit = Number.isFinite(limit) && limit > 0 ? limit : null;
+  } catch {
+    cachedModelAutoCompactTokenLimit = null;
+  }
+  return cachedModelAutoCompactTokenLimit;
+}
+
+function syncAutoCompactLifecycle(msg: unknown): void {
+  const lifecycle = parseV2ItemLifecycleNotification(msg);
+  if (!lifecycle || lifecycle.item.type !== 'contextCompaction') return;
+  if (lifecycle.method === 'item/started') {
+    autoCompactInFlightThreadIds.add(lifecycle.threadId);
+    return;
+  }
+  autoCompactInFlightThreadIds.delete(lifecycle.threadId);
+}
+
+async function maybeTriggerAutoCompaction(msg: unknown): Promise<void> {
+  syncAutoCompactLifecycle(msg);
+
+  const tokenUsage = parseThreadTokenUsageUpdatedNotification(msg);
+  if (!tokenUsage) return;
+
+  const limit = await resolveModelAutoCompactTokenLimit();
+  if (!limit || tokenUsage.totalTokens < limit) {
+    lastAutoCompactTokenTotalByThreadId.delete(tokenUsage.threadId);
+    return;
+  }
+  if (autoCompactInFlightThreadIds.has(tokenUsage.threadId)) return;
+
+  const lastTriggeredTotal = lastAutoCompactTokenTotalByThreadId.get(tokenUsage.threadId) || 0;
+  if (lastTriggeredTotal >= tokenUsage.totalTokens) return;
+
+  lastAutoCompactTokenTotalByThreadId.set(tokenUsage.threadId, tokenUsage.totalTokens);
+  autoCompactInFlightThreadIds.add(tokenUsage.threadId);
+  pushRuntimeLog({
+    level: 'info',
+    event: 'thread_auto_compact_start',
+    threadId: tokenUsage.threadId,
+    totalTokens: tokenUsage.totalTokens,
+    tokenLimit: limit
+  });
+
+  try {
+    await rpcRequest('thread/compact/start', { threadId: tokenUsage.threadId });
+  } catch (error) {
+    autoCompactInFlightThreadIds.delete(tokenUsage.threadId);
+    pushRuntimeLog({
+      level: 'error',
+      event: 'thread_auto_compact_failed',
+      threadId: tokenUsage.threadId,
+      totalTokens: tokenUsage.totalTokens,
+      tokenLimit: limit,
+      message: getErrorMessage(error)
+    });
+  }
 }
 
 function selectTurnStreamUpdate(msg: unknown, state: SelectTurnStreamState): SelectTurnStreamUpdateResult {
@@ -3480,6 +3571,7 @@ export {
   normalizeCollaborationMode,
   parseV2TurnNotification,
   parseLegacyTurnNotification,
+  parseThreadTokenUsageUpdatedNotification,
   parseTurnTerminalNotification,
   selectTurnStreamUpdate,
   normalizeThreadMessages

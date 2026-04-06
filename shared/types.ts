@@ -236,7 +236,7 @@ export interface TurnStateStreamEvent {
 
 export interface StatusTurnStreamEvent {
   type: 'status';
-  phase: 'starting' | 'reconnecting';
+  phase: 'starting' | 'reconnecting' | 'compacting' | 'compacted';
   attempt?: number;
   message?: string;
 }

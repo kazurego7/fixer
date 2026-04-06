@@ -23,6 +23,7 @@ const {
   normalizeCollaborationMode,
   parseV2TurnNotification,
   parseLegacyTurnNotification,
+  parseThreadTokenUsageUpdatedNotification,
   parseTurnTerminalNotification,
   selectTurnStreamUpdate,
   normalizeThreadMessages
@@ -370,6 +371,23 @@ test('parseV2TurnNotification falls back to turn.id when turnId is absent', () =
   });
   assert.ok(parsed);
   assert.equal(parsed.turnId, 'u-from-turn');
+});
+
+test('parseThreadTokenUsageUpdatedNotification parses total tokens', () => {
+  const parsed = parseThreadTokenUsageUpdatedNotification({
+    method: 'thread/tokenUsage/updated',
+    params: {
+      threadId: 't1',
+      tokenUsage: {
+        total: 12345
+      }
+    }
+  });
+
+  assert.deepEqual(parsed, {
+    threadId: 't1',
+    totalTokens: 12345
+  });
 });
 
 test('parseLegacyTurnNotification parses codex event', () => {

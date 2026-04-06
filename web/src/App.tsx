@@ -85,6 +85,8 @@ interface AppContextValue {
   streaming: boolean;
   streamingAssistantId: string | null;
   liveReasoningText: string;
+  compactionStatusPhase: '' | 'compacting' | 'compacted';
+  compactionStatusMessage: string;
   awaitingFirstStreamChunk: boolean;
   hasReasoningStarted: boolean;
   hasAnswerStarted: boolean;
@@ -1231,6 +1233,8 @@ function ChatPage() {
     streaming,
     streamingAssistantId,
     liveReasoningText,
+    compactionStatusPhase,
+    compactionStatusMessage,
     awaitingFirstStreamChunk,
     hasReasoningStarted,
     hasAnswerStarted,
@@ -1299,6 +1303,7 @@ function ChatPage() {
   const hideThinkingWhileUserInput = Boolean(activeUserInputRequest && activeUserInputQuestion);
   const showInitialLoading = streaming && awaitingFirstStreamChunk && !hideThinkingWhileUserInput;
   const showThinkingWorking = streaming && hasReasoningStarted && !hideThinkingWhileUserInput;
+  const showCompactionStatus = streaming && Boolean(compactionStatusMessage) && !hideThinkingWhileUserInput;
   const previewAttachment =
     previewIndex !== null && previewIndex >= 0 && previewIndex < pendingAttachments.length
       ? pendingAttachments[previewIndex]
@@ -1734,6 +1739,24 @@ function ChatPage() {
                 <span />
               </div>
               {thinkingText ? <pre className="fx-thinking-live-text" data-testid="thinking-live-content">{thinkingText}</pre> : null}
+            </div>
+          ) : null}
+          {showCompactionStatus ? (
+            <div
+              className={`fx-thinking-live-panel fx-compaction-panel${compactionStatusPhase === 'compacted' ? ' is-completed' : ''}`}
+              data-testid="compaction-status-panel"
+              aria-live="polite"
+            >
+              {compactionStatusPhase === 'compacting' ? (
+                <div className="fx-working-dots" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              ) : null}
+              <div className="fx-compaction-status-text" data-testid="compaction-status-text">
+                {compactionStatusMessage}
+              </div>
             </div>
           ) : null}
           {activeUserInputRequest && activeUserInputQuestion ? (
@@ -2197,6 +2220,8 @@ export default function AppRoot() {
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const [, setActiveTurnId] = useState('');
   const [liveReasoningText, setLiveReasoningText] = useState('');
+  const [compactionStatusPhase, setCompactionStatusPhase] = useState<'' | 'compacting' | 'compacted'>('');
+  const [compactionStatusMessage, setCompactionStatusMessage] = useState('');
   const [awaitingFirstStreamChunk, setAwaitingFirstStreamChunk] = useState(false);
   const [hasReasoningStarted, setHasReasoningStarted] = useState(false);
   const [hasAnswerStarted, setHasAnswerStarted] = useState(false);
@@ -2253,6 +2278,7 @@ export default function AppRoot() {
   const chatEntryScrollTopRef = useRef(0);
   const activeThreadRef = useRef<string | null>(activeThreadId);
   const activeTurnIdRef = useRef('');
+  const compactionStatusTimerRef = useRef<number | null>(null);
   const activeRepoRef = useRef<string | null>(activeRepoFullName);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const activeLiveTurnSeqRef = useRef(0);
@@ -2380,10 +2406,31 @@ export default function AppRoot() {
     });
   }
 
+  function clearCompactionStatusTimer(): void {
+    if (compactionStatusTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(compactionStatusTimerRef.current);
+      compactionStatusTimerRef.current = null;
+    }
+  }
+
+  function setCompactionStatus(phase: '' | 'compacting' | 'compacted', message = ''): void {
+    clearCompactionStatusTimer();
+    setCompactionStatusPhase(phase);
+    setCompactionStatusMessage(message);
+    if (phase === 'compacted' && typeof window !== 'undefined') {
+      compactionStatusTimerRef.current = window.setTimeout(() => {
+        setCompactionStatusPhase('');
+        setCompactionStatusMessage('');
+        compactionStatusTimerRef.current = null;
+      }, 1800);
+    }
+  }
+
   function resetStreamingUiState(): void {
     setStreaming(false);
     setStreamingAssistantTarget(null);
     setLiveReasoningText('');
+    setCompactionStatus('', '');
     setAwaitingFirstStreamChunk(false);
     setHasReasoningStarted(false);
     setHasAnswerStarted(false);
@@ -2792,7 +2839,17 @@ export default function AppRoot() {
       });
       return;
     }
-    if (evt.type === 'status') return;
+    if (evt.type === 'status') {
+      if (evt.phase === 'compacting' || evt.phase === 'compacted') {
+        setCompactionStatus(
+          evt.phase,
+          String(
+            evt.message || (evt.phase === 'compacting' ? '会話履歴を圧縮しています...' : '会話履歴を圧縮しました')
+          )
+        );
+      }
+      return;
+    }
     if (evt.type === 'reasoning_delta' || evt.type === 'answer_delta' || evt.type === 'plan_delta' || evt.type === 'plan_snapshot') {
       return;
     }
@@ -3664,6 +3721,7 @@ export default function AppRoot() {
 
   useEffect(() => {
     return () => {
+      clearCompactionStatusTimer();
       if (resumeStreamAbortRef.current) resumeStreamAbortRef.current.abort();
     };
   }, []);
@@ -3904,6 +3962,8 @@ export default function AppRoot() {
       streaming,
       streamingAssistantId,
       liveReasoningText,
+      compactionStatusPhase,
+      compactionStatusMessage,
       awaitingFirstStreamChunk,
       hasReasoningStarted,
       hasAnswerStarted,
@@ -3970,6 +4030,8 @@ export default function AppRoot() {
       pendingAttachments,
       streaming,
       liveReasoningText,
+      compactionStatusPhase,
+      compactionStatusMessage,
       awaitingFirstStreamChunk,
       hasReasoningStarted,
       hasAnswerStarted,

@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
+  outputDir: './test-results/output',
   timeout: 30_000,
   reporter: [['list'], ['html', { open: 'never' }]],
   expect: {
