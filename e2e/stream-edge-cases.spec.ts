@@ -75,18 +75,83 @@ async function readComposerViewportMetrics(page: Page): Promise<{ bottom: number
   });
 }
 
-test('ライブ出力中でもリポジトリ一覧へ戻れる', async ({ page }) => {
+test('ライブ出力中に戻っても turn を中断せずリポジトリ一覧へ戻れる', async ({ page }) => {
   await bootstrapChatState(page);
   await installApiMocks(page);
+  const state = { restored: false, cancelCalls: 0 };
+
+  await page.unroute('**/api/threads/messages**');
+  await page.route('**/api/threads/messages**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: state.restored
+          ? [
+              {
+                id: 'turn-nav-1:user:0',
+                role: 'user',
+                type: 'plain',
+                text: '戻る確認'
+              },
+              {
+                id: 'turn-nav-1:assistant:0',
+                role: 'assistant',
+                type: 'markdown',
+                text: 'バックグラウンドで返答を継続しました',
+                answer: 'バックグラウンドで返答を継続しました',
+                plan: ''
+              }
+            ]
+          : []
+      })
+    });
+  });
 
   await page.unroute('**/api/turns/stream');
   await page.route('**/api/turns/stream', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    const ndjson = [JSON.stringify({ type: 'started', turnId: 'turn-nav-1' }), JSON.stringify({ type: 'done' })].join('\n') + '\n';
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    state.restored = true;
+    const ndjson = [
+      JSON.stringify({ type: 'started', turnId: 'turn-nav-1' }),
+      JSON.stringify({
+        type: 'turn_state',
+        seq: 1,
+        turnId: 'turn-nav-1',
+        liveReasoningText: '',
+        items: [
+          {
+            id: 'turn-nav-1:user:0',
+            role: 'user',
+            type: 'plain',
+            text: '戻る確認'
+          },
+          {
+            id: 'turn-nav-1:assistant:0',
+            role: 'assistant',
+            type: 'markdown',
+            text: 'バックグラウンドで返答を継続しました',
+            answer: 'バックグラウンドで返答を継続しました',
+            plan: ''
+          }
+        ]
+      }),
+      JSON.stringify({ type: 'done' })
+    ].join('\n') + '\n';
     await route.fulfill({
       status: 200,
       headers: { 'content-type': 'application/x-ndjson; charset=utf-8' },
       body: ndjson
+    });
+  });
+
+  await page.unroute('**/api/turns/cancel');
+  await page.route('**/api/turns/cancel', async (route) => {
+    state.cancelCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ cancelled: true })
     });
   });
 
@@ -97,6 +162,11 @@ test('ライブ出力中でもリポジトリ一覧へ戻れる', async ({ page 
   await expect(page.getByTestId('back-button')).toBeVisible();
   await page.getByTestId('back-button').click();
   await expect(page).toHaveURL(/\/repos\/?$/);
+  await page.waitForTimeout(900);
+  expect(state.cancelCalls).toBe(0);
+
+  await page.goto('/chat/');
+  await expect(page.locator('.fx-msg-assistant .fx-msg-bubble')).toContainText('バックグラウンドで返答を継続しました');
 });
 
 test('ライブ出力中でも追加入力を送れる', async ({ page }) => {

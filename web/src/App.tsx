@@ -2723,6 +2723,15 @@ export default function AppRoot() {
     activeTurnIdRef.current = '';
   }
 
+  function detachStreamingSubscriptionSilently(): void {
+    if (!streaming && !streamAbortRef.current && !resumeStreamAbortRef.current) return;
+    silentStreamAbortRef.current = true;
+    shouldResumeOnVisibleRef.current = false;
+    backgroundInterruptedTurnRef.current = false;
+    if (resumeStreamAbortRef.current) resumeStreamAbortRef.current.abort();
+    if (streamAbortRef.current) streamAbortRef.current.abort();
+  }
+
   function appendStreamErrorMessage(prefix: string, messageText: string): void {
     const text = `${prefix}: ${messageText}`;
     setOutputItems((prev) => [
@@ -3773,10 +3782,8 @@ export default function AppRoot() {
   }
 
   function goBackToRepoList(): void {
-    void (async () => {
-      await interruptStreamingSilently();
-      navigate('/repos/');
-    })();
+    detachStreamingSubscriptionSilently();
+    navigate('/repos/');
   }
 
   async function startNewThread(): Promise<void> {
