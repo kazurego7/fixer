@@ -265,6 +265,153 @@ test('ライブ出力途中でもマークダウンを整形表示する', async
   await expect(page.locator('.fx-msg-assistant .fx-msg-bubble')).toContainText('項目B');
 });
 
+test('ライブ出力中と完了後の本文スタイルを共通クラスで揃える', async ({ page }) => {
+  await bootstrapChatState(page);
+  await installApiMocks(page);
+
+  await page.unroute('**/api/threads/messages**');
+  await page.route('**/api/threads/messages**', async (route) => {
+    const restored = await page.evaluate(() => {
+      const win = window as Window & { __fxLiveFontRestored?: boolean };
+      return Boolean(win.__fxLiveFontRestored);
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: restored
+          ? [
+              {
+                id: 'turn-live-font-1:user:0',
+                role: 'user',
+                type: 'plain',
+                text: '文字スタイル確認'
+              },
+              {
+                id: 'turn-live-font-1:assistant:0',
+                role: 'assistant',
+                type: 'markdown',
+                text: '**進行中の整理**\n\n- 項目A\n- 項目B',
+                answer: '**進行中の整理**\n\n- 項目A\n- 項目B',
+                plan: ''
+              }
+            ]
+          : []
+      })
+    });
+  });
+
+  await page.addInitScript(() => {
+    const win = window as Window & { __fxLiveFontRestored?: boolean };
+    win.__fxLiveFontRestored = false;
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!url.includes('/api/turns/stream')) return originalFetch(input, init);
+
+      const encoder = new TextEncoder();
+      const chunks = [
+        JSON.stringify({ type: 'started', turnId: 'turn-live-font-1' }) + '\n',
+        JSON.stringify({
+          type: 'turn_state',
+          seq: 1,
+          turnId: 'turn-live-font-1',
+          liveReasoningText: '',
+          items: [
+            {
+              id: 'turn-live-font-1:user:0',
+              role: 'user',
+              type: 'plain',
+              text: '文字スタイル確認'
+            },
+            {
+              id: 'turn-live-font-1:assistant:0',
+              role: 'assistant',
+              type: 'markdown',
+              text: '**進行中の整理**\n\n- 項目A\n- 項目B',
+              answer: '**進行中の整理**\n\n- 項目A\n- 項目B',
+              plan: ''
+            }
+          ]
+        }) + '\n',
+        JSON.stringify({ type: 'done' }) + '\n'
+      ];
+
+      let index = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const pushNext = () => {
+            if (index >= chunks.length) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(encoder.encode(chunks[index]));
+            index += 1;
+            if (index >= chunks.length - 1) {
+              win.__fxLiveFontRestored = true;
+            }
+            window.setTimeout(pushNext, index === 1 ? 40 : index === 2 ? 500 : 40);
+          };
+          pushNext();
+        }
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'application/x-ndjson; charset=utf-8' }
+      });
+    };
+  });
+
+  await page.goto('/chat/');
+  await page.getByTestId('composer-textarea').fill('文字スタイル確認');
+  await page.getByTestId('send-button').click();
+
+  const bubble = page.locator('.fx-msg-assistant .fx-msg-bubble').last();
+  const userLine = page.locator('.fx-user-line').last();
+  await expect(page.getByTestId('stream-loading-indicator')).toBeVisible();
+  await expect(bubble.locator('strong')).toHaveText('進行中の整理');
+  const liveMarkdown = bubble.locator('.fx-message-body-copy');
+
+  const liveStyle = await liveMarkdown.evaluate((node) => {
+    const style = window.getComputedStyle(node);
+    return {
+      fontSize: style.fontSize,
+      lineHeight: style.lineHeight,
+      color: style.color
+    };
+  });
+  const userStyle = await userLine.evaluate((node) => {
+    const style = window.getComputedStyle(node);
+    return {
+      fontSize: style.fontSize,
+      lineHeight: style.lineHeight,
+      color: style.color
+    };
+  });
+
+  await expect(page.getByTestId('stream-loading-indicator')).toBeHidden();
+  const doneMarkdown = page.locator('.fx-msg-assistant .fx-msg-bubble .fx-message-body-copy').last();
+  await expect(doneMarkdown).toBeVisible();
+
+  const doneStyle = await doneMarkdown.evaluate((node) => {
+    const style = window.getComputedStyle(node);
+    return {
+      fontSize: style.fontSize,
+      lineHeight: style.lineHeight,
+      color: style.color
+    };
+  });
+
+  expect(liveStyle).toEqual({
+    fontSize: '14.4px',
+    lineHeight: '21.6px',
+    color: 'rgb(31, 41, 55)'
+  });
+  expect(doneStyle).toEqual(liveStyle);
+  expect(userStyle).toEqual(liveStyle);
+});
+
 test('ライブ出力が増え続ける間は末尾へ自動スクロールする', async ({ page }) => {
   await bootstrapChatState(page);
   await installApiMocks(page);

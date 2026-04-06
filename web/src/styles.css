@@ -1085,6 +1085,13 @@ body {
   white-space: pre-wrap;
 }
 
+.fx-message-body-copy,
+.fx-user-line {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #1f2937;
+}
+
 .fx-user-attachments {
   display: flex;
   flex-wrap: wrap;
@@ -1267,9 +1274,6 @@ body {
 
 .fx-stream-live {
   margin: 0;
-  font-size: 0.9rem;
-  line-height: 1.5;
-  color: #1f2937;
 }
 
 .fx-thinking-live-panel {

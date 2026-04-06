@@ -1383,6 +1383,7 @@ function FileViewPage() {
 function renderAssistant(item: AssistantOutputItem, pending = false) {
   const answer = typeof item.answer === 'string' ? item.answer : String(item.text || '');
   const statusText = !answer ? String(item.status || item.text || '').trim() : '';
+  const assistantHtml = String(marked.parse(answer));
 
   if (item.type === 'diff') {
     return <pre className="fx-diff">{answer}</pre>;
@@ -1393,12 +1394,17 @@ function renderAssistant(item: AssistantOutputItem, pending = false) {
   if (pending && answer) {
     return (
       <div
-        className="fx-assistant-rich fx-stream-live"
-        dangerouslySetInnerHTML={{ __html: String(marked.parse(answer)) }}
+        className="fx-assistant-rich fx-message-body-copy fx-stream-live"
+        dangerouslySetInnerHTML={{ __html: assistantHtml }}
       />
     );
   }
-  return <div dangerouslySetInnerHTML={{ __html: String(marked.parse(answer)) }} />;
+  return (
+    <div
+      className="fx-assistant-rich fx-message-body-copy"
+      dangerouslySetInnerHTML={{ __html: assistantHtml }}
+    />
+  );
 }
 
 function expandAssistantItems(items: OutputItem[]): OutputItem[] {
