@@ -1909,40 +1909,42 @@ function ChatPage() {
             if (item.role === 'assistant') {
               const planText = typeof item.plan === 'string' ? item.plan.trim() : '';
               const assistantMain = renderAssistant(item, streaming && item.id === streamingAssistantId);
+              const showPlanApply = Boolean(planText && canApplyLatestPlan && String(item.id || '') === latestPlanItemId);
+              const showAssistantCard = Boolean(assistantMain || planText || showPlanApply);
               return (
                 <Fragment key={item.id}>
-                  {assistantMain ? (
+                  {showAssistantCard ? (
                     <div className="fx-msg fx-msg-assistant">
-                      <div className="fx-msg-bubble">{assistantMain}</div>
-                    </div>
-                  ) : null}
-                  {planText ? (
-                    <div className="fx-msg fx-msg-assistant fx-msg-plan">
                       <div className="fx-msg-bubble">
-                        <div className="fx-plan-bubble-title">プラン</div>
-                        <pre className="fx-plan-bubble-content">{planText}</pre>
+                        {assistantMain}
+                        {planText ? (
+                          <div className="fx-plan-inline-block" data-testid="plan-inline-block">
+                            <div className="fx-plan-bubble-title">プラン</div>
+                            <pre className="fx-plan-bubble-content">{planText}</pre>
+                          </div>
+                        ) : null}
+                        {showPlanApply ? (
+                          <>
+                            <div className="fx-plan-apply-row">
+                              <button
+                                className="fx-plan-apply-inline-btn"
+                                type="button"
+                                onClick={applyLatestPlanShortcut}
+                                disabled={busy}
+                                data-testid="plan-apply-button"
+                                aria-label="プランを実現"
+                                title="プランを実現"
+                              >
+                                プランを実現
+                              </button>
+                            </div>
+                            <div className="fx-plan-apply-help-note" data-testid="plan-edit-help">
+                              ※ プランを修正する場合は、下の入力欄に修正内容や質問を入力して送信してください。
+                            </div>
+                          </>
+                        ) : null}
                       </div>
                     </div>
-                  ) : null}
-                  {planText && canApplyLatestPlan && String(item.id || '') === latestPlanItemId ? (
-                    <>
-                      <div className="fx-plan-apply-row">
-                        <button
-                          className="fx-plan-apply-inline-btn"
-                          type="button"
-                          onClick={applyLatestPlanShortcut}
-                          disabled={busy}
-                          data-testid="plan-apply-button"
-                          aria-label="プランを実現"
-                          title="プランを実現"
-                        >
-                          プランを実現
-                        </button>
-                      </div>
-                      <div className="fx-plan-apply-help-note" data-testid="plan-edit-help">
-                        ※ プランを修正する場合は、下の入力欄に修正内容や質問を入力して送信してください。
-                      </div>
-                    </>
                   ) : null}
                 </Fragment>
               );
@@ -4258,7 +4260,7 @@ export default function AppRoot() {
   );
 
   const canApplyLatestPlan = Boolean(
-    latestPlanText && activeThreadId && activeRepoFullName
+    latestPlanText && activeThreadId && activeRepoFullName && activeCollaborationMode === 'plan'
   );
 
   async function applyLatestPlanShortcut(): Promise<void> {

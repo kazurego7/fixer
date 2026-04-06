@@ -1214,8 +1214,11 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
-.fx-msg-plan .fx-msg-bubble {
-  border-color: #86efac;
+.fx-plan-inline-block {
+  margin-top: 0.62rem;
+  padding: 0.58rem 0.62rem;
+  border: 1px solid #86efac;
+  border-radius: 12px;
   background: #dcfce7;
 }
 

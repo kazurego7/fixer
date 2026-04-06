@@ -6,6 +6,10 @@ test('プラン実現ボタン下に操作説明を表示し、問UIでは説明
   await installApiMocks(page);
   const state = { pending: false };
 
+  await page.addInitScript(() => {
+    window.localStorage.setItem('fx:collaborationModeByRepo', JSON.stringify({ 'owner/repo': 'plan' }));
+  });
+
   await page.unroute('**/api/threads/messages**');
   await page.route('**/api/threads/messages**', async (route) => {
     await route.fulfill({
@@ -92,6 +96,7 @@ test('プラン実現ボタン下に操作説明を表示し、問UIでは説明
 
   await page.goto('/chat/');
   await expect(page.getByTestId('plan-edit-help')).toContainText('※ プランを修正する場合は');
+  await expect(page.getByTestId('plan-inline-block')).toContainText('1. 調査');
   await page.getByTestId('composer-textarea').fill('確認したい');
   await page.getByTestId('send-button').click();
 
