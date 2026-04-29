@@ -26,7 +26,8 @@ const {
   parseThreadTokenUsageUpdatedNotification,
   parseTurnTerminalNotification,
   selectTurnStreamUpdate,
-  normalizeThreadMessages
+  normalizeThreadMessages,
+  parseIssueSummaryOutput
 } = require('../server') as typeof import('../server');
 
 test('normalizeCollaborationMode normalizes valid values', () => {
@@ -88,6 +89,11 @@ test('repoPathFromFullName resolves under workspace root', () => {
   const repoPath = repoPathFromFullName('org/repo');
   assert.equal(path.basename(repoPath), 'org__repo');
   assert.match(repoPath, /workspace/);
+});
+
+test('repoPathFromFullName uses current repo path when remote matches', () => {
+  const repoPath = repoPathFromFullName('kazurego7/fixer');
+  assert.equal(repoPath, process.cwd());
 });
 
 test('parseGitStatusOutput collects変更件数と ahead/behind を判定する', () => {
@@ -862,4 +868,20 @@ test('buildToolUserInputResponsePayload drops empty answers', () => {
     q3: { answers: [''] }
   });
   assert.deepEqual(out, { answers: {} });
+});
+
+test('parseIssueSummaryOutput parses strict JSON summary', () => {
+  const out = parseIssueSummaryOutput(
+    JSON.stringify({
+      title: '送信後に止まる',
+      summary: 'Bad が押されたターンでは送信後に応答が進まなかった。',
+      nextPrompt: '送信後に応答が進まない原因を調べて修正して'
+    })
+  );
+  assert.equal(out.title, '送信後に止まる');
+  assert.match(out.nextPrompt, /原因/);
+});
+
+test('parseIssueSummaryOutput rejects incomplete JSON without fallback', () => {
+  assert.throws(() => parseIssueSummaryOutput('{"title":"x"}'), /issue_summary_json_invalid/);
 });

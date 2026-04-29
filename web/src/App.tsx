@@ -23,6 +23,7 @@ import type {
   GitRepoStatus,
   ImageAttachmentDraft,
   ImageAttachmentMeta,
+  IssueItem,
   LiveTurnStateResponse,
   ModelOption,
   OutputItem,
@@ -141,6 +142,17 @@ interface AppContextValue {
   ) => Promise<void>;
   pendingUserInputBusy: PendingBusyMap;
   pendingUserInputDrafts: UserInputDraftMap;
+  issueItems: IssueItem[];
+  issuePanelOpen: boolean;
+  issueLoading: boolean;
+  issueError: string;
+  openIssuePanel: () => void;
+  closeIssuePanel: () => void;
+  markTurnBad: (turnId: string) => Promise<void>;
+  badMarkerBusy: boolean;
+  markedBadTurnIds: string[];
+  useIssuePrompt: (issue: IssueItem) => void;
+  resolveIssue: (issue: IssueItem) => Promise<void>;
 }
 
 interface PendingUserInputFetchResponse {
@@ -164,6 +176,10 @@ interface ThreadMessagesResponse {
   items?: OutputItem[];
   model?: string | null;
   error?: string;
+}
+
+interface IssuesResponse extends JsonErrorResponse {
+  issues?: IssueItem[];
 }
 
 interface EnsureThreadResponse {
@@ -233,6 +249,20 @@ function formatFileSize(size: number | string | null | undefined): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatIssueStatus(status: IssueItem['status']): string {
+  if (status === 'open') return '未対応';
+  if (status === 'summarizing') return '要約中';
+  if (status === 'failed') return '失敗';
+  if (status === 'resolved') return '解決済み';
+  return '待機中';
+}
+
+function outputItemTurnId(item: OutputItem | null | undefined): string {
+  const id = String(item?.id || '').trim();
+  const idx = id.indexOf(':');
+  return idx > 0 ? id.slice(0, idx) : '';
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -1469,6 +1499,7 @@ function ChatPage() {
     chatVisible,
     navigate,
     activeRepoFullName,
+    activeThreadId,
     message,
     setMessage,
     pendingAttachments,
@@ -1511,7 +1542,18 @@ function ChatPage() {
     pendingUserInputRequests,
     selectUserInputOption,
     pendingUserInputBusy,
-    pendingUserInputDrafts
+    pendingUserInputDrafts,
+    issueItems,
+    issuePanelOpen,
+    issueLoading,
+    issueError,
+    openIssuePanel,
+    closeIssuePanel,
+    markTurnBad,
+    badMarkerBusy,
+    markedBadTurnIds,
+    useIssuePrompt,
+    resolveIssue
   } = useAppCtx();
   const hasComposerInput = message.trim().length > 0 || pendingAttachments.length > 0;
   const canSend = hasComposerInput;
@@ -1575,6 +1617,7 @@ function ChatPage() {
       gitStatus?.actionRecommended
   );
   const canOpenFiles = Boolean(activeRepoFullName);
+  const openIssueCount = issueItems.filter((item) => item.status !== 'resolved').length;
   const isComposerExpanded = isInputFocused;
   const chatScrollPaddingBottom = Math.max(78, composerHeight + keyboardInset + 12);
   const composerInlineStyle = keyboardInset > 0 ? { bottom: `${keyboardInset}px` } : undefined;
@@ -1858,6 +1901,21 @@ function ChatPage() {
               />
             </svg>
           </button>
+          <button
+            className="fx-git-action-icon fx-issue-nav-button"
+            type="button"
+            onClick={openIssuePanel}
+            aria-label="課題一覧"
+            title="課題一覧"
+            data-testid="issues-open-button"
+          >
+            <span className="fx-issue-nav-mark" aria-hidden="true">!</span>
+            {openIssueCount > 0 ? (
+              <span className="fx-issue-nav-count" data-testid="issues-count">
+                {openIssueCount}
+              </span>
+            ) : null}
+          </button>
         </div>
         <button
           type="button"
@@ -1909,6 +1967,10 @@ function ChatPage() {
               const planText = typeof item.plan === 'string' ? item.plan.trim() : '';
               const assistantMain = renderAssistant(item, streaming && item.id === streamingAssistantId);
               const showPlanApply = Boolean(planText && canApplyLatestPlan && String(item.id || '') === latestPlanItemId);
+              const assistantTurnId = outputItemTurnId(item);
+              const isStreamingAssistant = Boolean(streaming && item.id === streamingAssistantId);
+              const assistantMarkedBad = Boolean(assistantTurnId && markedBadTurnIds.includes(assistantTurnId));
+              const showBadMarker = Boolean(assistantTurnId && !isStreamingAssistant);
               const showAssistantCard = Boolean(assistantMain || planText || showPlanApply);
               return (
                 <Fragment key={item.id}>
@@ -1941,6 +2003,21 @@ function ChatPage() {
                               ※ プランを修正する場合は、下の入力欄に修正内容や質問を入力して送信してください。
                             </div>
                           </>
+                        ) : null}
+                        {showBadMarker ? (
+                          <div className="fx-message-action-row">
+                            <button
+                              type="button"
+                              className={`fx-message-bad-button${assistantMarkedBad ? ' is-marked' : ''}`}
+                              onClick={() => markTurnBad(assistantTurnId)}
+                              disabled={assistantMarkedBad || badMarkerBusy}
+                              aria-label={assistantMarkedBad ? 'Bad目印を保存済み' : 'Bad目印を付ける'}
+                              title={assistantMarkedBad ? 'Bad目印を保存済み' : 'Bad目印を付ける'}
+                              data-testid="bad-marker-button"
+                            >
+                              {assistantMarkedBad ? '保存済み' : 'Bad'}
+                            </button>
+                          </div>
                         ) : null}
                       </div>
                     </div>
@@ -2164,6 +2241,69 @@ function ChatPage() {
                   <p className="fx-mini">利用可能なモデルが見つかりませんでした。</p>
                 ) : null}
               </div>
+            </section>
+          </div>
+        ) : null}
+
+        {issuePanelOpen ? (
+          <div className="fx-issue-panel-overlay" onClick={closeIssuePanel} data-testid="issues-panel">
+            <section
+              className="fx-issue-panel"
+              role="dialog"
+              aria-modal="true"
+              aria-label="課題一覧"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <header className="fx-issue-panel-head">
+                <h3>課題一覧</h3>
+                <button
+                  type="button"
+                  className="fx-chat-settings-close"
+                  onClick={closeIssuePanel}
+                  aria-label="課題一覧を閉じる"
+                  data-testid="issues-close-button"
+                >
+                  ×
+                </button>
+              </header>
+              {issueLoading ? <div className="fx-issue-empty">読み込み中...</div> : null}
+              {issueError ? <div className="fx-issue-error">{issueError}</div> : null}
+              {!issueLoading && !issueError && issueItems.length === 0 ? (
+                <div className="fx-issue-empty">課題はまだありません。</div>
+              ) : null}
+              {!issueLoading && !issueError && issueItems.length > 0 ? (
+                <div className="fx-issue-list">
+                  {issueItems.map((issue) => (
+                    <article key={issue.id} className={`fx-issue-item is-${issue.status}`} data-testid="issue-item">
+                      <div className="fx-issue-item-head">
+                        <h4>{issue.title}</h4>
+                        <span className="fx-issue-status">{formatIssueStatus(issue.status)}</span>
+                      </div>
+                      <p>{issue.summary}</p>
+                      <div className="fx-issue-actions">
+                        <button
+                          type="button"
+                          className="fx-issue-action"
+                          onClick={() => useIssuePrompt(issue)}
+                          disabled={!issue.nextPrompt || issue.status !== 'open'}
+                          data-testid="issue-use-button"
+                        >
+                          対応する
+                        </button>
+                        <button
+                          type="button"
+                          className="fx-issue-action is-muted"
+                          onClick={() => resolveIssue(issue)}
+                          disabled={issue.status !== 'open'}
+                          data-testid="issue-resolve-button"
+                        >
+                          解決済み
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
             </section>
           </div>
         ) : null}
@@ -2512,6 +2652,12 @@ export default function AppRoot() {
   const [pendingUserInputDrafts, setPendingUserInputDrafts] = useState<UserInputDraftMap>({});
   const [pendingUserInputBusy, setPendingUserInputBusy] = useState<PendingBusyMap>({});
   const [pendingThreadReturn, setPendingThreadReturn] = useState<PendingThreadReturn | null>(null);
+  const [issueItems, setIssueItems] = useState<IssueItem[]>([]);
+  const [issuePanelOpen, setIssuePanelOpen] = useState(false);
+  const [issueLoading, setIssueLoading] = useState(false);
+  const [issueError, setIssueError] = useState('');
+  const [badMarkerBusy, setBadMarkerBusy] = useState(false);
+  const [markedBadTurnIds, setMarkedBadTurnIds] = useState<string[]>([]);
 
   const outputRef = useRef<HTMLElement | null>(null);
   const autoScrollRef = useRef(true);
@@ -3346,6 +3492,89 @@ export default function AppRoot() {
     };
   }
 
+  async function fetchIssues(repoFullName: string | null = activeRepoRef.current): Promise<void> {
+    if (!repoFullName) {
+      setIssueItems([]);
+      setIssueError('');
+      setIssueLoading(false);
+      return;
+    }
+    setIssueLoading(true);
+    setIssueError('');
+    try {
+      const res = await fetch(`/api/issues?repoFullName=${encodeURIComponent(repoFullName)}`);
+      const data = (await res.json()) as IssuesResponse;
+      if (!res.ok) throw new Error(data.error || 'issues_load_failed');
+      if (activeRepoRef.current !== repoFullName) return;
+      setIssueItems(Array.isArray(data.issues) ? data.issues : []);
+    } catch (e: unknown) {
+      if (activeRepoRef.current !== repoFullName) return;
+      setIssueError(getClientErrorMessage(e, 'issues_load_failed'));
+      setIssueItems([]);
+    } finally {
+      if (activeRepoRef.current === repoFullName) setIssueLoading(false);
+    }
+  }
+
+  function openIssuePanel(): void {
+    setIssuePanelOpen(true);
+    fetchIssues().catch(() => {});
+  }
+
+  function closeIssuePanel(): void {
+    setIssuePanelOpen(false);
+  }
+
+  async function markTurnBad(turnId: string): Promise<void> {
+    const repoFullName = activeRepoRef.current;
+    const threadId = activeThreadRef.current;
+    const normalizedTurnId = String(turnId || '').trim();
+    if (!repoFullName || !threadId || !normalizedTurnId || badMarkerBusy) return;
+    if (markedBadTurnIds.includes(normalizedTurnId)) return;
+    setBadMarkerBusy(true);
+    try {
+      const res = await fetch('/api/issues/markers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoFullName, threadId, turnId: normalizedTurnId })
+      });
+      const data = (await res.json()) as JsonErrorResponse;
+      if (!res.ok) throw new Error(data.error || 'issue_marker_failed');
+      setMarkedBadTurnIds((prev) => (prev.includes(normalizedTurnId) ? prev : [...prev, normalizedTurnId]));
+      toast('Bad目印を保存しました');
+      fetchIssues(repoFullName).catch(() => {});
+    } catch (e: unknown) {
+      toast(`Bad目印の保存失敗: ${getClientErrorMessage(e)}`);
+    } finally {
+      setBadMarkerBusy(false);
+    }
+  }
+
+  function useIssuePrompt(issue: IssueItem): void {
+    const prompt = String(issue?.nextPrompt || '').trim();
+    if (!prompt) return;
+    setMessage(prompt);
+    setIssuePanelOpen(false);
+    toast('課題を入力欄へ入れました');
+  }
+
+  async function resolveIssue(issue: IssueItem): Promise<void> {
+    if (!issue?.id || issue.status !== 'open') return;
+    try {
+      const res = await fetch(`/api/issues/${encodeURIComponent(issue.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'resolved' })
+      });
+      const data = (await res.json()) as JsonErrorResponse;
+      if (!res.ok) throw new Error(data.error || 'issue_resolve_failed');
+      setIssueItems((prev) => prev.filter((item) => item.id !== issue.id));
+      toast('課題を解決済みにしました');
+    } catch (e: unknown) {
+      toast(`課題更新失敗: ${getClientErrorMessage(e)}`);
+    }
+  }
+
   async function resumeRunningTurn(threadId: string): Promise<boolean> {
     if (!threadId) return false;
     const running = await fetchRunningTurn(threadId);
@@ -3656,6 +3885,7 @@ export default function AppRoot() {
 
       await consumeTurnStreamResponse(res, threadIdToUse, controller.signal, { markStreaming: true });
       restoreOutputForThread(threadIdToUse, repoFullName, { useCache: false }).catch(() => {});
+      window.setTimeout(() => fetchIssues(repoFullName).catch(() => {}), 1800);
     } catch (e: unknown) {
       if (e instanceof DOMException && e.name === 'AbortError') {
         if (!backgroundInterruptedTurnRef.current && !silentStreamAbortRef.current) {
@@ -3939,6 +4169,18 @@ export default function AppRoot() {
   useEffect(() => {
     activeRepoRef.current = activeRepoFullName;
   }, [activeRepoFullName]);
+
+  useEffect(() => {
+    if (!chatVisible || !activeRepoFullName) {
+      setIssueItems([]);
+      setIssueError('');
+      setIssueLoading(false);
+      setIssuePanelOpen(false);
+      setMarkedBadTurnIds([]);
+      return;
+    }
+    fetchIssues(activeRepoFullName).catch(() => {});
+  }, [chatVisible, activeRepoFullName]);
 
   useEffect(() => {
     if (!chatVisible || !activeRepoFullName) {
@@ -4315,7 +4557,18 @@ export default function AppRoot() {
       pendingUserInputRequests,
       selectUserInputOption,
       pendingUserInputBusy,
-      pendingUserInputDrafts
+      pendingUserInputDrafts,
+      issueItems,
+      issuePanelOpen,
+      issueLoading,
+      issueError,
+      openIssuePanel,
+      closeIssuePanel,
+      markTurnBad,
+      badMarkerBusy,
+      markedBadTurnIds,
+      useIssuePrompt,
+      resolveIssue
     }),
     [
       connected,
@@ -4365,7 +4618,13 @@ export default function AppRoot() {
       returnFromFileView,
       pendingUserInputRequests,
       pendingUserInputBusy,
-      pendingUserInputDrafts
+      pendingUserInputDrafts,
+      issueItems,
+      issuePanelOpen,
+      issueLoading,
+      issueError,
+      badMarkerBusy,
+      markedBadTurnIds
     ]
   );
 

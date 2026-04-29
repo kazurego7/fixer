@@ -276,6 +276,32 @@ async function installApiMocks(page: Page, options: InstallApiMocksOptions = {})
     });
   });
 
+  await page.route('**/api/issues?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ issues: [] })
+    });
+  });
+
+  await page.route('**/api/issues/markers', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        marker: {
+          id: 'marker-e2e-1',
+          repoFullName: repo,
+          sourceThreadId: threadId,
+          sourceTurnId: 'turn-e2e-default-1',
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      })
+    });
+  });
+
   await page.route('**/api/repos/git-status**', async (route) => {
     await route.fulfill({
       status: 200,

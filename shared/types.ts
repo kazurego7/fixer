@@ -175,6 +175,35 @@ export interface PendingUserInputRequest {
   createdAt?: string;
 }
 
+export type IssueStatus = 'pending' | 'summarizing' | 'open' | 'resolved' | 'failed';
+
+export interface IssueMarker {
+  id: string;
+  repoFullName: string;
+  sourceThreadId: string;
+  sourceTurnId: string;
+  status: IssueStatus;
+  createdAt: string;
+  updatedAt: string;
+  error?: string | null;
+  issueId?: string | null;
+}
+
+export interface IssueItem {
+  id: string;
+  repoFullName: string;
+  title: string;
+  summary: string;
+  nextPrompt: string;
+  markerIds: string[];
+  sourceThreadId: string;
+  sourceTurnId: string;
+  status: IssueStatus;
+  createdAt: string;
+  updatedAt: string;
+  error?: string | null;
+}
+
 export interface UserInputAnswer {
   answers: string[];
 }

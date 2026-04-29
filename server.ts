@@ -17,6 +17,9 @@ import type {
   CollaborationMode,
   CollaborationModeOverride,
   GitRepoStatus,
+  IssueItem,
+  IssueMarker,
+  IssueStatus,
   ModelOption,
   OutputItem,
   ParsedLegacyTurnNotification,
@@ -64,6 +67,18 @@ interface PushSubscriptionRecord {
   currentThreadId: string | null;
   userAgent: string;
   updatedAt: string;
+}
+
+interface IssueStore {
+  markers: IssueMarker[];
+  issues: IssueItem[];
+  curatorThreadsByRepo: Record<string, string>;
+}
+
+interface IssueSummaryDraft {
+  title: string;
+  summary: string;
+  nextPrompt: string;
 }
 
 interface CloneJobState {
@@ -197,6 +212,7 @@ function resolveWorkspaceRoot(): string {
 const WORKSPACE_ROOT = resolveWorkspaceRoot();
 const PUSH_SUBSCRIPTIONS_PATH = path.join(WORKSPACE_ROOT, 'push-subscriptions.json');
 const PUSH_VAPID_PATH = path.join(WORKSPACE_ROOT, 'push-vapid.json');
+const ISSUE_STORE_PATH = path.join(WORKSPACE_ROOT, 'issues.json');
 const DEFAULT_PUSH_SUBJECT = 'mailto:fixer@example.com';
 const cloneJobs = new Map<string, CloneJobState>();
 const runtimeLogs: RuntimeLogEntry[] = [];
@@ -209,6 +225,8 @@ const handledPushTurnKeys = new Set<string>();
 const liveTurnStateByThreadId = new Map<string, LiveTurnState>();
 const autoCompactInFlightThreadIds = new Set<string>();
 const lastAutoCompactTokenTotalByThreadId = new Map<string, number>();
+let issueStore: IssueStore | null = null;
+const issueSummaryInFlightTurnKeys = new Set<string>();
 let liveTurnSeq = 1;
 const DEFAULT_MODEL_FALLBACK = 'gpt-5-codex';
 const DEFAULT_REASONING_SUMMARY = 'concise';
@@ -229,10 +247,55 @@ let pushPublicKey = '';
 let pushPrivateKey = '';
 let pushEnabled = false;
 let cachedModelAutoCompactTokenLimit: number | null | undefined;
+let cachedCurrentRepoMatch: { fullName: string; repoPath: string } | null | undefined;
 
 function pushRuntimeLog(entry: { level: RuntimeLogLevel; event: string; [key: string]: unknown }): void {
   runtimeLogs.push({ timestamp: new Date().toISOString(), ...entry });
   if (runtimeLogs.length > MAX_RUNTIME_LOGS) runtimeLogs.shift();
+}
+
+function parseGithubRepoFullName(remoteUrl: string): string | null {
+  const raw = String(remoteUrl || '').trim();
+  if (!raw) return null;
+  const normalized = raw.replace(/\.git$/i, '');
+  const sshMatch = normalized.match(/github\.com[:/]([^/]+\/[^/]+)$/i);
+  if (sshMatch?.[1]) return sshMatch[1];
+  const urlMatch = normalized.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+)$/i);
+  if (urlMatch?.[1]) return urlMatch[1];
+  return null;
+}
+
+function getCurrentRepoMatch(): { fullName: string; repoPath: string } | null {
+  if (typeof cachedCurrentRepoMatch !== 'undefined') return cachedCurrentRepoMatch;
+  try {
+    const topLevel = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: process.cwd(),
+      encoding: 'utf8'
+    });
+    if (topLevel.status !== 0) {
+      cachedCurrentRepoMatch = null;
+      return null;
+    }
+    const repoPath = String(topLevel.stdout || '').trim();
+    if (!repoPath) {
+      cachedCurrentRepoMatch = null;
+      return null;
+    }
+    const remote = spawnSync('git', ['remote', 'get-url', 'origin'], {
+      cwd: repoPath,
+      encoding: 'utf8'
+    });
+    if (remote.status !== 0) {
+      cachedCurrentRepoMatch = null;
+      return null;
+    }
+    const fullName = parseGithubRepoFullName(String(remote.stdout || ''));
+    cachedCurrentRepoMatch = fullName ? { fullName, repoPath } : null;
+    return cachedCurrentRepoMatch;
+  } catch {
+    cachedCurrentRepoMatch = null;
+    return null;
+  }
 }
 
 function rememberBounded(set: Set<string>, key: string | null | undefined, max = 5000): void {
@@ -268,6 +331,140 @@ function savePushSubscriptions(): void {
   const tmp = `${PUSH_SUBSCRIPTIONS_PATH}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(pushSubscriptions, null, 2));
   fs.renameSync(tmp, PUSH_SUBSCRIPTIONS_PATH);
+}
+
+function emptyIssueStore(): IssueStore {
+  return { markers: [], issues: [], curatorThreadsByRepo: {} };
+}
+
+function normalizeIssueStatus(value: unknown): IssueStatus {
+  const status = String(value || '').trim();
+  if (status === 'pending' || status === 'summarizing' || status === 'open' || status === 'resolved' || status === 'failed') {
+    return status;
+  }
+  return 'pending';
+}
+
+function loadIssueStore(): IssueStore {
+  if (issueStore) return issueStore;
+  try {
+    if (!fs.existsSync(ISSUE_STORE_PATH)) {
+      issueStore = emptyIssueStore();
+      return issueStore;
+    }
+    const raw = fs.readFileSync(ISSUE_STORE_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    const record = asObject(parsed) || {};
+    const markersRaw = Array.isArray(record.markers) ? record.markers : [];
+    const issuesRaw = Array.isArray(record.issues) ? record.issues : [];
+    const curatorRaw = asObject(record.curatorThreadsByRepo) || {};
+    const curatorThreadsByRepo: Record<string, string> = {};
+    for (const [repoFullName, threadId] of Object.entries(curatorRaw)) {
+      if (typeof repoFullName === 'string' && typeof threadId === 'string' && repoFullName && threadId) {
+        curatorThreadsByRepo[repoFullName] = threadId;
+      }
+    }
+    issueStore = {
+      markers: markersRaw
+        .map((item): IssueMarker | null => {
+          const marker = asObject(item);
+          const id = asString(marker?.id);
+          const repoFullName = asString(marker?.repoFullName);
+          const sourceThreadId = asString(marker?.sourceThreadId);
+          const sourceTurnId = asString(marker?.sourceTurnId);
+          if (!id || !repoFullName || !sourceThreadId || !sourceTurnId) return null;
+          return {
+            id,
+            repoFullName,
+            sourceThreadId,
+            sourceTurnId,
+            status: normalizeIssueStatus(marker?.status),
+            createdAt: asString(marker?.createdAt) || new Date().toISOString(),
+            updatedAt: asString(marker?.updatedAt) || new Date().toISOString(),
+            error: asString(marker?.error),
+            issueId: asString(marker?.issueId)
+          };
+        })
+        .filter((item): item is IssueMarker => Boolean(item)),
+      issues: issuesRaw
+        .map((item): IssueItem | null => {
+          const issue = asObject(item);
+          const id = asString(issue?.id);
+          const repoFullName = asString(issue?.repoFullName);
+          const title = asString(issue?.title);
+          const summary = asString(issue?.summary);
+          const nextPrompt = asString(issue?.nextPrompt);
+          const sourceThreadId = asString(issue?.sourceThreadId);
+          const sourceTurnId = asString(issue?.sourceTurnId);
+          if (!id || !repoFullName || !title || !summary || !nextPrompt || !sourceThreadId || !sourceTurnId) return null;
+          const markerIds = Array.isArray(issue?.markerIds)
+            ? issue.markerIds.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+            : [];
+          return {
+            id,
+            repoFullName,
+            title,
+            summary,
+            nextPrompt,
+            markerIds,
+            sourceThreadId,
+            sourceTurnId,
+            status: normalizeIssueStatus(issue?.status),
+            createdAt: asString(issue?.createdAt) || new Date().toISOString(),
+            updatedAt: asString(issue?.updatedAt) || new Date().toISOString(),
+            error: asString(issue?.error)
+          };
+        })
+        .filter((item): item is IssueItem => Boolean(item)),
+      curatorThreadsByRepo
+    };
+    return issueStore;
+  } catch {
+    issueStore = emptyIssueStore();
+    return issueStore;
+  }
+}
+
+function saveIssueStore(): void {
+  const store = issueStore || emptyIssueStore();
+  const tmp = `${ISSUE_STORE_PATH}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(store, null, 2));
+  fs.renameSync(tmp, ISSUE_STORE_PATH);
+}
+
+function issueId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function createIssueMarker(input: {
+  repoFullName: string;
+  sourceThreadId: string;
+  sourceTurnId: string;
+}): IssueMarker {
+  const store = loadIssueStore();
+  const existing = store.markers.find(
+    (marker) =>
+      marker.repoFullName === input.repoFullName &&
+      marker.sourceThreadId === input.sourceThreadId &&
+      marker.sourceTurnId === input.sourceTurnId &&
+      marker.status !== 'resolved'
+  );
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const marker: IssueMarker = {
+    id: issueId('marker'),
+    repoFullName: input.repoFullName,
+    sourceThreadId: input.sourceThreadId,
+    sourceTurnId: input.sourceTurnId,
+    status: 'pending',
+    createdAt: now,
+    updatedAt: now,
+    error: null,
+    issueId: null
+  };
+  store.markers.push(marker);
+  saveIssueStore();
+  return marker;
 }
 
 function loadOrCreateVapidKeys(): { publicKey: string; privateKey: string } {
@@ -1385,6 +1582,7 @@ function handleTurnTerminalNotification(terminal: TurnTerminalNotification | nul
   }
 
   if (terminal.kind !== 'done') return;
+  void summarizeIssueMarkersForTurn(terminal.threadId, effectiveTurnId);
   if (handledPushTurnKeys.has(turnKey)) return;
   rememberBounded(handledPushTurnKeys, turnKey);
 
@@ -1602,6 +1800,200 @@ function normalizeThreadMessages(readResult: ThreadMessageReadResult): OutputIte
   return turns.flatMap((turn) => normalizeTurnMessages(turn));
 }
 
+function stripMarkdownJsonFence(text: string): string {
+  const trimmed = String(text || '').trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+function parseIssueSummaryOutput(text: string): IssueSummaryDraft {
+  const parsed = JSON.parse(stripMarkdownJsonFence(text));
+  const record = asObject(parsed);
+  const title = asString(record?.title)?.trim();
+  const summary = asString(record?.summary)?.trim();
+  const nextPrompt = asString(record?.nextPrompt)?.trim();
+  if (!title || !summary || !nextPrompt) {
+    throw new Error('issue_summary_json_invalid');
+  }
+  return { title, summary, nextPrompt };
+}
+
+function extractTurnTextForIssueSummary(turn: ThreadMessageTurn): string {
+  const normalized = normalizeTurnMessages(turn);
+  return normalized
+    .map((item) => {
+      const role = item.role === 'user' ? 'User' : item.role === 'assistant' ? 'Assistant' : 'System';
+      const answer = isAssistantOutputItem(item) ? item.answer || item.text : item.text;
+      const plan = isAssistantOutputItem(item) && item.plan ? `\nPlan:\n${item.plan}` : '';
+      return `${role}:\n${String(answer || '').trim()}${plan}`.trim();
+    })
+    .filter(Boolean)
+    .join('\n\n---\n\n');
+}
+
+function isAssistantOutputItem(item: OutputItem): item is OutputItem & { role: 'assistant'; answer?: string; plan?: string } {
+  return item.role === 'assistant';
+}
+
+function extractAgentTextFromTurn(turn: ThreadMessageTurn | null | undefined): string {
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const parts = [];
+  for (const item of items) {
+    if (item?.type === 'agentMessage' && typeof item.text === 'string') parts.push(item.text);
+  }
+  return parts.join('\n').trim();
+}
+
+function findTurnById(readResult: ThreadMessageReadResult, turnId: string): ThreadMessageTurn | null {
+  const turns = Array.isArray(readResult?.thread?.turns) ? readResult.thread.turns : [];
+  return turns.find((turn) => String(turn?.id || '') === turnId) || null;
+}
+
+function buildIssueSummaryPrompt(sourceText: string): string {
+  return [
+    'Fixer の作業中にユーザーが Bad ボタンで目印を付けたターンを読み、ユーザーが後で対応したい課題を1件だけ要約してください。',
+    '',
+    '制約:',
+    '- ユーザーが課題だと思った可能性が高いものだけを書く',
+    '- 無理に課題を増やさない',
+    '- 推測で新しい事実を足さない',
+    '- 出力は JSON オブジェクトのみ。Markdown や説明文は禁止',
+    '- キーは title, summary, nextPrompt の3つだけ',
+    '- nextPrompt はユーザーがチャット入力欄に転記して、そのまま対応開始できる日本語の依頼文にする',
+    '',
+    '対象ターン:',
+    sourceText
+  ].join('\n');
+}
+
+async function ensureIssueCuratorThread(repoFullName: string): Promise<string> {
+  const store = loadIssueStore();
+  const existing = store.curatorThreadsByRepo[repoFullName];
+  if (existing) return existing;
+  const repoPath = repoPathFromFullName(repoFullName);
+  const result = await rpcRequest<{ thread?: { id?: string; model?: string } }>('thread/start', {
+    cwd: repoPath,
+    approvalPolicy: 'never',
+    sandbox: DEFAULT_THREAD_SANDBOX
+  });
+  const threadId = result?.thread?.id;
+  if (!threadId) throw new Error('issue_curator_thread_missing');
+  const model = typeof result?.thread?.model === 'string' ? result.thread.model : '';
+  if (model) threadModelByThreadId.set(threadId, model);
+  store.curatorThreadsByRepo[repoFullName] = threadId;
+  saveIssueStore();
+  return threadId;
+}
+
+async function waitForTurnCompletion(threadId: string, turnId: string, timeoutMs = 90000): Promise<ThreadMessageTurn> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const read = await rpcRequest<ThreadMessageReadResult>('thread/read', { threadId, includeTurns: true });
+    const turn = findTurnById(read, turnId);
+    const status = String(turn?.status || '').toLowerCase();
+    if (status === 'completed') return turn as ThreadMessageTurn;
+    if (status === 'failed' || status === 'interrupted' || status === 'cancelled') {
+      throw new Error(`issue_summary_turn_${status}`);
+    }
+    await sleep(800);
+  }
+  throw new Error('issue_summary_timeout');
+}
+
+async function summarizeIssueMarkersForTurn(sourceThreadId: string, sourceTurnId: string | null): Promise<void> {
+  if (!sourceThreadId || !sourceTurnId) return;
+  const turnKey = `${sourceThreadId}:${sourceTurnId}`;
+  if (issueSummaryInFlightTurnKeys.has(turnKey)) return;
+  const store = loadIssueStore();
+  const markers = store.markers.filter(
+    (marker) =>
+      marker.sourceThreadId === sourceThreadId &&
+      marker.sourceTurnId === sourceTurnId &&
+      marker.status === 'pending'
+  );
+  if (markers.length === 0) return;
+
+  issueSummaryInFlightTurnKeys.add(turnKey);
+  const now = new Date().toISOString();
+  for (const marker of markers) {
+    marker.status = 'summarizing';
+    marker.updatedAt = now;
+    marker.error = null;
+  }
+  saveIssueStore();
+
+  try {
+    const repoFullName = markers[0].repoFullName;
+    const sourceRead = await rpcRequest<ThreadMessageReadResult>('thread/read', {
+      threadId: sourceThreadId,
+      includeTurns: true
+    });
+    const sourceTurn = findTurnById(sourceRead, sourceTurnId);
+    if (!sourceTurn) throw new Error('issue_source_turn_not_found');
+    const sourceText = extractTurnTextForIssueSummary(sourceTurn);
+    if (!sourceText) throw new Error('issue_source_turn_empty');
+
+    const curatorThreadId = await ensureIssueCuratorThread(repoFullName);
+    const curatorTurnId = await startTurnWithRetry(
+      curatorThreadId,
+      buildTurnInput(buildIssueSummaryPrompt(sourceText), []),
+      3,
+      null,
+      { summary: 'concise' }
+    );
+    const curatorTurn = await waitForTurnCompletion(curatorThreadId, curatorTurnId);
+    const outputText = extractAgentTextFromTurn(curatorTurn);
+    const draft = parseIssueSummaryOutput(outputText);
+    const createdAt = new Date().toISOString();
+    const issue: IssueItem = {
+      id: issueId('issue'),
+      repoFullName,
+      title: draft.title,
+      summary: draft.summary,
+      nextPrompt: draft.nextPrompt,
+      markerIds: markers.map((marker) => marker.id),
+      sourceThreadId,
+      sourceTurnId,
+      status: 'open',
+      createdAt,
+      updatedAt: createdAt,
+      error: null
+    };
+    store.issues.push(issue);
+    for (const marker of markers) {
+      marker.status = 'open';
+      marker.issueId = issue.id;
+      marker.updatedAt = createdAt;
+    }
+    saveIssueStore();
+    pushRuntimeLog({
+      level: 'info',
+      event: 'issue_summary_created',
+      repoFullName,
+      sourceThreadId,
+      sourceTurnId,
+      issueId: issue.id
+    });
+  } catch (error) {
+    const failedAt = new Date().toISOString();
+    for (const marker of markers) {
+      marker.status = 'failed';
+      marker.error = getErrorMessage(error, 'issue_summary_failed');
+      marker.updatedAt = failedAt;
+    }
+    saveIssueStore();
+    pushRuntimeLog({
+      level: 'error',
+      event: 'issue_summary_failed',
+      sourceThreadId,
+      sourceTurnId,
+      message: getErrorMessage(error, 'issue_summary_failed')
+    });
+  } finally {
+    issueSummaryInFlightTurnKeys.delete(turnKey);
+  }
+}
+
 function isUserInputBoundaryItem(item: unknown): boolean {
   const record = asObject(item);
   if (!record) return false;
@@ -1788,6 +2180,8 @@ function repoFolderFromFullName(fullName: string): string {
 }
 
 function repoPathFromFullName(fullName: string): string {
+  const currentRepoMatch = getCurrentRepoMatch();
+  if (currentRepoMatch?.fullName === fullName) return currentRepoMatch.repoPath;
   return path.join(WORKSPACE_ROOT, repoFolderFromFullName(fullName));
 }
 
@@ -3030,6 +3424,106 @@ function buildServer(): FastifyInstance {
     return { models };
   });
 
+  app.get('/api/issues', async (request, reply) => {
+    const query = asObject(request.query) ?? {};
+    const repoFullName = asString(query.repoFullName);
+    if (!repoFullName) {
+      reply.code(400);
+      return { error: 'repoFullName is required' };
+    }
+    const store = loadIssueStore();
+    const issues = store.issues
+      .filter((issue) => issue.repoFullName === repoFullName && issue.status !== 'resolved')
+      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    const issueMarkerIds = new Set(issues.flatMap((issue) => issue.markerIds));
+    const markerItems: IssueItem[] = store.markers
+      .filter(
+        (marker) =>
+          marker.repoFullName === repoFullName &&
+          marker.status !== 'resolved' &&
+          !issueMarkerIds.has(marker.id) &&
+          !marker.issueId
+      )
+      .map((marker) => ({
+        id: `marker:${marker.id}`,
+        repoFullName: marker.repoFullName,
+        title:
+          marker.status === 'failed'
+            ? '課題要約に失敗'
+            : marker.status === 'summarizing'
+              ? '課題を要約中'
+              : '課題目印を保存済み',
+        summary: marker.status === 'failed' ? marker.error || 'Codex の課題要約に失敗しました。' : 'Bad の目印から課題を作成しています。',
+        nextPrompt: '',
+        markerIds: [marker.id],
+        sourceThreadId: marker.sourceThreadId,
+        sourceTurnId: marker.sourceTurnId,
+        status: marker.status,
+        createdAt: marker.createdAt,
+        updatedAt: marker.updatedAt,
+        error: marker.error || null
+      }));
+    return {
+      issues: [...markerItems, ...issues].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+    };
+  });
+
+  app.post('/api/issues/markers', async (request, reply) => {
+    const body = asObject(request.body) ?? {};
+    const repoFullName = asString(body.repoFullName);
+    const sourceThreadId = asString(body.threadId || body.sourceThreadId);
+    const sourceTurnId = asString(body.turnId || body.sourceTurnId);
+    if (!repoFullName || !sourceThreadId || !sourceTurnId) {
+      reply.code(400);
+      return { error: 'repoFullName, threadId and turnId are required' };
+    }
+    const marker = createIssueMarker({ repoFullName, sourceThreadId, sourceTurnId });
+    pushRuntimeLog({
+      level: 'info',
+      event: 'issue_marker_created',
+      repoFullName,
+      sourceThreadId,
+      sourceTurnId,
+      markerId: marker.id
+    });
+    if (runningTurnByThreadId.get(sourceThreadId) !== sourceTurnId) {
+      void summarizeIssueMarkersForTurn(sourceThreadId, sourceTurnId);
+    }
+    return { marker };
+  });
+
+  app.patch('/api/issues/:id', async (request, reply) => {
+    const params = asObject(request.params) ?? {};
+    const body = asObject(request.body) ?? {};
+    const id = asString(params.id);
+    const status = normalizeIssueStatus(body.status);
+    if (!id) {
+      reply.code(400);
+      return { error: 'id is required' };
+    }
+    if (status !== 'open' && status !== 'resolved') {
+      reply.code(400);
+      return { error: 'status must be open or resolved' };
+    }
+    const store = loadIssueStore();
+    const issue = store.issues.find((item) => item.id === id);
+    if (!issue) {
+      reply.code(404);
+      return { error: 'issue_not_found' };
+    }
+    const now = new Date().toISOString();
+    issue.status = status;
+    issue.updatedAt = now;
+    for (const marker of store.markers) {
+      if (issue.markerIds.includes(marker.id)) {
+        marker.status = status;
+        marker.updatedAt = now;
+      }
+    }
+    saveIssueStore();
+    return { issue };
+  });
+
   app.get('/api/threads/messages', async (request, reply) => {
     const query = asObject(request.query) ?? {};
     const threadId = asString(query.threadId);
@@ -3574,5 +4068,7 @@ export {
   parseThreadTokenUsageUpdatedNotification,
   parseTurnTerminalNotification,
   selectTurnStreamUpdate,
-  normalizeThreadMessages
+  normalizeThreadMessages,
+  createIssueMarker,
+  parseIssueSummaryOutput
 };
