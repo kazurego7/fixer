@@ -40,7 +40,7 @@ test.describe('diff 中心のファイル閲覧', () => {
           deletions: 0
         },
         base.items[1]
-      ];
+      ].filter((item): item is (typeof base.items)[number] => Boolean(item));
       await route.fulfill({
         status: 200,
         contentType: 'application/json',

@@ -40,10 +40,42 @@ import type {
   UserInputAnswerMap,
   UserInputDraft,
   UserInputDraftMap,
-  UserInputQuestion,
-  UserOutputItem
+  UserInputQuestion
 } from '../../shared/types';
+import {
+  decodeBase64UrlToUint8Array,
+  formatFileSize,
+  formatIssueStatus,
+  getClientErrorMessage,
+  isAssistantItem,
+  isUserItem,
+  loadJsonFromStorage,
+  loadThreadMessages,
+  normalizeModelOptions,
+  outputItemTurnId,
+  parseTurnStreamEvent,
+  readFileAsDataUrl,
+  threadMessagesKey
+} from './appUtils';
+import {
+  FILE_VIEW_DIFF_JUMP_TOP_OFFSET_PX,
+  FILE_VIEW_VIRTUAL_LINE_HEIGHT_PX,
+  FILE_VIEW_VIRTUAL_OVERSCAN,
+  FILE_VIEW_VIRTUALIZE_THRESHOLD,
+  buildFileRenderLines,
+  findVirtualLineIndex
+} from './fileViewModel';
 import { FileTreeNode, useFileTreeState } from './fileTree';
+import {
+  buildFileViewPath,
+  extractSearch,
+  getCurrentFileParams,
+  getCurrentPath,
+  getCurrentSearch,
+  normalizePath,
+  pushPath,
+  resolveRepoRelativeFilePath
+} from './navigation';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -217,223 +249,6 @@ function useAppCtx(): AppContextValue {
   return ctx;
 }
 
-function getClientErrorMessage(error: unknown, fallback = 'unknown_error'): string {
-  if (error instanceof Error && error.message) return error.message;
-  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
-    return error.message;
-  }
-  return fallback;
-}
-
-function isAssistantItem(item: OutputItem): item is AssistantOutputItem {
-  return item.role === 'assistant';
-}
-
-function isUserItem(item: OutputItem): item is UserOutputItem {
-  return item.role === 'user';
-}
-
-function parseTurnStreamEvent(rawLine: string): TurnStreamEvent | null {
-  try {
-    const parsed = JSON.parse(rawLine) as { type?: string } | null;
-    if (!parsed || typeof parsed !== 'object' || typeof parsed.type !== 'string') return null;
-    return parsed as TurnStreamEvent;
-  } catch {
-    return null;
-  }
-}
-
-function formatFileSize(size: number | string | null | undefined): string {
-  const bytes = Number(size || 0);
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatIssueStatus(status: IssueItem['status']): string {
-  if (status === 'open') return '未対応';
-  if (status === 'summarizing') return '要約中';
-  if (status === 'failed') return '失敗';
-  if (status === 'resolved') return '解決済み';
-  return '待機中';
-}
-
-function outputItemTurnId(item: OutputItem | null | undefined): string {
-  const id = String(item?.id || '').trim();
-  const idx = id.indexOf(':');
-  return idx > 0 ? id.slice(0, idx) : '';
-}
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(new Error('file_read_failed'));
-    reader.readAsDataURL(file);
-  });
-}
-
-function decodeBase64UrlToUint8Array(base64Url: string): Uint8Array {
-  const normalized = String(base64Url || '')
-    .replace(/-/g, '+')
-    .replace(/_/g, '/');
-  const pad = '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
-  const base64 = normalized + pad;
-  const raw = atob(base64);
-  const bytes = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
-  return bytes;
-}
-
-function normalizePath(rawPath: string): string {
-  const pathname = String(rawPath || '').split('?')[0].split('#')[0];
-  if (pathname === '/files' || pathname === '/files/') return '/files/';
-  if (pathname === '/files/view' || pathname === '/files/view/') return '/files/view/';
-  if (pathname === '/chat' || pathname === '/chat/') return '/chat/';
-  if (pathname === '/repos/new' || pathname === '/repos/new/') return '/repos/new/';
-  return '/repos/';
-}
-
-function getCurrentPath() {
-  if (typeof window === 'undefined') return '/repos/';
-  const hash = window.location.hash || '';
-  if (hash.startsWith('#!/')) return normalizePath(hash.slice(2));
-  return normalizePath(window.location.pathname || '/');
-}
-
-function pushPath(path: string, replace = false): string {
-  const raw = String(path || '');
-  const queryIndex = raw.indexOf('?');
-  const search = queryIndex >= 0 ? raw.slice(queryIndex) : '';
-  const target = `${normalizePath(raw)}${search}`;
-  if (typeof window === 'undefined') return target;
-  if (replace) window.history.replaceState({}, '', target);
-  else window.history.pushState({}, '', target);
-  return target;
-}
-
-function getCurrentSearch(): string {
-  if (typeof window === 'undefined') return '';
-  return String(window.location.search || '');
-}
-
-function extractSearch(rawPath: string): string {
-  const queryIndex = String(rawPath || '').indexOf('?');
-  return queryIndex >= 0 ? String(rawPath || '').slice(queryIndex) : '';
-}
-
-function getCurrentFileParams(): { path: string; line: number | null; jumpToFirstDiff: boolean } {
-  if (typeof window === 'undefined') return { path: '', line: null, jumpToFirstDiff: false };
-  const params = new URLSearchParams(window.location.search || '');
-  const filePath = String(params.get('path') || '').trim();
-  const lineRaw = Number(params.get('line') || '');
-  return {
-    path: filePath,
-    line: Number.isInteger(lineRaw) && lineRaw > 0 ? lineRaw : null,
-    jumpToFirstDiff: params.get('jump') === 'first-diff'
-  };
-}
-
-function buildFileViewPath(filePath: string, line: number | null = null, jumpToFirstDiff = false): string {
-  const params = new URLSearchParams();
-  params.set('path', filePath);
-  if (line && line > 0) params.set('line', String(line));
-  if (jumpToFirstDiff && !(line && line > 0)) params.set('jump', 'first-diff');
-  return `/files/view/?${params.toString()}`;
-}
-
-function parseLineAnchor(rawHref: string): { path: string; line: number | null } {
-  const href = String(rawHref || '').trim();
-  let pathPart = href;
-  let line: number | null = null;
-
-  const hashIndex = href.indexOf('#');
-  if (hashIndex >= 0) {
-    pathPart = href.slice(0, hashIndex);
-    const hash = href.slice(hashIndex + 1);
-    const lineMatch = hash.match(/^L(\d+)/i);
-    if (lineMatch) line = Number(lineMatch[1]);
-  }
-
-  if (!line) {
-    const colonMatch = pathPart.match(/:(\d+)(?::\d+)?$/);
-    if (colonMatch) {
-      line = Number(colonMatch[1]);
-      pathPart = pathPart.slice(0, colonMatch.index);
-    }
-  }
-
-  return { path: pathPart, line: Number.isInteger(line) && line > 0 ? line : null };
-}
-
-function resolveRepoRelativeFilePath(rawHref: string, repoPath: string): { path: string; line: number | null } | null {
-  const parsed = parseLineAnchor(rawHref);
-  const hrefPath = String(parsed.path || '').trim();
-  if (!hrefPath) return null;
-  if (/^(https?:|mailto:|tel:)/i.test(hrefPath)) return null;
-
-  let absolutePath = '';
-  if (hrefPath.startsWith('file://')) {
-    try {
-      absolutePath = decodeURIComponent(new URL(hrefPath).pathname || '');
-    } catch {
-      return null;
-    }
-  } else if (hrefPath.startsWith('/')) {
-    absolutePath = hrefPath;
-  } else {
-    absolutePath = `${repoPath.replace(/[\\/]+$/, '')}/${hrefPath}`;
-  }
-
-  const normalizedRepo = repoPath.replace(/\\/g, '/').replace(/\/+$/, '');
-  const normalizedAbsolute = absolutePath.replace(/\\/g, '/');
-  if (normalizedAbsolute === normalizedRepo || !normalizedAbsolute.startsWith(`${normalizedRepo}/`)) return null;
-
-  return {
-    path: normalizedAbsolute.slice(normalizedRepo.length + 1),
-    line: parsed.line
-  };
-}
-
-function threadMessagesKey(threadId: string): string {
-  return `fx:threadMessages:${threadId}`;
-}
-
-function loadJsonFromStorage<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function loadThreadMessages(threadId: string | null): OutputItem[] {
-  if (!threadId || typeof window === 'undefined') return [];
-  const items = loadJsonFromStorage(threadMessagesKey(threadId), []);
-  return Array.isArray(items) ? items : [];
-}
-
-function normalizeModelOptions(models: unknown): ModelOption[] {
-  const src = Array.isArray(models) ? models : [];
-  const out: ModelOption[] = [];
-  const seen = new Set();
-  for (const item of src) {
-    if (!item || typeof item !== 'object') continue;
-    const id = String(item.id || '').trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push({
-      id,
-      name: String(item.name || id),
-      description: String(item.description || '')
-    });
-  }
-  return out;
-}
-
 function ReposPage() {
   const {
     connected,
@@ -482,7 +297,6 @@ function ReposPage() {
                   type="button"
                   onClick={() => navigate('/repos/new/')}
                   aria-label="新規リポジトリ作成"
-                  title="新規リポジトリ作成"
                 >
                   ＋
                 </Button>
@@ -670,374 +484,6 @@ function formatChangeKindLabel(kind: RepoFileListItem['changeKind'] | RepoFileVi
   }
 }
 
-interface RepoFileTreeNode {
-  name: string;
-  path: string;
-  type: 'directory' | 'file';
-  hasDiff: boolean;
-  changeKind: RepoFileListItem['changeKind'];
-  additions: number;
-  deletions: number;
-  children: RepoFileTreeNode[];
-  item: RepoFileListItem | null;
-}
-
-function getTreeTone(kind: RepoFileListItem['changeKind']): 'deleted' | 'added' | 'modified' | 'ignored' | 'normal' {
-  switch (kind) {
-    case 'deleted':
-    case 'conflicted':
-      return 'deleted';
-    case 'added':
-    case 'untracked':
-      return 'added';
-    case 'modified':
-    case 'renamed':
-      return 'modified';
-    case 'ignored':
-      return 'ignored';
-    default:
-      return 'normal';
-  }
-}
-
-function getTreePriority(kind: RepoFileListItem['changeKind']): number {
-  switch (kind) {
-    case 'deleted':
-    case 'conflicted':
-      return 5;
-    case 'added':
-    case 'untracked':
-      return 4;
-    case 'modified':
-    case 'renamed':
-      return 3;
-    case 'ignored':
-      return 2;
-    default:
-      return 1;
-  }
-}
-
-function buildRepoFileTree(items: RepoFileListItem[]): RepoFileTreeNode[] {
-  const roots = new Map<string, RepoFileTreeNode>();
-
-  function ensureDirectory(
-    container: Map<string, RepoFileTreeNode>,
-    name: string,
-    path: string
-  ): RepoFileTreeNode {
-    const existing = container.get(name);
-    if (existing) return existing;
-    const node: RepoFileTreeNode = {
-      name,
-      path,
-      type: 'directory',
-      hasDiff: false,
-      changeKind: 'unchanged',
-      additions: 0,
-      deletions: 0,
-      children: [],
-      item: null
-    };
-    container.set(name, node);
-    return node;
-  }
-
-  for (const item of items) {
-    const isDirectoryItem = item.path.endsWith('/');
-    const normalizedPath = isDirectoryItem ? item.path.replace(/\/+$/, '') : item.path;
-    const parts = normalizedPath.split('/').filter(Boolean);
-    if (parts.length === 0) continue;
-    let currentMap = roots;
-    let currentPath = '';
-    let parent: RepoFileTreeNode | null = null;
-
-    for (let index = 0; index < parts.length; index += 1) {
-      const name = parts[index];
-      currentPath = currentPath ? `${currentPath}/${name}` : name;
-      const isTerminal = index === parts.length - 1;
-      const isFile = isTerminal && !isDirectoryItem;
-      if (isFile) {
-        const fileNode: RepoFileTreeNode = {
-          name,
-          path: normalizedPath,
-          type: 'file',
-          hasDiff: item.hasDiff,
-          changeKind: item.changeKind,
-          additions: item.additions,
-          deletions: item.deletions,
-          children: [],
-          item
-        };
-        if (parent) parent.children.push(fileNode);
-        else roots.set(name, fileNode);
-        continue;
-      }
-      const dirNode = ensureDirectory(currentMap, name, currentPath);
-      if (isTerminal && isDirectoryItem) {
-        dirNode.item = item;
-        dirNode.changeKind = item.changeKind;
-        dirNode.additions = item.additions;
-        dirNode.deletions = item.deletions;
-      }
-      if (parent && !parent.children.includes(dirNode)) parent.children.push(dirNode);
-      parent = dirNode;
-      const nextMap = new Map<string, RepoFileTreeNode>();
-      for (const child of dirNode.children.filter((child) => child.type === 'directory')) {
-        nextMap.set(child.name, child);
-      }
-      currentMap = nextMap;
-    }
-  }
-
-  function finalize(nodes: RepoFileTreeNode[]): RepoFileTreeNode[] {
-    for (const node of nodes) {
-      if (node.type === 'directory') {
-        node.children = finalize(node.children);
-        node.hasDiff = Boolean(node.item?.hasDiff) || node.children.some((child) => child.hasDiff);
-        node.additions = (node.item?.additions || 0) + node.children.reduce((sum, child) => sum + child.additions, 0);
-        node.deletions = (node.item?.deletions || 0) + node.children.reduce((sum, child) => sum + child.deletions, 0);
-        const strongestNode = [
-          ...(node.item ? [{ changeKind: node.item.changeKind }] : []),
-          ...node.children
-        ].sort((a, b) => getTreePriority(b.changeKind) - getTreePriority(a.changeKind))[0];
-        node.changeKind = strongestNode?.changeKind || 'unchanged';
-      }
-    }
-    return [...nodes].sort((a, b) => {
-      if (a.hasDiff !== b.hasDiff) return a.hasDiff ? -1 : 1;
-      if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-  }
-
-  return finalize(Array.from(roots.values()));
-}
-
-function formatNumstatParts(additions: number, deletions: number): Array<{ label: string; tone: 'plus' | 'minus' }> {
-  const parts: Array<{ label: string; tone: 'plus' | 'minus' }> = [];
-  if (additions > 0) parts.push({ label: `+${additions}`, tone: 'plus' });
-  if (deletions > 0) parts.push({ label: `-${deletions}`, tone: 'minus' });
-  return parts;
-}
-
-function renderRepoFileTree(
-  nodes: RepoFileTreeNode[],
-  openRepoFile: (filePath: string, line?: number | null, replace?: boolean, jumpToFirstDiff?: boolean) => Promise<void>,
-  depth = 0
-): JSX.Element[] {
-  return nodes.map((node) => {
-    if (node.type === 'directory') {
-      return (
-        <details
-          key={node.path}
-          className={`fx-file-tree-group is-${getTreeTone(node.changeKind)}`}
-          open={node.hasDiff}
-          data-testid={`file-tree-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
-        >
-          <summary className="fx-file-tree-summary" data-testid={`file-tree-label-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}>
-            <span className="fx-file-tree-caret" aria-hidden="true">
-              ▾
-            </span>
-            <span className={`fx-file-tree-label is-${getTreeTone(node.changeKind)}`} style={{ paddingLeft: `${depth * 0.9}rem` }}>
-              {node.name}
-            </span>
-          </summary>
-          <div className="fx-file-tree-children">{renderRepoFileTree(node.children, openRepoFile, depth + 1)}</div>
-        </details>
-      );
-    }
-
-    const numstatParts = formatNumstatParts(node.additions, node.deletions);
-
-    return (
-      <button
-        key={node.path}
-        type="button"
-        className={`fx-file-row is-${getTreeTone(node.changeKind)}`}
-        onClick={() => openRepoFile(node.path)}
-        data-testid={`file-row-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
-      >
-        <div className="fx-file-row-main">
-          <span
-            className={`fx-file-row-path is-${getTreeTone(node.changeKind)}`}
-            style={{ paddingLeft: `${depth * 0.9}rem` }}
-            data-testid={`file-row-label-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
-          >
-            {node.name}
-          </span>
-          {numstatParts.length > 0 ? (
-            <span className="fx-file-row-stats" data-testid={`file-row-stats-${node.path.replace(/[^a-zA-Z0-9_-]/g, '_')}`}>
-              {numstatParts.map((part) => (
-                <span key={`${node.path}:${part.label}`} className={`fx-file-row-stat is-${part.tone}`}>
-                  {part.label}
-                </span>
-              ))}
-            </span>
-          ) : null}
-        </div>
-      </button>
-    );
-  });
-}
-
-type FileRenderLineKind = 'context' | 'added' | 'removed';
-
-const FILE_VIEW_VIRTUAL_LINE_HEIGHT_PX = 26;
-const FILE_VIEW_VIRTUAL_OVERSCAN = 24;
-const FILE_VIEW_VIRTUALIZE_THRESHOLD = 300;
-const FILE_VIEW_DIFF_JUMP_TOP_OFFSET_PX = 8;
-
-interface FileRenderLine {
-  key: string;
-  kind: FileRenderLineKind;
-  oldLine: number | null;
-  newLine: number | null;
-  text: string;
-}
-
-function splitFileContentLines(content: string): string[] {
-  const lines = String(content || '').split('\n');
-  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-  return lines;
-}
-
-function parseUnifiedHunks(diffText: string): Array<{ oldStart: number; newStart: number; lines: string[] }> {
-  const rawLines = String(diffText || '').split('\n');
-  const hunks: Array<{ oldStart: number; newStart: number; lines: string[] }> = [];
-  let current: { oldStart: number; newStart: number; lines: string[] } | null = null;
-
-  for (const rawLine of rawLines) {
-    const line = String(rawLine || '');
-    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-    if (hunkMatch) {
-      if (current) hunks.push(current);
-      current = {
-        oldStart: Number(hunkMatch[1]),
-        newStart: Number(hunkMatch[2]),
-        lines: []
-      };
-      continue;
-    }
-    if (!current) continue;
-    if (line.startsWith('\\ No newline at end of file')) continue;
-    current.lines.push(line);
-  }
-
-  if (current) hunks.push(current);
-  return hunks;
-}
-
-function buildFileRenderLines(content: string, diffText: string): FileRenderLine[] {
-  const contentLines = splitFileContentLines(content);
-  if (!diffText.trim()) {
-    return contentLines.map((line, index) => ({
-      key: `ctx:${index + 1}`,
-      kind: 'context',
-      oldLine: index + 1,
-      newLine: index + 1,
-      text: line
-    }));
-  }
-
-  const hunks = parseUnifiedHunks(diffText);
-  if (hunks.length === 0) {
-    return contentLines.map((line, index) => ({
-      key: `ctx:${index + 1}`,
-      kind: 'context',
-      oldLine: index + 1,
-      newLine: index + 1,
-      text: line
-    }));
-  }
-
-  const out: FileRenderLine[] = [];
-  let contentIndex = 1;
-
-  for (const hunk of hunks) {
-    while (contentIndex < hunk.newStart && contentIndex <= contentLines.length) {
-      const text = contentLines[contentIndex - 1] ?? '';
-      out.push({
-        key: `ctx:${contentIndex}`,
-        kind: 'context',
-        oldLine: contentIndex,
-        newLine: contentIndex,
-        text
-      });
-      contentIndex += 1;
-    }
-
-    let oldLine = hunk.oldStart;
-    let newLine = hunk.newStart;
-    for (const line of hunk.lines) {
-      const prefix = line[0] || ' ';
-      const text = line.slice(1);
-      if (prefix === '+') {
-        out.push({
-          key: `add:${newLine}:${text}`,
-          kind: 'added',
-          oldLine: null,
-          newLine,
-          text
-        });
-        newLine += 1;
-        contentIndex += 1;
-        continue;
-      }
-      if (prefix === '-') {
-        out.push({
-          key: `del:${oldLine}:${text}`,
-          kind: 'removed',
-          oldLine,
-          newLine: null,
-          text
-        });
-        oldLine += 1;
-        continue;
-      }
-      out.push({
-        key: `ctx:${newLine}:${text}`,
-        kind: 'context',
-        oldLine,
-        newLine,
-        text
-      });
-      oldLine += 1;
-      newLine += 1;
-      contentIndex += 1;
-    }
-  }
-
-  while (contentIndex <= contentLines.length) {
-    const text = contentLines[contentIndex - 1] ?? '';
-    out.push({
-      key: `ctx:${contentIndex}`,
-      kind: 'context',
-      oldLine: contentIndex,
-      newLine: contentIndex,
-      text
-    });
-    contentIndex += 1;
-  }
-
-  return out;
-}
-
-function findVirtualLineIndex(offsets: number[], targetOffset: number): number {
-  if (offsets.length <= 1) return 0;
-  let low = 0;
-  let high = offsets.length - 1;
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2);
-    if (offsets[mid] <= targetOffset) {
-      low = mid + 1;
-    } else {
-      high = mid;
-    }
-  }
-  return Math.max(0, Math.min(offsets.length - 2, low - 1));
-}
-
 function FilesPage() {
   const { activeRepoFullName, fileListIncludeUnchanged, setFileListIncludeUnchanged, openRepoFile, navigate } = useAppCtx();
   const treeState = useFileTreeState({
@@ -1153,7 +599,7 @@ function FileViewPage() {
     if (!canVirtualizeLines) return [0];
     const offsets = [0];
     for (const height of virtualLineHeights) {
-      offsets.push(offsets[offsets.length - 1] + height);
+      offsets.push((offsets[offsets.length - 1] ?? 0) + height);
     }
     return offsets;
   }, [canVirtualizeLines, virtualLineHeights]);
@@ -2738,6 +2184,7 @@ export default function AppRoot() {
   function getLastAssistantId(items: OutputItem[]): string | null {
     for (let idx = items.length - 1; idx >= 0; idx -= 1) {
       const item = items[idx];
+      if (!item) continue;
       if (isAssistantItem(item)) return String(item.id || '') || null;
     }
     return null;

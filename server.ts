@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from 'node:child_process';
 import Fastify, {
@@ -11,6 +10,9 @@ import Fastify, {
 import fastifyStatic from '@fastify/static';
 import WebSocket from 'ws';
 import webPush, { type PushSubscription } from 'web-push';
+import { diffKindFromStatusCode, parseGitStatusOutput, parseStatusPath } from './server/gitParsing';
+import { asObject, asRequestId, asString, type JsonRecord } from './server/json';
+import { WORKSPACE_ROOT, repoFolderFromFullName, repoPathFromFullName } from './server/workspace';
 import { extractDisplayReasoningText } from './shared/reasoning';
 import type {
   CloneState,
@@ -48,7 +50,6 @@ declare module 'fastify' {
   }
 }
 
-type JsonRecord = Record<string, unknown>;
 type RuntimeLogLevel = 'info' | 'error';
 
 interface RuntimeLogEntry {
@@ -137,6 +138,18 @@ interface ThreadMessageReadResult {
   };
 }
 
+function normalizeThreadContentPart(part: unknown): ThreadMessageContentPart {
+  const contentPart = asObject(part) || {};
+  const normalized: ThreadMessageContentPart = {};
+  const type = asString(contentPart.type);
+  const text = asString(contentPart.text);
+  const url = asString(contentPart.url) || asString(contentPart.image_url);
+  if (type) normalized.type = type;
+  if (text) normalized.text = text;
+  if (url) normalized.url = url;
+  return normalized;
+}
+
 interface LiveTurnState {
   threadId: string;
   turnId: string;
@@ -194,22 +207,6 @@ const CODEX_APP_SERVER_WS_URL = 'ws://127.0.0.1:39080';
 const CODEX_APP_SERVER_START_CMD = `codex app-server --listen ${CODEX_APP_SERVER_WS_URL}`;
 const CODEX_APP_SERVER_STARTUP_TIMEOUT_MS = 15000;
 
-function resolveWorkspaceRoot(): string {
-  const preferred = path.join(os.homedir(), '.fixer', 'workspace');
-  try {
-    if (!fs.existsSync(preferred)) {
-      fs.mkdirSync(preferred, { recursive: true });
-    }
-    fs.accessSync(preferred, fs.constants.W_OK);
-    return preferred;
-  } catch {
-    const fallback = path.join(process.cwd(), 'workspace');
-    fs.mkdirSync(fallback, { recursive: true });
-    return fallback;
-  }
-}
-
-const WORKSPACE_ROOT = resolveWorkspaceRoot();
 const PUSH_SUBSCRIPTIONS_PATH = path.join(WORKSPACE_ROOT, 'push-subscriptions.json');
 const PUSH_VAPID_PATH = path.join(WORKSPACE_ROOT, 'push-vapid.json');
 const ISSUE_STORE_PATH = path.join(WORKSPACE_ROOT, 'issues.json');
@@ -247,55 +244,10 @@ let pushPublicKey = '';
 let pushPrivateKey = '';
 let pushEnabled = false;
 let cachedModelAutoCompactTokenLimit: number | null | undefined;
-let cachedCurrentRepoMatch: { fullName: string; repoPath: string } | null | undefined;
 
 function pushRuntimeLog(entry: { level: RuntimeLogLevel; event: string; [key: string]: unknown }): void {
   runtimeLogs.push({ timestamp: new Date().toISOString(), ...entry });
   if (runtimeLogs.length > MAX_RUNTIME_LOGS) runtimeLogs.shift();
-}
-
-function parseGithubRepoFullName(remoteUrl: string): string | null {
-  const raw = String(remoteUrl || '').trim();
-  if (!raw) return null;
-  const normalized = raw.replace(/\.git$/i, '');
-  const sshMatch = normalized.match(/github\.com[:/]([^/]+\/[^/]+)$/i);
-  if (sshMatch?.[1]) return sshMatch[1];
-  const urlMatch = normalized.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+)$/i);
-  if (urlMatch?.[1]) return urlMatch[1];
-  return null;
-}
-
-function getCurrentRepoMatch(): { fullName: string; repoPath: string } | null {
-  if (typeof cachedCurrentRepoMatch !== 'undefined') return cachedCurrentRepoMatch;
-  try {
-    const topLevel = spawnSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: process.cwd(),
-      encoding: 'utf8'
-    });
-    if (topLevel.status !== 0) {
-      cachedCurrentRepoMatch = null;
-      return null;
-    }
-    const repoPath = String(topLevel.stdout || '').trim();
-    if (!repoPath) {
-      cachedCurrentRepoMatch = null;
-      return null;
-    }
-    const remote = spawnSync('git', ['remote', 'get-url', 'origin'], {
-      cwd: repoPath,
-      encoding: 'utf8'
-    });
-    if (remote.status !== 0) {
-      cachedCurrentRepoMatch = null;
-      return null;
-    }
-    const fullName = parseGithubRepoFullName(String(remote.stdout || ''));
-    cachedCurrentRepoMatch = fullName ? { fullName, repoPath } : null;
-    return cachedCurrentRepoMatch;
-  } catch {
-    cachedCurrentRepoMatch = null;
-    return null;
-  }
 }
 
 function rememberBounded(set: Set<string>, key: string | null | undefined, max = 5000): void {
@@ -645,14 +597,7 @@ function toThreadMessageTurnItem(item: unknown): ThreadMessageTurnItem | null {
   if (Array.isArray(record.content)) {
     normalized.content = record.content
       .filter((part) => part && typeof part === 'object')
-      .map((part) => {
-        const contentPart = asObject(part) || {};
-        return {
-          type: asString(contentPart.type) || undefined,
-          text: asString(contentPart.text) || undefined,
-          url: asString(contentPart.url) || asString((contentPart as JsonRecord).image_url) || undefined
-        };
-      });
+      .map((part) => normalizeThreadContentPart(part));
   }
   return normalized;
 }
@@ -685,11 +630,13 @@ function upsertLiveTurnItem(state: LiveTurnState, item: ThreadMessageTurnItem): 
   const itemId = asString(item.id);
   if (!itemId) return item;
   const idx = state.itemOrder.indexOf(itemId);
-  const cloned = {
-    ...item,
-    summary: Array.isArray(item.summary) ? [...item.summary] : item.summary,
-    content: Array.isArray(item.content) ? item.content.map((part) => ({ ...part })) : item.content
-  };
+  const cloned: ThreadMessageTurnItem = {};
+  if (item.id) cloned.id = item.id;
+  if (item.type) cloned.type = item.type;
+  if (item.text !== undefined) cloned.text = item.text;
+  if (item.phase !== undefined) cloned.phase = item.phase;
+  if (Array.isArray(item.summary)) cloned.summary = [...item.summary];
+  if (Array.isArray(item.content)) cloned.content = item.content.map((part) => ({ ...part }));
   if (idx >= 0) {
     state.items[idx] = cloned;
     return state.items[idx] as ThreadMessageTurnItem;
@@ -739,16 +686,16 @@ function rebuildLiveTurnStateRender(state: LiveTurnState): void {
   const turn: ThreadMessageTurn = {
     id: state.turnId,
     input: [],
-    items: state.items.map((item) => ({
-      id: item.id,
-      type: item.type,
-      text: item.text,
-      phase: item.phase ?? null,
-      summary: Array.isArray(item.summary) ? [...item.summary] : undefined,
-      content: Array.isArray(item.content)
-        ? item.content.map((part) => ({ type: part.type, text: part.text, url: part.url }))
-        : undefined
-      }))
+    items: state.items.map((item) => {
+      const normalized: ThreadMessageTurnItem = {};
+      if (item.id) normalized.id = item.id;
+      if (item.type) normalized.type = item.type;
+      if (item.text !== undefined) normalized.text = item.text;
+      if (item.phase !== undefined) normalized.phase = item.phase;
+      if (Array.isArray(item.summary)) normalized.summary = [...item.summary];
+      if (Array.isArray(item.content)) normalized.content = item.content.map((part) => ({ ...part }));
+      return normalized;
+    })
   };
   state.renderItems = normalizeTurnMessages(turn);
   state.liveReasoningText = extractDisplayReasoningText(state.liveReasoningRaw);
@@ -1292,20 +1239,6 @@ function looksLikeDiff(text: string): boolean {
   return /^diff --git/m.test(text) || /^@@/m.test(text) || /^\+\+\+/m.test(text);
 }
 
-function asObject(value: unknown): JsonRecord | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonRecord) : null;
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === 'string' ? value : null;
-}
-
-function asRequestId(value: unknown): RequestId | null {
-  if (typeof value === 'string' && value) return value;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  return null;
-}
-
 function parseUserInputQuestions(rawQuestions: unknown): UserInputQuestion[] {
   const list = Array.isArray(rawQuestions) ? rawQuestions : [];
   const out: UserInputQuestion[] = [];
@@ -1803,7 +1736,7 @@ function normalizeThreadMessages(readResult: ThreadMessageReadResult): OutputIte
 function stripMarkdownJsonFence(text: string): string {
   const trimmed = String(text || '').trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  return fenced ? fenced[1].trim() : trimmed;
+  return fenced?.[1] ? fenced[1].trim() : trimmed;
 }
 
 function parseIssueSummaryOutput(text: string): IssueSummaryDraft {
@@ -1923,7 +1856,9 @@ async function summarizeIssueMarkersForTurn(sourceThreadId: string, sourceTurnId
   saveIssueStore();
 
   try {
-    const repoFullName = markers[0].repoFullName;
+    const firstMarker = markers[0];
+    if (!firstMarker) return;
+    const repoFullName = firstMarker.repoFullName;
     const sourceRead = await rpcRequest<ThreadMessageReadResult>('thread/read', {
       threadId: sourceThreadId,
       includeTurns: true
@@ -2175,16 +2110,6 @@ async function ensureCodexServerRunning(): Promise<void> {
   }
 }
 
-function repoFolderFromFullName(fullName: string): string {
-  return fullName.replace(/[\\/]/g, '__');
-}
-
-function repoPathFromFullName(fullName: string): string {
-  const currentRepoMatch = getCurrentRepoMatch();
-  if (currentRepoMatch?.fullName === fullName) return currentRepoMatch.repoPath;
-  return path.join(WORKSPACE_ROOT, repoFolderFromFullName(fullName));
-}
-
 function getCloneState(fullName: string): CloneState {
   const repoPath = repoPathFromFullName(fullName);
   const job = cloneJobs.get(fullName);
@@ -2193,100 +2118,6 @@ function getCloneState(fullName: string): CloneState {
   if (job?.status === 'failed') return job.error ? { status: 'failed', repoPath, error: job.error } : { status: 'failed', repoPath };
   if (fs.existsSync(path.join(repoPath, '.git'))) return { status: 'cloned', repoPath };
   return { status: 'not_cloned', repoPath };
-}
-
-function parseGitStatusOutput(repoFullName: string, repoPath: string, raw: string): GitRepoStatus {
-  let branch = '';
-  let upstream: string | null = null;
-  let ahead = 0;
-  let behind = 0;
-  let stagedCount = 0;
-  let unstagedCount = 0;
-  let untrackedCount = 0;
-  let conflictedCount = 0;
-
-  const lines = String(raw || '')
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter(Boolean);
-
-  for (const line of lines) {
-    if (line.startsWith('# branch.head ')) {
-      branch = line.slice('# branch.head '.length).trim();
-      continue;
-    }
-    if (line.startsWith('# branch.upstream ')) {
-      upstream = line.slice('# branch.upstream '.length).trim() || null;
-      continue;
-    }
-    if (line.startsWith('# branch.ab ')) {
-      const match = line.match(/\+(\d+)\s+\-(\d+)/);
-      ahead = Number(match?.[1] || 0);
-      behind = Number(match?.[2] || 0);
-      continue;
-    }
-    if (line.startsWith('1 ') || line.startsWith('2 ')) {
-      const xy = line.split(/\s+/, 3)[1] || '..';
-      const x = xy[0] || '.';
-      const y = xy[1] || '.';
-      if (x !== '.' && x !== '?') stagedCount += 1;
-      if (y !== '.' && y !== '?') unstagedCount += 1;
-      continue;
-    }
-    if (line.startsWith('u ')) {
-      conflictedCount += 1;
-      continue;
-    }
-    if (line.startsWith('? ')) {
-      untrackedCount += 1;
-    }
-  }
-
-  const hasChanges = stagedCount + unstagedCount + untrackedCount + conflictedCount > 0;
-  const branchLabel = !branch || branch === '(detached)' ? 'detached' : branch;
-  const actionRecommended = hasChanges || ahead > 0 || behind > 0;
-  let tone: GitRepoStatus['tone'] = 'neutral';
-  let summary = 'Git は同期済みです';
-
-  if (conflictedCount > 0) {
-    tone = 'danger';
-    summary = `Git 競合 ${conflictedCount} 件`;
-  } else if (hasChanges) {
-    tone = 'warning';
-    const parts: string[] = [];
-    if (stagedCount > 0) parts.push(`ステージ ${stagedCount}`);
-    if (unstagedCount > 0) parts.push(`未反映 ${unstagedCount}`);
-    if (untrackedCount > 0) parts.push(`新規追加 ${untrackedCount}`);
-    summary = `変更あり: ${parts.join(' / ')}`;
-    if (!upstream) summary += ' / upstream 未設定';
-    else if (ahead > 0 || behind > 0) summary += ` / +${ahead} -${behind}`;
-  } else if (ahead > 0 && behind > 0) {
-    tone = 'danger';
-    summary = `push 前に同期が必要: +${ahead} -${behind}`;
-  } else if (ahead > 0) {
-    tone = 'success';
-    summary = `未 push のコミット ${ahead} 件`;
-  } else if (behind > 0) {
-    tone = 'warning';
-    summary = `リモート更新 ${behind} 件`;
-  }
-
-  return {
-    repoFullName,
-    repoPath,
-    branch: branchLabel,
-    upstream,
-    ahead,
-    behind,
-    stagedCount,
-    unstagedCount,
-    untrackedCount,
-    conflictedCount,
-    hasChanges,
-    actionRecommended,
-    tone,
-    summary
-  };
 }
 
 function readGitRepoStatus(repoFullName: string): GitRepoStatus {
@@ -2354,30 +2185,6 @@ function detectBinaryBuffer(buffer: Buffer): boolean {
   return false;
 }
 
-function diffKindFromStatusCode(code: string): RepoFileChangeKind {
-  const normalized = String(code || '').trim();
-  if (normalized === '??') return 'untracked';
-  if (/[UD]{2}|AA|DD|AU|UA|DU|UD|UU/.test(normalized) || normalized.includes('U')) return 'conflicted';
-  if (normalized.includes('R')) return 'renamed';
-  if (normalized.includes('D')) return 'deleted';
-  if (normalized.includes('A')) return 'added';
-  if (normalized.includes('M') || normalized.includes('T') || normalized.includes('C')) return 'modified';
-  return 'unchanged';
-}
-
-function parseStatusPath(line: string): { code: string; path: string } | null {
-  const text = String(line || '');
-  if (!text) return null;
-  if (text.startsWith('?? ')) return { code: '??', path: text.slice(3).trim() };
-  if (text.length < 4) return null;
-  const code = text.slice(0, 2);
-  let filePath = text.slice(3).trim();
-  const renameArrow = filePath.lastIndexOf(' -> ');
-  if (renameArrow >= 0) filePath = filePath.slice(renameArrow + 4).trim();
-  if (!filePath) return null;
-  return { code, path: filePath };
-}
-
 function collectRepoFileStatus(repoPath: string): Map<string, RepoFileChangeKind> {
   const result = runGitForRepo(repoPath, ['status', '--porcelain', '--untracked-files=all']);
   const map = new Map<string, RepoFileChangeKind>();
@@ -2435,7 +2242,7 @@ function parseNumStatOutput(output: string, targetPath = ''): { additions: numbe
     if (!trimmed) continue;
     const parts = trimmed.split('\t');
     if (parts.length < 3) continue;
-    const filePath = parts[2].trim();
+    const filePath = String(parts[2] || '').trim();
     if (targetPath && filePath !== targetPath) continue;
     const added = parts[0] === '-' ? 0 : Number(parts[0] || 0);
     const removed = parts[1] === '-' ? 0 : Number(parts[1] || 0);
@@ -2689,7 +2496,7 @@ function applyRepoTreeItemAggregate(target: RepoTreeBuildNode, item: RepoFileLis
 function finalizeRepoTreeNodes(nodeMap: Map<string, RepoTreeBuildNode>): RepoFileTreeItem[] {
   const items = Array.from(nodeMap.values()).map((node) => {
     const children = node.type === 'directory' ? finalizeRepoTreeNodes(node.childMap) : undefined;
-    return {
+    const item: RepoFileTreeItem = {
       name: node.name,
       path: node.path,
       type: node.type,
@@ -2698,9 +2505,10 @@ function finalizeRepoTreeNodes(nodeMap: Map<string, RepoTreeBuildNode>): RepoFil
       isBinary: node.isBinary,
       additions: node.additions,
       deletions: node.deletions,
-      hasChildren: Boolean(children && children.length > 0),
-      children
-    } satisfies RepoFileTreeItem;
+      hasChildren: Boolean(children && children.length > 0)
+    };
+    if (children) item.children = children;
+    return item;
   });
 
   return items.sort((a, b) => {
@@ -2726,6 +2534,7 @@ function buildRepoTreeResponse(repoFullName: string, baseItems: RepoFileListItem
     let currentPath = '';
     for (let index = 0; index < parts.length; index += 1) {
       const name = parts[index];
+      if (!name) continue;
       currentPath = currentPath ? `${currentPath}/${name}` : name;
       const isLeaf = index === parts.length - 1;
       const nodeType: 'file' | 'directory' = isLeaf && !item.path.endsWith('/') ? 'file' : 'directory';
@@ -2840,7 +2649,7 @@ function buildRepoFileView(repoFullName: string, rawPath: string): RepoFileViewR
   const changeKind = statusMap.get(resolved.relativePath) || (ignored ? 'ignored' : 'unchanged');
   const { diff, isDeleted, additions, deletions } = collectDiffOutput(repoPath, resolved.relativePath, trackedFiles, changeKind);
   const contentState = readRepoFileContent(repoPath, resolved.relativePath);
-  return {
+  const response: RepoFileViewResponse = {
     repoFullName,
     repoPath,
     path: resolved.relativePath,
@@ -2851,10 +2660,11 @@ function buildRepoFileView(repoFullName: string, rawPath: string): RepoFileViewR
     additions,
     deletions,
     content: contentState.content,
-    diff,
-    mimeType: contentState.mimeType,
-    imageDataUrl: contentState.imageDataUrl
+    diff
   };
+  if (contentState.mimeType) response.mimeType = contentState.mimeType;
+  if (contentState.imageDataUrl) response.imageDataUrl = contentState.imageDataUrl;
+  return response;
 }
 
 function runClone(fullName: string, cloneUrl: string): void {
