@@ -1,24 +1,18 @@
 import {
   Fragment,
-  createContext,
-  useContext,
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
   type FocusEvent,
   type KeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
-  type RefObject
+  type PointerEvent as ReactPointerEvent
 } from 'react';
-import { marked } from 'marked';
 import { App, Page, PageContent, Button, f7ready, f7 } from 'framework7-react';
 import type {
   AppErrorState,
-  AssistantOutputItem,
   CollaborationMode,
   GitRepoStatus,
   ImageAttachmentDraft,
@@ -42,6 +36,19 @@ import type {
   UserInputDraftMap,
   UserInputQuestion
 } from '../../shared/types';
+import { AppCtx, useAppCtx, type RepoFilter } from './appContext';
+import {
+  COLLABORATION_MODE_BY_REPO_KEY,
+  DEFAULT_COLLABORATION_MODE,
+  LAST_REPO_FULLNAME_KEY,
+  LAST_THREAD_ID_KEY,
+  MODEL_BY_REPO_KEY,
+  PUSH_ENDPOINT_KEY,
+  THREAD_BY_REPO_KEY,
+  type CollaborationModeByRepoMap,
+  type ModelByRepoMap,
+  type ThreadByRepoMap
+} from './appStorage';
 import {
   decodeBase64UrlToUint8Array,
   formatFileSize,
@@ -65,7 +72,6 @@ import {
   buildFileRenderLines,
   findVirtualLineIndex
 } from './fileViewModel';
-import { FileTreeNode, useFileTreeState } from './fileTree';
 import {
   buildFileViewPath,
   extractSearch,
@@ -76,116 +82,13 @@ import {
   pushPath,
   resolveRepoRelativeFilePath
 } from './navigation';
-
-marked.setOptions({ gfm: true, breaks: true });
+import { expandAssistantItems, renderAssistant } from './assistantRender';
+import { formatChangeKindLabel } from './changeKindLabel';
+import { FilesPage } from './pages/FilesPage';
+import { NewRepoPage } from './pages/NewRepoPage';
+import { ReposPage } from './pages/ReposPage';
 
 const CLONE_TIMEOUT_MS = 180000;
-const LAST_THREAD_ID_KEY = 'fx:lastThreadId';
-const LAST_REPO_FULLNAME_KEY = 'fx:lastRepoFullName';
-const THREAD_BY_REPO_KEY = 'fx:threadByRepo';
-const COLLABORATION_MODE_BY_REPO_KEY = 'fx:collaborationModeByRepo';
-const MODEL_BY_REPO_KEY = 'fx:modelByRepo';
-const PUSH_ENDPOINT_KEY = 'fx:pushEndpoint';
-const DEFAULT_COLLABORATION_MODE = 'default';
-
-type RepoFilter = 'all' | 'cloned' | 'not_cloned';
-type ThreadByRepoMap = Record<string, string>;
-type CollaborationModeByRepoMap = Record<string, CollaborationMode>;
-type ModelByRepoMap = Record<string, string>;
-
-interface AppContextValue {
-  connected: boolean;
-  error: AppErrorState | null;
-  busy: boolean;
-  query: string;
-  setQuery: (value: string) => void;
-  repos: RepoSummary[];
-  repoFilter: RepoFilter;
-  setRepoFilter: (value: RepoFilter) => void;
-  selectedRepo: RepoSummary | null;
-  setSelectedRepo: (value: RepoSummary | null) => void;
-  clonedRepos: RepoSummary[];
-  notClonedRepos: RepoSummary[];
-  filteredRepos: RepoSummary[];
-  activeRepoFullName: string | null;
-  activeThreadId: string | null;
-  chatVisible: boolean;
-  outputItems: OutputItem[];
-  outputRef: RefObject<HTMLElement | null>;
-  message: string;
-  setMessage: (value: string) => void;
-  pendingAttachments: ImageAttachmentDraft[];
-  addImageAttachments: (fileList: FileList | null) => Promise<void>;
-  removePendingAttachment: (index: number) => void;
-  streaming: boolean;
-  streamingAssistantId: string | null;
-  liveReasoningText: string;
-  compactionStatusPhase: '' | 'compacting' | 'compacted';
-  compactionStatusMessage: string;
-  awaitingFirstStreamChunk: boolean;
-  hasReasoningStarted: boolean;
-  hasAnswerStarted: boolean;
-  navigate: (path: string, replace?: boolean) => void;
-  bootstrapConnection: () => Promise<void>;
-  fetchRepos: (nextQuery?: string) => Promise<void>;
-  createRepo: (name: string, visibility: 'public' | 'private') => Promise<RepoSummary>;
-  startWithRepo: (repo: RepoSummary) => Promise<boolean>;
-  sendTurn: () => Promise<void>;
-  cancelTurn: () => Promise<void>;
-  startNewThread: () => Promise<void>;
-  canReturnToPreviousThread: boolean;
-  returnToPreviousThread: () => void;
-  goBackToRepoList: () => void;
-  canApplyLatestPlan: boolean;
-  applyLatestPlanShortcut: () => Promise<void>;
-  chatSettingsOpen: boolean;
-  openChatSettings: () => void;
-  closeChatSettings: () => void;
-  availableModels: ModelOption[];
-  modelsLoading: boolean;
-  modelsError: string;
-  loadAvailableModels: (force?: boolean) => Promise<void>;
-  activeRepoModel: string;
-  setActiveRepoModel: (modelId: string) => void;
-  gitStatus: GitRepoStatus | null;
-  gitStatusLoading: boolean;
-  gitStatusError: string;
-  refreshGitStatus: () => Promise<void>;
-  requestGitCommitPush: () => Promise<void>;
-  fileListItems: RepoFileListItem[];
-  fileListLoading: boolean;
-  fileListError: string;
-  fileListIncludeUnchanged: boolean;
-  setFileListIncludeUnchanged: (value: boolean) => void;
-  refreshFileList: (includeUnchanged?: boolean) => Promise<void>;
-  selectedFileView: RepoFileViewResponse | null;
-  selectedFileViewLoading: boolean;
-  selectedFileViewError: string;
-  openRepoFile: (filePath: string, line?: number | null, replace?: boolean, jumpToFirstDiff?: boolean) => Promise<void>;
-  returnFromFileView: () => void;
-  activeCollaborationMode: CollaborationMode;
-  setActiveCollaborationMode: (mode: CollaborationMode) => void;
-  pendingUserInputRequests: PendingUserInputRequest[];
-  selectUserInputOption: (
-    request: PendingUserInputRequest,
-    questionIndex: number,
-    questionId: string,
-    optionLabel: string
-  ) => Promise<void>;
-  pendingUserInputBusy: PendingBusyMap;
-  pendingUserInputDrafts: UserInputDraftMap;
-  issueItems: IssueItem[];
-  issuePanelOpen: boolean;
-  issueLoading: boolean;
-  issueError: string;
-  openIssuePanel: () => void;
-  closeIssuePanel: () => void;
-  markTurnBad: (turnId: string) => Promise<void>;
-  badMarkerBusy: boolean;
-  markedBadTurnIds: string[];
-  useIssuePrompt: (issue: IssueItem) => void;
-  resolveIssue: (issue: IssueItem) => Promise<void>;
-}
 
 interface PendingUserInputFetchResponse {
   requests?: PendingUserInputRequest[];
@@ -239,298 +142,6 @@ interface JsonErrorResponse {
   error?: string;
   hint?: string;
   [key: string]: unknown;
-}
-
-const AppCtx = createContext<AppContextValue | null>(null);
-
-function useAppCtx(): AppContextValue {
-  const ctx = useContext(AppCtx);
-  if (!ctx) throw new Error('app_context_missing');
-  return ctx;
-}
-
-function ReposPage() {
-  const {
-    connected,
-    error,
-    busy,
-    query,
-    setQuery,
-    repos,
-    repoFilter,
-    setRepoFilter,
-    selectedRepo,
-    setSelectedRepo,
-    clonedRepos,
-    notClonedRepos,
-    filteredRepos,
-    activeRepoFullName,
-    activeThreadId,
-    chatVisible,
-    navigate,
-    bootstrapConnection,
-    fetchRepos,
-    startWithRepo
-  } = useAppCtx();
-
-  return (
-    <Page noNavbar>
-      <PageContent className="fx-page fx-page-repos">
-        {!connected && error ? (
-          <section className="fx-error-panel">
-            <h2>GitHub接続エラー</h2>
-            <p>{error.title}</p>
-            <pre className="fx-code">{error.cause}</pre>
-            <div className="fx-actions">
-              <Button fill onClick={bootstrapConnection}>再試行</Button>
-              <Button tonal onClick={() => f7.dialog.alert('gh auth login', 'ログイン手順')}>ログイン手順</Button>
-            </div>
-          </section>
-        ) : null}
-
-        {connected ? (
-          <section className="fx-repos-shell">
-            <div className="fx-repos-toolbar">
-              <div className="fx-repos-search-row">
-                <Button
-                  className="fx-repo-create-nav-btn"
-                  type="button"
-                  onClick={() => navigate('/repos/new/')}
-                  aria-label="新規リポジトリ作成"
-                >
-                  ＋
-                </Button>
-                <input
-                  value={query}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.currentTarget.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      fetchRepos(e.currentTarget.value).catch((err: unknown) => {
-                        f7.toast.create({ text: `読み込み失敗: ${getClientErrorMessage(err)}`, closeTimeout: 1400, position: 'center' }).open();
-                      });
-                    }
-                  }}
-                  placeholder="リポジトリ名で検索"
-                />
-              </div>
-              <div className="fx-filter">
-                <Button small fill={repoFilter === 'all'} tonal={repoFilter !== 'all'} onClick={() => setRepoFilter('all')}>
-                  すべて {repos.length}
-                </Button>
-                <Button small fill={repoFilter === 'cloned'} tonal={repoFilter !== 'cloned'} onClick={() => setRepoFilter('cloned')}>
-                  クローン済み {clonedRepos.length}
-                </Button>
-                <Button small fill={repoFilter === 'not_cloned'} tonal={repoFilter !== 'not_cloned'} onClick={() => setRepoFilter('not_cloned')}>
-                  未クローン {notClonedRepos.length}
-                </Button>
-              </div>
-            </div>
-
-            <div className="fx-repo-scroll">
-              {filteredRepos.map((repo) => {
-                const isSelected = selectedRepo?.id === repo.id;
-                const cloned = repo.cloneState?.status === 'cloned';
-                const [owner = '', repoName = repo.fullName] = String(repo.fullName || '').split('/');
-                return (
-                  <button
-                    key={repo.id}
-                    className={`fx-repo-tile${isSelected ? ' is-selected' : ''}`}
-                    type="button"
-                    onClick={async () => {
-                      if (busy) return;
-                      setSelectedRepo(repo);
-                      if (chatVisible && activeRepoFullName === repo.fullName && activeThreadId) {
-                        navigate('/chat/');
-                        return;
-                      }
-                      const ok = await startWithRepo(repo);
-                      if (ok) navigate('/chat/');
-                    }}
-                  >
-                    <div className="fx-repo-line">
-                      <div className="fx-repo-text">
-                        <div className="fx-repo-name">{repoName}</div>
-                        <div className="fx-repo-owner">{owner}</div>
-                      </div>
-                      <span className={`fx-chip${cloned ? ' is-ok' : ''}`}>{cloned ? 'クローン済み' : '未クローン'}</span>
-                    </div>
-                    <div className="fx-mini">最終更新: {repo.updatedAt ? new Date(repo.updatedAt).toLocaleDateString('ja-JP') : '不明'}</div>
-                  </button>
-                );
-              })}
-              {filteredRepos.length === 0 ? <p className="fx-mini">一致するリポジトリはありません</p> : null}
-            </div>
-          </section>
-        ) : null}
-      </PageContent>
-    </Page>
-  );
-}
-
-function NewRepoPage() {
-  const { connected, busy, navigate, createRepo, fetchRepos } = useAppCtx();
-  const [repoName, setRepoName] = useState('');
-  const [visibility, setVisibility] = useState<'public' | 'private'>('private');
-  const [errorText, setErrorText] = useState('');
-
-  async function handleCreate(): Promise<void> {
-    const normalizedName = repoName.trim();
-    if (!normalizedName) {
-      setErrorText('リポジトリ名を入力してください');
-      return;
-    }
-
-    setErrorText('');
-    try {
-      const created = await createRepo(normalizedName, visibility);
-      await fetchRepos('');
-      f7.toast.create({ text: `作成しました: ${created.fullName}`, closeTimeout: 1600, position: 'center' }).open();
-      navigate('/repos/');
-    } catch (error: unknown) {
-      setErrorText(getClientErrorMessage(error));
-    }
-  }
-
-  return (
-    <Page noNavbar>
-      <PageContent className="fx-page fx-page-repos">
-        <section className="fx-repo-create-shell">
-          <div className="fx-repo-create-card">
-            <div className="fx-repo-create-header">
-              <Button tonal className="fx-repo-create-back" onClick={() => navigate('/repos/')}>
-                ←
-              </Button>
-              <div>
-                <div className="fx-repo-create-title">新規リポジトリ作成</div>
-                <div className="fx-mini">リポジトリ名と公開設定を指定します</div>
-              </div>
-            </div>
-
-            <label className="fx-repo-create-field">
-              <span className="fx-repo-create-label">リポジトリ名</span>
-              <input
-                value={repoName}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setRepoName(e.currentTarget.value)}
-                placeholder="example-repo"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                data-testid="repo-create-name-input"
-              />
-            </label>
-
-            <div className="fx-repo-create-field">
-              <span className="fx-repo-create-label">公開設定</span>
-              <div className="fx-repo-create-visibility">
-                <button
-                  type="button"
-                  className={`fx-visibility-option${visibility === 'private' ? ' is-selected' : ''}`}
-                  onClick={() => setVisibility('private')}
-                  data-testid="repo-create-private"
-                >
-                  Private
-                </button>
-                <button
-                  type="button"
-                  className={`fx-visibility-option${visibility === 'public' ? ' is-selected' : ''}`}
-                  onClick={() => setVisibility('public')}
-                  data-testid="repo-create-public"
-                >
-                  Public
-                </button>
-              </div>
-            </div>
-
-            {!connected ? <p className="fx-mini">GitHub接続を確認中です</p> : null}
-            {errorText ? <div className="fx-repo-create-error">{errorText}</div> : null}
-
-            <div className="fx-repo-create-actions">
-              <Button tonal onClick={() => navigate('/repos/')} disabled={busy}>
-                キャンセル
-              </Button>
-              <Button
-                fill
-                onClick={() => void handleCreate()}
-                disabled={busy || !connected || repoName.trim().length === 0}
-                data-testid="repo-create-submit"
-              >
-                作成
-              </Button>
-            </div>
-          </div>
-        </section>
-      </PageContent>
-    </Page>
-  );
-}
-
-function formatChangeKindLabel(kind: RepoFileListItem['changeKind'] | RepoFileViewResponse['changeKind']): string {
-  switch (kind) {
-    case 'added':
-    case 'untracked':
-      return '追加';
-    case 'deleted':
-      return '削除';
-    case 'renamed':
-      return '移動';
-    case 'conflicted':
-      return '競合';
-    case 'ignored':
-      return '除外';
-    case 'unchanged':
-      return '差分なし';
-    default:
-      return '変更';
-  }
-}
-
-function FilesPage() {
-  const { activeRepoFullName, fileListIncludeUnchanged, setFileListIncludeUnchanged, openRepoFile, navigate } = useAppCtx();
-  const treeState = useFileTreeState({
-    repoFullName: activeRepoFullName,
-    includeUnchanged: fileListIncludeUnchanged
-  });
-  const { rootItems, rootLoading, rootError } = treeState;
-
-  return (
-    <Page noNavbar>
-      <PageContent className="fx-page fx-page-files">
-        <div className="fx-chat-head">
-          <button
-            className="fx-back-icon"
-            type="button"
-            onClick={() => navigate('/chat/')}
-            data-testid="files-back-button"
-          >
-            ←
-          </button>
-          <div className="fx-files-title">ファイル一覧</div>
-        </div>
-        <div className="fx-files-toolbar">
-          <label className="fx-files-toggle" htmlFor="files-include-unchanged" data-testid="files-include-unchanged-toggle">
-            <input
-              id="files-include-unchanged"
-              type="checkbox"
-              checked={fileListIncludeUnchanged}
-              onChange={(e) => setFileListIncludeUnchanged(e.currentTarget.checked)}
-            />
-            <span>変更差分なしも表示</span>
-          </label>
-          <div className="fx-files-toolbar-repo">{activeRepoFullName || 'リポジトリ未選択'}</div>
-        </div>
-        <div className="fx-files-list" data-testid="files-list">
-          {rootLoading ? <p className="fx-mini">ファイル一覧を読み込み中...</p> : null}
-          {rootError ? <p className="fx-mini">読み込み失敗: {rootError}</p> : null}
-          {!rootLoading && !rootError && rootItems.length === 0 ? <p className="fx-mini">表示できるファイルがありません。</p> : null}
-          {!rootLoading && !rootError
-            ? rootItems.map((node) => (
-                <FileTreeNode key={node.path} node={node} depth={0} treeState={treeState} openRepoFile={openRepoFile} />
-              ))
-            : null}
-        </div>
-      </PageContent>
-    </Page>
-  );
 }
 
 function FileViewPage() {
@@ -886,55 +497,6 @@ function FileViewPage() {
       </PageContent>
     </Page>
   );
-}
-
-function renderAssistant(item: AssistantOutputItem, pending = false) {
-  const answer = typeof item.answer === 'string' ? item.answer : String(item.text || '');
-  const statusText = !answer ? String(item.status || item.text || '').trim() : '';
-  const assistantHtml = String(marked.parse(answer));
-
-  if (item.type === 'diff') {
-    return <pre className="fx-diff">{answer}</pre>;
-  }
-  if (pending && !answer && !statusText) return null;
-  if (statusText === '・・・') return null;
-  if (!answer && statusText) return <div className="fx-stream-status">{statusText}</div>;
-  if (pending && answer) {
-    return (
-      <div
-        className="fx-assistant-rich fx-message-body-copy fx-stream-live"
-        dangerouslySetInnerHTML={{ __html: assistantHtml }}
-      />
-    );
-  }
-  return (
-    <div
-      className="fx-assistant-rich fx-message-body-copy"
-      dangerouslySetInnerHTML={{ __html: assistantHtml }}
-    />
-  );
-}
-
-function expandAssistantItems(items: OutputItem[]): OutputItem[] {
-  const src = Array.isArray(items) ? items : [];
-  const out: OutputItem[] = [];
-  for (const item of src) {
-    if (isAssistantItem(item)) {
-      const answer =
-        typeof item.answer === 'string' && item.answer.length > 0
-          ? item.answer
-          : String(item.text || '');
-      out.push({
-        ...item,
-        answer,
-        text: answer,
-        reasoning: ''
-      });
-      continue;
-    }
-    out.push(item);
-  }
-  return out;
 }
 
 function ChatPage() {

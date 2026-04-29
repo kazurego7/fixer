@@ -10,19 +10,31 @@ import Fastify, {
 import fastifyStatic from '@fastify/static';
 import WebSocket from 'ws';
 import webPush, { type PushSubscription } from 'web-push';
+import {
+  DEFAULT_MODEL_FALLBACK,
+  DEFAULT_THREAD_SANDBOX,
+  buildCollaborationMode,
+  buildTurnStartOverridesWithModelResolver,
+  normalizeCollaborationMode,
+  normalizeModelId,
+  normalizeModelListResponse
+} from './server/collaboration';
+import { getErrorMessage } from './server/errors';
 import { diffKindFromStatusCode, parseGitStatusOutput, parseStatusPath } from './server/gitParsing';
 import { asObject, asRequestId, asString, type JsonRecord } from './server/json';
+import { registerGithubRoutes } from './server/routes/github';
+import { pushRuntimeLog } from './server/runtimeLogs';
+import { registerHealthRoutes } from './server/routes/health';
+import { registerSpaRoutes } from './server/routes/spa';
 import { WORKSPACE_ROOT, repoFolderFromFullName, repoPathFromFullName } from './server/workspace';
 import { extractDisplayReasoningText } from './shared/reasoning';
 import type {
   CloneState,
   CollaborationMode,
-  CollaborationModeOverride,
   GitRepoStatus,
   IssueItem,
   IssueMarker,
   IssueStatus,
-  ModelOption,
   OutputItem,
   ParsedLegacyTurnNotification,
   ParsedV2TurnNotification,
@@ -48,15 +60,6 @@ declare module 'fastify' {
   interface FastifyRequest {
     startTime?: bigint;
   }
-}
-
-type RuntimeLogLevel = 'info' | 'error';
-
-interface RuntimeLogEntry {
-  timestamp: string;
-  level: RuntimeLogLevel;
-  event: string;
-  [key: string]: unknown;
 }
 
 interface PushSubscriptionRecord {
@@ -162,46 +165,6 @@ interface LiveTurnState {
   buffer: Array<{ seq: number; event: TurnStreamEvent }>;
 }
 
-interface GithubUserResponse {
-  login?: string;
-}
-
-interface GithubRepoApiItem {
-  id: number;
-  name: string;
-  full_name: string;
-  private: boolean;
-  clone_url: string;
-  default_branch: string;
-  updated_at: string;
-}
-
-interface GithubRepoCreateResponse {
-  id: number;
-  name: string;
-  full_name: string;
-  private: boolean;
-  clone_url: string;
-  default_branch: string;
-  updated_at: string;
-  message?: string;
-}
-
-function getErrorMessage(error: unknown, fallback = 'unknown_error'): string {
-  if (error instanceof Error && error.message) return error.message;
-  const record = asObject(error);
-  const message = asString(record?.message);
-  return message || fallback;
-}
-
-function getErrorCode(error: unknown): string | null {
-  if (error instanceof Error && typeof (error as Error & { code?: unknown }).code === 'string') {
-    return (error as Error & { code?: string }).code || null;
-  }
-  const record = asObject(error);
-  return asString(record?.code);
-}
-
 const PORT = Number(process.env.PORT || 3000);
 const CODEX_APP_SERVER_WS_URL = 'ws://127.0.0.1:39080';
 const CODEX_APP_SERVER_START_CMD = `codex app-server --listen ${CODEX_APP_SERVER_WS_URL}`;
@@ -212,8 +175,6 @@ const PUSH_VAPID_PATH = path.join(WORKSPACE_ROOT, 'push-vapid.json');
 const ISSUE_STORE_PATH = path.join(WORKSPACE_ROOT, 'issues.json');
 const DEFAULT_PUSH_SUBJECT = 'mailto:fixer@example.com';
 const cloneJobs = new Map<string, CloneJobState>();
-const runtimeLogs: RuntimeLogEntry[] = [];
-const MAX_RUNTIME_LOGS = 2000;
 const runningTurnByThreadId = new Map<string, string>();
 const threadModelByThreadId = new Map<string, string>();
 const pendingUserInputRequestById = new Map<string, PendingUserInputRequest & { createdAt: string }>();
@@ -225,9 +186,6 @@ const lastAutoCompactTokenTotalByThreadId = new Map<string, number>();
 let issueStore: IssueStore | null = null;
 const issueSummaryInFlightTurnKeys = new Set<string>();
 let liveTurnSeq = 1;
-const DEFAULT_MODEL_FALLBACK = 'gpt-5-codex';
-const DEFAULT_REASONING_SUMMARY = 'concise';
-const DEFAULT_THREAD_SANDBOX = 'danger-full-access';
 
 let codexServerProcess: ChildProcess | null = null;
 let codexStartPromise: Promise<void> | null = null;
@@ -244,11 +202,6 @@ let pushPublicKey = '';
 let pushPrivateKey = '';
 let pushEnabled = false;
 let cachedModelAutoCompactTokenLimit: number | null | undefined;
-
-function pushRuntimeLog(entry: { level: RuntimeLogLevel; event: string; [key: string]: unknown }): void {
-  runtimeLogs.push({ timestamp: new Date().toISOString(), ...entry });
-  if (runtimeLogs.length > MAX_RUNTIME_LOGS) runtimeLogs.shift();
-}
 
 function rememberBounded(set: Set<string>, key: string | null | undefined, max = 5000): void {
   if (!key) return;
@@ -1080,74 +1033,11 @@ function buildTurnInput(prompt: string, attachments: Array<{ type?: string; data
   return input;
 }
 
-function normalizeModelId(value: unknown): string {
-  const model = String(value || '').trim();
-  return model || '';
-}
-
-function normalizeModelListResponse(payload: JsonRecord | null | undefined): ModelOption[] {
-  const src = Array.isArray(payload?.data)
-    ? payload.data
-    : Array.isArray(payload?.models)
-      ? payload.models
-      : [];
-  const out = [];
-  const seen = new Set();
-  for (const item of src) {
-    if (!item || typeof item !== 'object') continue;
-    const id = normalizeModelId(item.id || item.model || item.name);
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push({
-      id,
-      name: String(item.name || item.display_name || id),
-      description: String(item.description || item.summary || '')
-    });
-  }
-  return out;
-}
-
-function normalizeCollaborationMode(value: unknown): CollaborationMode | null {
-  const normalized = String(value || '')
-    .trim()
-    .toLowerCase();
-  if (!normalized) return null;
-  if (normalized === 'plan') return 'plan';
-  if (normalized === 'default' || normalized === 'normal') return 'default';
-  return null;
-}
-
-function buildCollaborationMode(mode: CollaborationMode, model: string): CollaborationModeOverride {
-  return {
-    mode,
-    settings: {
-      model: String(model || DEFAULT_MODEL_FALLBACK),
-      reasoning_effort: null,
-      developer_instructions: null
-    }
-  };
-}
-
 async function buildTurnStartOverrides(
   threadId: string,
   options: { selectedModel?: string; collaborationMode?: CollaborationMode | null } = {}
-): Promise<TurnStartOverrides> {
-  const selectedModel = normalizeModelId(options.selectedModel);
-  const collaborationMode = normalizeCollaborationMode(options.collaborationMode);
-  const overrides: TurnStartOverrides = {
-    summary: DEFAULT_REASONING_SUMMARY
-  };
-
-  if (selectedModel) {
-    overrides.model = selectedModel;
-  }
-
-  if (collaborationMode) {
-    const effectiveModel = selectedModel || (await resolveThreadModel(threadId));
-    overrides.collaborationMode = buildCollaborationMode(collaborationMode, effectiveModel);
-  }
-
-  return overrides;
+) {
+  return buildTurnStartOverridesWithModelResolver(threadId, options, resolveThreadModel);
 }
 
 async function resolveThreadModel(threadId: string): Promise<string> {
@@ -2696,130 +2586,6 @@ function runClone(fullName: string, cloneUrl: string): void {
   });
 }
 
-function runGh(args: string[]): SpawnSyncReturns<string> {
-  return spawnSync('gh', args, { encoding: 'utf8' });
-}
-
-function getGithubTokenFromGh(): string {
-  const tokenResult = runGh(['auth', 'token']);
-  if (tokenResult.error) {
-    if (getErrorCode(tokenResult.error) === 'ENOENT') throw new Error('gh_not_installed');
-    throw new Error(`gh_auth_token_error:${tokenResult.error.message}`);
-  }
-
-  if (tokenResult.status !== 0) {
-    const msg = (tokenResult.stderr || tokenResult.stdout || '').trim();
-    throw new Error(`gh_not_logged_in:${msg}`);
-  }
-
-  const token = (tokenResult.stdout || '').trim();
-  if (!token) throw new Error('gh_token_empty');
-  return token;
-}
-
-function getGhStatus():
-  | { available: false; connected: false; hint: string }
-  | { available: true; connected: false; hint: string }
-  | { available: true; connected: true; token: string } {
-  const versionResult = runGh(['--version']);
-  if (versionResult.error && getErrorCode(versionResult.error) === 'ENOENT') {
-    return { available: false, connected: false, hint: 'gh がインストールされていません。' };
-  }
-  if (versionResult.status !== 0) {
-    return { available: false, connected: false, hint: 'gh コマンドを実行できません。' };
-  }
-
-  try {
-    const token = getGithubTokenFromGh();
-    return { available: true, connected: true, token };
-  } catch (error) {
-    const message = getErrorMessage(error);
-    if (message.startsWith('gh_not_logged_in')) {
-      return { available: true, connected: false, hint: '先に `gh auth login` を実行してください。' };
-    }
-    return { available: true, connected: false, hint: message };
-  }
-}
-
-async function githubUser(token: string): Promise<GithubUserResponse> {
-  const response = await fetch('https://api.github.com/user', {
-    headers: {
-      'User-Agent': 'codex-mobile-ui',
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`
-    }
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`github_user_error:${response.status}:${text.slice(0, 200)}`);
-  }
-  return (await response.json()) as GithubUserResponse;
-}
-
-async function githubRepos(token: string, query: string): Promise<RepoSummary[]> {
-  const endpoint = query
-    ? `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+user:@me`
-    : 'https://api.github.com/user/repos?per_page=100&sort=updated';
-
-  const response = await fetch(endpoint, {
-    headers: {
-      'User-Agent': 'codex-mobile-ui',
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`
-    }
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`github_error:${response.status}:${text.slice(0, 200)}`);
-  }
-
-  const data = (await response.json()) as GithubRepoApiItem[] | { items?: GithubRepoApiItem[] };
-  const repos = Array.isArray(data) ? data : data.items || [];
-  return repos.map((repo) => ({
-    id: repo.id,
-    name: repo.name,
-    fullName: repo.full_name,
-    private: repo.private,
-    cloneUrl: repo.clone_url,
-    defaultBranch: repo.default_branch,
-    updatedAt: repo.updated_at,
-    cloneState: getCloneState(repo.full_name)
-  }));
-}
-
-async function githubCreateRepo(token: string, name: string, isPrivate: boolean): Promise<RepoSummary> {
-  const response = await fetch('https://api.github.com/user/repos', {
-    method: 'POST',
-    headers: {
-      'User-Agent': 'codex-mobile-ui',
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      name,
-      private: isPrivate,
-      auto_init: false
-    })
-  });
-
-  const data = (await response.json()) as GithubRepoCreateResponse;
-  if (!response.ok) {
-    throw new Error(String(data.message || `github_repo_create_error:${response.status}`));
-  }
-
-  return {
-    id: data.id,
-    name: data.name,
-    fullName: data.full_name,
-    private: data.private,
-    cloneUrl: data.clone_url,
-    defaultBranch: data.default_branch,
-    updatedAt: data.updated_at,
-    cloneState: getCloneState(data.full_name)
-  };
-}
-
 function buildServer(): FastifyInstance {
   pushSubscriptions = loadPushSubscriptions();
   try {
@@ -2876,35 +2642,12 @@ function buildServer(): FastifyInstance {
     reply.code(500).send({ error: getErrorMessage(error, 'internal_error'), requestId: request.id });
   });
 
-  app.get('/', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/repos', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/repos/', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/repos/new', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/repos/new/', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/chat', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/chat/', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/files', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/files/', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/files/view', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/files/view/', async (_request, reply) => reply.sendFile('index.html'));
-  app.get('/api/health', async () => ({
-    ok: true,
+  registerSpaRoutes(app);
+  registerHealthRoutes(app, {
     workspaceRoot: WORKSPACE_ROOT,
-    codexMode: 'app-server',
-    codexAppServerWsUrl: CODEX_APP_SERVER_WS_URL,
-    codexAutostartEnabled: true
-  }));
-
-  app.get('/api/logs', async (request) => {
-    const query = asObject(request.query) ?? {};
-    const level = asString(query.level);
-    const limitRaw = Number(query.limit || 200);
-    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, limitRaw)) : 200;
-    let logs = runtimeLogs;
-    if (level) logs = logs.filter((entry) => entry.level === level);
-    const items = logs.slice(-limit);
-    return { total: logs.length, count: items.length, items };
+    codexAppServerWsUrl: CODEX_APP_SERVER_WS_URL
   });
+  registerGithubRoutes(app, { getCloneState });
 
   app.get('/api/push/config', async () => {
     return {
@@ -2974,81 +2717,6 @@ function buildServer(): FastifyInstance {
       endpoint
     });
     return { ok: true };
-  });
-
-  app.get('/api/github/auth/status', async () => {
-    const status = getGhStatus();
-    if (!status.available) return { available: false, connected: false, hint: status.hint };
-    if (!status.connected) return { available: true, connected: false, hint: status.hint };
-    const user = await githubUser(status.token);
-    return { available: true, connected: true, login: user.login || '' };
-  });
-
-  app.post('/api/github/auth/logout', async (_request, reply) => {
-    reply.code(400);
-    return { error: 'gh_logout_required', hint: '`gh auth logout` をターミナルで実行してください。' };
-  });
-
-  app.get('/api/github/repos', async (request, reply) => {
-    const queryRecord = asObject(request.query) ?? {};
-    const status = getGhStatus();
-    if (!status.available) {
-      reply.code(503);
-      return { error: 'gh_not_available', hint: status.hint };
-    }
-    if (!status.connected) {
-      reply.code(401);
-      return { error: 'gh_not_logged_in', hint: status.hint };
-    }
-    const query = asString(queryRecord.query) || '';
-    const repos = await githubRepos(status.token, query);
-    return { repos };
-  });
-
-  app.post('/api/github/repos', async (request, reply) => {
-    const body = asObject(request.body) ?? {};
-    const status = getGhStatus();
-    if (!status.available) {
-      reply.code(503);
-      return { error: 'gh_not_available', hint: status.hint };
-    }
-    if (!status.connected) {
-      reply.code(401);
-      return { error: 'gh_not_logged_in', hint: status.hint };
-    }
-
-    const name = asString(body.name).trim();
-    const visibility = asString(body.visibility).trim();
-    if (!name) {
-      reply.code(400);
-      return { error: 'repo_name_required' };
-    }
-    if (visibility !== 'public' && visibility !== 'private') {
-      reply.code(400);
-      return { error: 'visibility_invalid' };
-    }
-
-    try {
-      const repo = await githubCreateRepo(status.token, name, visibility === 'private');
-      pushRuntimeLog({
-        level: 'info',
-        event: 'github_repo_created',
-        fullName: repo.fullName,
-        visibility
-      });
-      return { repo };
-    } catch (error) {
-      const message = getErrorMessage(error);
-      pushRuntimeLog({
-        level: 'error',
-        event: 'github_repo_create_failed',
-        name,
-        visibility,
-        message
-      });
-      reply.code(400);
-      return { error: 'github_repo_create_failed', detail: message };
-    }
   });
 
   app.post('/api/repos/clone', async (request, reply) => {
