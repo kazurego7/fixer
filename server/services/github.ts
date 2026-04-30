@@ -1,6 +1,6 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import type { CloneState, RepoSummary } from '../../shared/types';
-import { getErrorCode, getErrorMessage } from '../errors';
+import { getErrorCode, getErrorMessage } from '../lib/errors';
 
 interface GithubUserResponse {
   login?: string;

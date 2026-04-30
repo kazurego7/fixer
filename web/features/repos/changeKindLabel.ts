@@ -1,4 +1,4 @@
-import type { RepoFileListItem, RepoFileViewResponse } from '../../shared/types';
+import type { RepoFileListItem, RepoFileViewResponse } from '../../../shared/types';
 
 export function formatChangeKindLabel(kind: RepoFileListItem['changeKind'] | RepoFileViewResponse['changeKind']): string {
   switch (kind) {

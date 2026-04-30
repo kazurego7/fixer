@@ -1,6 +1,6 @@
 import { useState, type Dispatch, type SetStateAction } from 'react';
-import type { AppErrorState, PendingThreadReturn, RepoSummary } from '../../../shared/types';
-import type { ThreadByRepoMap } from '../appStorage';
+import type { AppErrorState, PendingThreadReturn, RepoSummary } from '../../../../shared/types';
+import type { ThreadByRepoMap } from '../../../app/storage';
 
 const CLONE_TIMEOUT_MS = 180000;
 

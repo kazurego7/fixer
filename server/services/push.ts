@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import webPush, { type PushSubscription, type VapidKeys } from 'web-push';
-import { getErrorMessage } from '../errors';
-import { asObject } from '../json';
-import { pushRuntimeLog } from '../runtimeLogs';
+import { pushRuntimeLog } from '../infra/runtimeLogs';
+import { getErrorMessage } from '../lib/errors';
+import { asObject } from '../lib/json';
 
 export interface PushSubscriptionRecord {
   endpoint: string;

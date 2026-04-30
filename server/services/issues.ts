@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import type { IssueItem, IssueMarker, IssueStatus } from '../../shared/types';
-import { asObject, asString } from '../json';
+import { asObject, asString } from '../lib/json';
 
 interface IssueStore {
   markers: IssueMarker[];

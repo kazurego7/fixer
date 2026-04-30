@@ -14,8 +14,8 @@ import type {
   UserInputAnswerMap,
   UserInputDraftMap,
   UserInputQuestion
-} from '../../../shared/types';
-import { LAST_REPO_FULLNAME_KEY, LAST_THREAD_ID_KEY, PUSH_ENDPOINT_KEY, type ThreadByRepoMap } from '../appStorage';
+} from '../../../../shared/types';
+import { LAST_REPO_FULLNAME_KEY, LAST_THREAD_ID_KEY, PUSH_ENDPOINT_KEY, type ThreadByRepoMap } from '../../../app/storage';
 import {
   decodeBase64UrlToUint8Array,
   getClientErrorMessage,
@@ -25,7 +25,7 @@ import {
   parseTurnStreamEvent,
   readFileAsDataUrl,
   threadMessagesKey
-} from '../appUtils';
+} from '../../../lib/appUtils';
 import { expandAssistantItems } from '../assistantRender';
 
 interface JsonErrorResponse {

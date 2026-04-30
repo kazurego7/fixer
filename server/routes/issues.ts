@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { asObject, asString } from '../json';
-import { pushRuntimeLog } from '../runtimeLogs';
+import { pushRuntimeLog } from '../infra/runtimeLogs';
+import { asObject, asString } from '../lib/json';
 import type { IssueService } from '../services/issues';
 
 interface IssueRouteOptions {

@@ -2,10 +2,10 @@
   "name": "codex-mobile-ui",
   "version": "0.1.0",
   "description": "Mobile web UI for local Codex App Server",
-  "main": "server.ts",
+  "main": "server/index.ts",
   "scripts": {
-    "start": "tsx server.ts",
-    "start:watch": "tsx watch server.ts",
+    "start": "tsx server/index.ts",
+    "start:watch": "tsx watch server/index.ts",
     "build": "vite build --config vite.config.ts",
     "build:watch": "vite build --watch --config vite.config.ts",
     "dev": "bash -lc \"trap 'kill 0' EXIT; npm run build:watch & npm run start:watch\"",

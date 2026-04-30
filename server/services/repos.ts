@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { diffKindFromStatusCode, parseGitStatusOutput, parseStatusPath } from '../gitParsing';
-import { repoPathFromFullName } from '../workspace';
+import { repoPathFromFullName } from '../infra/workspace';
+import { diffKindFromStatusCode, parseGitStatusOutput, parseStatusPath } from '../lib/gitParsing';
 import type {
   GitRepoStatus,
   RepoFileChangeKind,

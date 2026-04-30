@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import WebSocket from 'ws';
 import type { RequestId } from '../../shared/types';
-import { asObject, asString, type JsonRecord } from '../json';
+import { asObject, asString, type JsonRecord } from '../lib/json';
 
 interface RpcPendingEntry {
   resolve: (value: any) => void;

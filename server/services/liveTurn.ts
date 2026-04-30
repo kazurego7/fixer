@@ -1,4 +1,4 @@
-import { asObject, asString } from '../json';
+import { asObject, asString } from '../lib/json';
 import type { OutputItem, TurnStreamEvent } from '../../shared/types';
 
 export interface ThreadMessageContentPart {

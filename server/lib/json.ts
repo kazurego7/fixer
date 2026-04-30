@@ -1,4 +1,4 @@
-import type { RequestId } from '../shared/types';
+import type { RequestId } from '../../shared/types';
 
 export type JsonRecord = Record<string, unknown>;
 

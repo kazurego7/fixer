@@ -1,7 +1,7 @@
 import { useState, type ChangeEvent } from 'react';
 import { Button, Page, PageContent, f7 } from 'framework7-react';
-import { getClientErrorMessage } from '../appUtils';
-import { useAppCtx } from '../appContext';
+import { useAppCtx } from '../../../app/AppContext';
+import { getClientErrorMessage } from '../../../lib/appUtils';
 
 export function NewRepoPage() {
   const { connected, busy, navigate, createRepo, fetchRepos } = useAppCtx();

@@ -17,10 +17,10 @@
     "noEmit": true
   },
   "include": [
-    "server.ts",
+    "server/**/*.ts",
     "vite.config.ts",
     "playwright.config.ts",
-    "web/src/**/*",
+    "web/**/*",
     "test/**/*.ts",
     "e2e/**/*.ts"
   ]

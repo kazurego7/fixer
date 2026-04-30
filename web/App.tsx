@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, f7ready, f7 } from 'framework7-react';
-import type { AppErrorState, CollaborationMode, PendingThreadReturn, RepoSummary } from '../../shared/types';
-import { AppCtx, type RepoFilter } from './appContext';
+import type { AppErrorState, CollaborationMode, PendingThreadReturn, RepoSummary } from '../shared/types';
+import { AppCtx, type RepoFilter } from './app/AppContext';
 import {
   COLLABORATION_MODE_BY_REPO_KEY,
   DEFAULT_COLLABORATION_MODE,
@@ -10,17 +10,17 @@ import {
   THREAD_BY_REPO_KEY,
   type CollaborationModeByRepoMap,
   type ThreadByRepoMap
-} from './appStorage';
-import { getClientErrorMessage, loadJsonFromStorage } from './appUtils';
-import { extractSearch, getCurrentPath, getCurrentSearch, normalizePath, pushPath } from './navigation';
-import { useChatRuntime } from './hooks/useChatRuntime';
-import { useRepoBootstrap } from './hooks/useRepoBootstrap';
-import { useRepoWorkspace } from './hooks/useRepoWorkspace';
-import { ChatPage } from './pages/ChatPage';
-import { FilesPage } from './pages/FilesPage';
-import { FileViewPage } from './pages/FileViewPage';
-import { NewRepoPage } from './pages/NewRepoPage';
-import { ReposPage } from './pages/ReposPage';
+} from './app/storage';
+import { extractSearch, getCurrentPath, getCurrentSearch, normalizePath, pushPath } from './app/navigation';
+import { ChatPage } from './features/chat/pages/ChatPage';
+import { useChatRuntime } from './features/chat/hooks/useChatRuntime';
+import { useRepoBootstrap } from './features/repos/hooks/useRepoBootstrap';
+import { useRepoWorkspace } from './features/repos/hooks/useRepoWorkspace';
+import { FileViewPage } from './features/repos/pages/FileViewPage';
+import { FilesPage } from './features/repos/pages/FilesPage';
+import { NewRepoPage } from './features/repos/pages/NewRepoPage';
+import { ReposPage } from './features/repos/pages/ReposPage';
+import { getClientErrorMessage, loadJsonFromStorage } from './lib/appUtils';
 
 interface JsonErrorResponse {
   error?: string;
@@ -64,7 +64,6 @@ export default function AppRoot() {
   const activeRepoRef = useRef<string | null>(activeRepoFullName);
   const outputRef = useRef<HTMLElement | null>(null);
   const pendingChatScrollRestoreRef = useRef<number | null>(null);
-  const setMessageRef = useRef<(value: string) => void>(() => {});
   const getRepoModelRef = useRef<(repoFullName?: string | null) => string>(() => '');
   const setRepoModelRef = useRef<(repoFullName: string | null, modelId: string) => void>(() => {});
   const fetchIssuesRef = useRef<(repoFullName?: string | null) => Promise<void>>(() => Promise.resolve());
@@ -106,7 +105,6 @@ export default function AppRoot() {
     toast
   });
   const {
-    activeThreadRef,
     addImageAttachments,
     applyLatestPlanShortcut,
     awaitingFirstStreamChunk,
@@ -119,7 +117,6 @@ export default function AppRoot() {
     goBackToRepoList,
     hasAnswerStarted,
     hasReasoningStarted,
-    interruptStreamingSilently,
     liveReasoningText,
     message,
     outputItems,
@@ -134,7 +131,6 @@ export default function AppRoot() {
     sendTurn,
     sendTurnWithOverrides,
     setMessage,
-    setOutputItems,
     setPendingAttachments,
     startNewThread,
     streaming,
@@ -144,6 +140,7 @@ export default function AppRoot() {
   const workspace = useRepoWorkspace({
     activeRepoFullName,
     activeThreadId,
+    activeCollaborationMode,
     chatVisible,
     currentPath,
     currentSearch,
@@ -195,9 +192,6 @@ export default function AppRoot() {
     useIssuePrompt
   } = workspace;
 
-  useEffect(() => {
-    setMessageRef.current = setMessage;
-  }, [setMessage]);
   useEffect(() => {
     getRepoModelRef.current = getRepoModel;
     setRepoModelRef.current = setRepoModel;

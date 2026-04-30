@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { PendingUserInputRequest, UserInputAnswerMap } from '../../shared/types';
-import { asObject, asRequestId, asString, type JsonRecord } from '../json';
-import { pushRuntimeLog } from '../runtimeLogs';
+import { pushRuntimeLog } from '../infra/runtimeLogs';
+import { asObject, asRequestId, asString, type JsonRecord } from '../lib/json';
 
 interface ApprovalsRouteOptions {
   listPendingRequests: (threadId: string) => Array<PendingUserInputRequest & { createdAt: string }>;

@@ -1,4 +1,4 @@
-import { asObject, asString } from '../json';
+import { asObject, asString } from '../lib/json';
 import type { ThreadMessageReadResult, ThreadMessageTurn } from './liveTurn';
 import type { OutputItem } from '../../shared/types';
 
@@ -111,4 +111,3 @@ export function normalizeThreadMessages(readResult: ThreadMessageReadResult): Ou
   const turns = Array.isArray(readResult?.thread?.turns) ? readResult.thread.turns : [];
   return turns.flatMap((turn) => normalizeTurnMessages(turn));
 }
-

@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type FocusEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Button, Page, PageContent } from 'framework7-react';
-import type { UserInputDraft } from '../../../shared/types';
+import type { UserInputDraft } from '../../../../shared/types';
 import { renderAssistant } from '../assistantRender';
-import { useAppCtx } from '../appContext';
-import { formatFileSize, formatIssueStatus, outputItemTurnId } from '../appUtils';
-import { resolveRepoRelativeFilePath } from '../navigation';
+import { useAppCtx } from '../../../app/AppContext';
+import { resolveRepoRelativeFilePath } from '../../../app/navigation';
+import { formatFileSize, formatIssueStatus, outputItemTurnId } from '../../../lib/appUtils';
 
 export function ChatPage() {
   const EXPANDED_COMPOSER_MAX_HEIGHT = 140;

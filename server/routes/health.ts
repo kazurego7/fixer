@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { asObject, asString } from '../json';
-import { listRuntimeLogs } from '../runtimeLogs';
+import { listRuntimeLogs } from '../infra/runtimeLogs';
+import { asObject, asString } from '../lib/json';
 
 interface HealthRouteOptions {
   workspaceRoot: string;

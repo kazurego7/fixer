@@ -1,6 +1,6 @@
 import { marked } from 'marked';
-import type { AssistantOutputItem, OutputItem } from '../../shared/types';
-import { isAssistantItem } from './appUtils';
+import type { AssistantOutputItem, OutputItem } from '../../../shared/types';
+import { isAssistantItem } from '../../lib/appUtils';
 
 marked.setOptions({ gfm: true, breaks: true });
 

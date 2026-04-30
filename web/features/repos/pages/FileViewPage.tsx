@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Page, PageContent } from 'framework7-react';
-import { useAppCtx } from '../appContext';
+import { useAppCtx } from '../../../app/AppContext';
 import { formatChangeKindLabel } from '../changeKindLabel';
 import {
   FILE_VIEW_DIFF_JUMP_TOP_OFFSET_PX,
@@ -10,7 +10,7 @@ import {
   buildFileRenderLines,
   findVirtualLineIndex
 } from '../fileViewModel';
-import { getCurrentFileParams } from '../navigation';
+import { getCurrentFileParams } from '../../../app/navigation';
 
 export function FileViewPage() {
   const { selectedFileView, selectedFileViewLoading, selectedFileViewError, fileListItems, openRepoFile, returnFromFileView } = useAppCtx();

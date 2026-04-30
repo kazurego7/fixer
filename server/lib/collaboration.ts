@@ -3,7 +3,7 @@ import type {
   CollaborationModeOverride,
   ModelOption,
   TurnStartOverrides
-} from '../shared/types';
+} from '../../shared/types';
 import type { JsonRecord } from './json';
 
 export const DEFAULT_MODEL_FALLBACK = 'gpt-5-codex';

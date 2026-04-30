@@ -6,7 +6,7 @@ const {
   findVirtualLineIndex,
   parseUnifiedHunks,
   splitFileContentLines
-} = require('../web/src/fileViewModel') as typeof import('../web/src/fileViewModel');
+} = require('../web/features/repos/fileViewModel') as typeof import('../web/features/repos/fileViewModel');
 
 test('splitFileContentLines は末尾の空行だけ表示対象から外す', () => {
   assert.deepEqual(splitFileContentLines('a\nb\n'), ['a', 'b']);

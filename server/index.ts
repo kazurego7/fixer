@@ -7,23 +7,23 @@ import Fastify, {
   type FastifyRequest
 } from 'fastify';
 import fastifyStatic from '@fastify/static';
-import { createAppServerClient, type AppServerClient } from './server/services/appServerClient';
+import { createAppServerClient, type AppServerClient } from './infra/appServerClient';
 import {
   createLiveTurnManager,
   type LiveTurnState,
   type ThreadMessageReadResult
-} from './server/services/liveTurn';
-import { createIssueSummaryService, parseIssueSummaryOutput } from './server/services/issueSummary';
-import { normalizeThreadMessages, normalizeTurnMessages } from './server/services/messageNormalization';
-import { createThreadRuntimeService } from './server/services/threadRuntime';
-import { createTurnLifecycleService } from './server/services/turnLifecycle';
+} from './services/liveTurn';
+import { createIssueSummaryService, parseIssueSummaryOutput } from './services/issueSummary';
+import { normalizeThreadMessages, normalizeTurnMessages } from './services/messageNormalization';
+import { createThreadRuntimeService } from './services/threadRuntime';
+import { createTurnLifecycleService } from './services/turnLifecycle';
 import {
   parseLegacyTurnNotification,
   parseThreadTokenUsageUpdatedNotification,
   parseTurnTerminalNotification,
   parseV2TurnNotification,
   selectTurnStreamUpdate
-} from './server/services/turnNotifications';
+} from './services/turnNotifications';
 import {
   DEFAULT_MODEL_FALLBACK,
   DEFAULT_THREAD_SANDBOX,
@@ -32,23 +32,23 @@ import {
   normalizeCollaborationMode,
   normalizeModelId,
   normalizeModelListResponse
-} from './server/collaboration';
-import { getErrorMessage } from './server/errors';
-import { diffKindFromStatusCode, parseGitStatusOutput, parseStatusPath } from './server/gitParsing';
-import { asObject, asString, type JsonRecord } from './server/json';
-import { registerGithubRoutes } from './server/routes/github';
-import { registerIssueRoutes } from './server/routes/issues';
-import { registerPushRoutes } from './server/routes/push';
-import { registerRepoRoutes } from './server/routes/repos';
-import { registerThreadRoutes } from './server/routes/threads';
-import { registerTurnRoutes } from './server/routes/turns';
-import { registerApprovalRoutes } from './server/routes/approvals';
-import { pushRuntimeLog } from './server/runtimeLogs';
-import { registerHealthRoutes } from './server/routes/health';
-import { registerSpaRoutes } from './server/routes/spa';
-import { createIssueService, type IssueService } from './server/services/issues';
-import { createPushService, type PushService } from './server/services/push';
-import { WORKSPACE_ROOT, repoFolderFromFullName, repoPathFromFullName } from './server/workspace';
+} from './lib/collaboration';
+import { getErrorMessage } from './lib/errors';
+import { diffKindFromStatusCode, parseGitStatusOutput, parseStatusPath } from './lib/gitParsing';
+import { asObject, asString, type JsonRecord } from './lib/json';
+import { registerGithubRoutes } from './routes/github';
+import { registerIssueRoutes } from './routes/issues';
+import { registerPushRoutes } from './routes/push';
+import { registerRepoRoutes } from './routes/repos';
+import { registerThreadRoutes } from './routes/threads';
+import { registerTurnRoutes } from './routes/turns';
+import { registerApprovalRoutes } from './routes/approvals';
+import { pushRuntimeLog } from './infra/runtimeLogs';
+import { registerHealthRoutes } from './routes/health';
+import { registerSpaRoutes } from './routes/spa';
+import { createIssueService, type IssueService } from './services/issues';
+import { createPushService, type PushService } from './services/push';
+import { WORKSPACE_ROOT, repoFolderFromFullName, repoPathFromFullName } from './infra/workspace';
 import {
   buildRepoFileView,
   isIgnoredRepoPath,
@@ -57,8 +57,8 @@ import {
   listRepoTreeDiff,
   readGitRepoStatus,
   resolveRepoTrackedPath
-} from './server/services/repos';
-import { extractDisplayReasoningText } from './shared/reasoning';
+} from './services/repos';
+import { extractDisplayReasoningText } from '../shared/reasoning';
 import type {
   CloneState,
   CollaborationMode,
@@ -66,7 +66,7 @@ import type {
   TurnStartOverrides,
   TurnStreamEvent,
   UserInputAnswerMap
-} from './shared/types';
+} from '../shared/types';
 
 declare module 'fastify' {
   interface FastifyRequest {

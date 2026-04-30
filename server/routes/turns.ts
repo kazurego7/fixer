@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { CollaborationMode, TurnStreamEvent, TurnStartOverrides } from '../../shared/types';
 import type { LiveTurnState } from '../services/liveTurn';
-import { getErrorMessage } from '../errors';
-import { asObject, asString } from '../json';
-import { pushRuntimeLog } from '../runtimeLogs';
+import { pushRuntimeLog } from '../infra/runtimeLogs';
+import { getErrorMessage } from '../lib/errors';
+import { asObject, asString } from '../lib/json';
 
 interface ThreadStartRetryPayload {
   attempt: number;

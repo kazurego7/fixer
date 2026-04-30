@@ -7,7 +7,7 @@ const {
   normalizePath,
   parseLineAnchor,
   resolveRepoRelativeFilePath
-} = require('../web/src/navigation') as typeof import('../web/src/navigation');
+} = require('../web/app/navigation') as typeof import('../web/app/navigation');
 
 test('normalizePath はアプリ内 route を正規化する', () => {
   assert.equal(normalizePath('/files?x=1'), '/files/');

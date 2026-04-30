@@ -1,4 +1,4 @@
-import type { GitRepoStatus, RepoFileChangeKind } from '../shared/types';
+import type { GitRepoStatus, RepoFileChangeKind } from '../../shared/types';
 
 export function parseGitStatusOutput(repoFullName: string, repoPath: string, raw: string): GitRepoStatus {
   let branch = '';

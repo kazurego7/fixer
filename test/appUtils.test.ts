@@ -9,7 +9,7 @@ const {
   outputItemTurnId,
   parseTurnStreamEvent,
   threadMessagesKey
-} = require('../web/src/appUtils') as typeof import('../web/src/appUtils');
+} = require('../web/lib/appUtils') as typeof import('../web/lib/appUtils');
 
 test('getClientErrorMessage は Error と fallback を処理する', () => {
   assert.equal(getClientErrorMessage(new Error('failed')), 'failed');

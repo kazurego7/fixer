@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const { extractDisplayReasoningText } = require('../web/src/reasoning') as typeof import('../web/src/reasoning');
+const { extractDisplayReasoningText } = require('../web/lib/reasoning') as typeof import('../web/lib/reasoning');
 
 test('extractDisplayReasoningText は最初の見出しを即時表示する', async () => {
   assert.equal(extractDisplayReasoningText('**見出し1** 検討中です'), '見出し1\n検討中です');

@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import type { CloneState } from '../../shared/types';
-import { getErrorMessage } from '../errors';
-import { asObject, asString } from '../json';
-import { pushRuntimeLog } from '../runtimeLogs';
+import { pushRuntimeLog } from '../infra/runtimeLogs';
+import { getErrorMessage } from '../lib/errors';
+import { asObject, asString } from '../lib/json';
 import { getGhStatus, githubCreateRepo, githubRepos, githubUser } from '../services/github';
 
 interface GithubRouteOptions {

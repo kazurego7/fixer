@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import type { CollaborationMode, OutputItem } from '../../shared/types';
 import type { ThreadMessageReadResult } from '../services/liveTurn';
-import { getErrorMessage } from '../errors';
-import { asObject, asString, type JsonRecord } from '../json';
-import { pushRuntimeLog } from '../runtimeLogs';
+import { pushRuntimeLog } from '../infra/runtimeLogs';
+import { getErrorMessage } from '../lib/errors';
+import { asObject, asString, type JsonRecord } from '../lib/json';
 
 interface ThreadListResponse {
   data?: Array<{

@@ -1,5 +1,5 @@
 import { Page, PageContent } from 'framework7-react';
-import { useAppCtx } from '../appContext';
+import { useAppCtx } from '../../../app/AppContext';
 import { FileTreeNode, useFileTreeState } from '../fileTree';
 
 export function FilesPage() {

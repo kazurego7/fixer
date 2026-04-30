@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from 'react';
-import type { RepoFileListItem, RepoFileTreeItem, RepoFileTreeResponse } from '../../shared/types';
+import type { RepoFileListItem, RepoFileTreeItem, RepoFileTreeResponse } from '../../../shared/types';
 
 type TreeTone = 'deleted' | 'added' | 'modified' | 'ignored' | 'normal';
 

@@ -7,16 +7,10 @@ import type {
   RepoFileListItem,
   RepoFileListResponse,
   RepoFileViewResponse
-} from '../../../shared/types';
-import {
-  COLLABORATION_MODE_BY_REPO_KEY,
-  DEFAULT_COLLABORATION_MODE,
-  MODEL_BY_REPO_KEY,
-  type CollaborationModeByRepoMap,
-  type ModelByRepoMap
-} from '../appStorage';
-import { getClientErrorMessage, loadJsonFromStorage, normalizeModelOptions } from '../appUtils';
-import { buildFileViewPath } from '../navigation';
+} from '../../../../shared/types';
+import { MODEL_BY_REPO_KEY, type ModelByRepoMap } from '../../../app/storage';
+import { buildFileViewPath } from '../../../app/navigation';
+import { getClientErrorMessage, loadJsonFromStorage, normalizeModelOptions } from '../../../lib/appUtils';
 
 interface JsonErrorResponse {
   error?: string;
@@ -46,6 +40,7 @@ interface FileViewFetchResponse extends RepoFileViewResponse {
 interface UseRepoWorkspaceArgs {
   activeRepoFullName: string | null;
   activeThreadId: string | null;
+  activeCollaborationMode: CollaborationMode;
   chatVisible: boolean;
   currentPath: string;
   currentSearch: string;
@@ -61,6 +56,7 @@ interface UseRepoWorkspaceArgs {
 export function useRepoWorkspace({
   activeRepoFullName,
   activeThreadId,
+  activeCollaborationMode,
   chatVisible,
   currentPath,
   currentSearch,
@@ -72,11 +68,6 @@ export function useRepoWorkspace({
   setMessage,
   toast
 }: UseRepoWorkspaceArgs) {
-  const [collaborationModeByRepo, setCollaborationModeByRepo] = useState<CollaborationModeByRepoMap>(() => {
-    if (typeof window === 'undefined') return {};
-    const map = loadJsonFromStorage<CollaborationModeByRepoMap>(COLLABORATION_MODE_BY_REPO_KEY, {});
-    return map && typeof map === 'object' ? map : {};
-  });
   const [modelByRepo, setModelByRepo] = useState<ModelByRepoMap>(() => {
     if (typeof window === 'undefined') return {};
     const map = loadJsonFromStorage<ModelByRepoMap>(MODEL_BY_REPO_KEY, {});
@@ -106,13 +97,6 @@ export function useRepoWorkspace({
   const fileViewReturnChatScrollTopRef = useRef<number | null>(null);
 
   const activeRepoModel = activeRepoFullName ? String(modelByRepo[activeRepoFullName] || '').trim() : '';
-  const activeCollaborationMode =
-    activeRepoFullName &&
-    (collaborationModeByRepo[activeRepoFullName] === 'plan' ||
-      collaborationModeByRepo[activeRepoFullName] === 'default')
-      ? collaborationModeByRepo[activeRepoFullName]
-      : DEFAULT_COLLABORATION_MODE;
-
   function getRepoModel(repoFullName: string | null = activeRepoRef.current): string {
     if (!repoFullName) return '';
     return String(modelByRepo[repoFullName] || '').trim();
@@ -350,13 +334,6 @@ export function useRepoWorkspace({
     }
   }
 
-  function setActiveCollaborationMode(mode: CollaborationMode): void {
-    const repoFullName = activeRepoFullName;
-    if (!repoFullName) return;
-    const next = mode === 'default' ? 'default' : 'plan';
-    setCollaborationModeByRepo((prev) => ({ ...prev, [repoFullName]: next }));
-  }
-
   useEffect(() => {
     if (currentPath === '/chat/' && chatVisible) return;
     setChatSettingsOpen(false);
@@ -420,10 +397,6 @@ export function useRepoWorkspace({
   }, [chatVisible, activeRepoFullName, currentPath, currentSearch]);
 
   useEffect(() => {
-    window.localStorage.setItem(COLLABORATION_MODE_BY_REPO_KEY, JSON.stringify(collaborationModeByRepo));
-  }, [collaborationModeByRepo]);
-
-  useEffect(() => {
     window.localStorage.setItem(MODEL_BY_REPO_KEY, JSON.stringify(modelByRepo));
   }, [modelByRepo]);
 
@@ -472,7 +445,6 @@ export function useRepoWorkspace({
       selectedFileView,
       selectedFileViewError,
       selectedFileViewLoading,
-      setActiveCollaborationMode,
       setActiveRepoModel,
       setFileListIncludeUnchanged,
       setRepoModel,
@@ -500,7 +472,8 @@ export function useRepoWorkspace({
       modelsLoading,
       selectedFileView,
       selectedFileViewError,
-      selectedFileViewLoading
+      selectedFileViewLoading,
+      activeCollaborationMode
     ]
   );
 
