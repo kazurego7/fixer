@@ -173,7 +173,8 @@ export function createIssueService(options: IssueServiceOptions): IssueService {
           updatedAt: marker.updatedAt,
           error: marker.error || null
         }));
-      return [...markerItems, ...issues].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+      markerItems.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+      return [...issues, ...markerItems];
     },
 
     createIssueMarker(input): IssueMarker {
