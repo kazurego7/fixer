@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { DEFAULT_REPO, bootstrapChatState, installApiMocks, saveVisualScreenshot } from './helpers';
 
-test('完了済みターンの Bad 目印から課題一覧を開き、課題を入力欄へ転記できる', async ({ page }, testInfo) => {
+test('完了済みターンの Bad 目印から課題タブへ移動し、入力欄へ転記できる', async ({ page }, testInfo) => {
   await bootstrapChatState(page);
   await installApiMocks(page);
 
@@ -126,13 +126,13 @@ test('完了済みターンの Bad 目印から課題一覧を開き、課題を
   await expect.poll(() => markerBody?.turnId || '').toBe('turn-bad-1');
   await expect(page.getByTestId('bad-marker-button')).toBeDisabled();
 
-  await page.getByTestId('issues-open-button').click();
-  await expect(page.getByTestId('issues-panel')).toBeVisible();
+  await page.getByTestId('workspace-tab-issues').click();
+  await expect(page.getByTestId('issues-page')).toBeVisible();
   await expect(page.getByText('送信後に止まる')).toBeVisible();
-  await saveVisualScreenshot(page, testInfo, 'issues-panel-after.png', { fullPage: true });
+  await saveVisualScreenshot(page, testInfo, 'issues-page-after.png', { fullPage: true });
 
   await page.getByTestId('issue-use-button').click();
-  await expect(page.getByTestId('issues-panel')).toHaveCount(0);
+  await expect(page).toHaveURL(/\/chat\/$/);
   await expect(page.getByTestId('composer-textarea')).toHaveValue('送信後に応答が進まない原因を調べて修正して');
   await saveVisualScreenshot(page, testInfo, 'issue-prompt-after.png', { fullPage: true });
 });

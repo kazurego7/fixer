@@ -12,6 +12,7 @@ const {
 test('normalizePath はアプリ内 route を正規化する', () => {
   assert.equal(normalizePath('/files?x=1'), '/files/');
   assert.equal(normalizePath('/files/view/#hash'), '/files/view/');
+  assert.equal(normalizePath('/issues?x=1'), '/issues/');
   assert.equal(normalizePath('/chat'), '/chat/');
   assert.equal(normalizePath('/unknown'), '/repos/');
 });

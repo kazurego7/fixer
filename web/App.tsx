@@ -18,6 +18,7 @@ import { useRepoBootstrap } from './features/repos/hooks/useRepoBootstrap';
 import { useRepoWorkspace } from './features/repos/hooks/useRepoWorkspace';
 import { FileViewPage } from './features/repos/pages/FileViewPage';
 import { FilesPage } from './features/repos/pages/FilesPage';
+import { IssuesPage } from './features/repos/pages/IssuesPage';
 import { NewRepoPage } from './features/repos/pages/NewRepoPage';
 import { ReposPage } from './features/repos/pages/ReposPage';
 import { getClientErrorMessage, loadJsonFromStorage } from './lib/appUtils';
@@ -63,6 +64,7 @@ export default function AppRoot() {
   const lastPathRef = useRef(getCurrentPath());
   const activeRepoRef = useRef<string | null>(activeRepoFullName);
   const outputRef = useRef<HTMLElement | null>(null);
+  const chatReturnScrollTopRef = useRef<number | null>(null);
   const pendingChatScrollRestoreRef = useRef<number | null>(null);
   const getRepoModelRef = useRef<(repoFullName?: string | null) => string>(() => '');
   const setRepoModelRef = useRef<(repoFullName: string | null, modelId: string) => void>(() => {});
@@ -147,6 +149,7 @@ export default function AppRoot() {
     streaming,
     activeRepoRef,
     outputRef,
+    chatReturnScrollTopRef,
     pendingChatScrollRestoreRef,
     navigate,
     setMessage,
@@ -158,7 +161,6 @@ export default function AppRoot() {
     badMarkerBusy,
     chatSettingsOpen,
     closeChatSettings,
-    closeIssuePanel,
     fetchFileList,
     fetchGitStatus,
     fileListError,
@@ -172,14 +174,12 @@ export default function AppRoot() {
     issueError,
     issueItems,
     issueLoading,
-    issuePanelOpen,
     loadAvailableModels,
     markedBadTurnIds,
     markTurnBad,
     modelsError,
     modelsLoading,
     openChatSettings,
-    openIssuePanel,
     openRepoFile,
     resolveIssue,
     returnFromFileView,
@@ -247,6 +247,23 @@ export default function AppRoot() {
     setCurrentSearch(extractSearch(next));
   }
 
+  function navigateWorkspaceTab(path: '/chat/' | '/files/' | '/issues/'): void {
+    if (currentPath === path) return;
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    if (currentPath === '/chat/' && path !== '/chat/') {
+      const node = outputRef.current;
+      if (node instanceof HTMLElement) {
+        chatReturnScrollTopRef.current = node.scrollTop;
+      }
+    }
+    if (path === '/chat/' && currentPath !== '/chat/') {
+      pendingChatScrollRestoreRef.current = chatReturnScrollTopRef.current;
+    }
+    navigate(path);
+  }
+
   useEffect(() => {
     if (didBootstrapRef.current) return;
     didBootstrapRef.current = true;
@@ -270,7 +287,11 @@ export default function AppRoot() {
   }, []);
 
   useEffect(() => {
-    if ((currentPath === '/chat/' || currentPath === '/files/' || currentPath === '/files/view/') && !chatVisible && connected) {
+    if (
+      (currentPath === '/chat/' || currentPath === '/files/' || currentPath === '/files/view/' || currentPath === '/issues/') &&
+      !chatVisible &&
+      connected
+    ) {
       navigate('/repos/', true);
     }
   }, [currentPath, chatVisible, connected]);
@@ -330,6 +351,7 @@ export default function AppRoot() {
       hasReasoningStarted,
       hasAnswerStarted,
       navigate,
+      navigateWorkspaceTab,
       bootstrapConnection,
       fetchRepos,
       createRepo,
@@ -374,11 +396,8 @@ export default function AppRoot() {
       pendingUserInputBusy,
       pendingUserInputDrafts,
       issueItems,
-      issuePanelOpen,
       issueLoading,
       issueError,
-      openIssuePanel,
-      closeIssuePanel,
       markTurnBad,
       badMarkerBusy,
       markedBadTurnIds,
@@ -410,6 +429,7 @@ export default function AppRoot() {
       hasReasoningStarted,
       hasAnswerStarted,
       navigate,
+      navigateWorkspaceTab,
       createRepo,
       activeCollaborationMode,
       activeRepoModel,
@@ -435,7 +455,6 @@ export default function AppRoot() {
       pendingUserInputBusy,
       pendingUserInputDrafts,
       issueItems,
-      issuePanelOpen,
       issueLoading,
       issueError,
       badMarkerBusy,
@@ -452,6 +471,8 @@ export default function AppRoot() {
           <NewRepoPage />
         ) : currentPath === '/files/' ? (
           <FilesPage />
+        ) : currentPath === '/issues/' ? (
+          <IssuesPage />
         ) : currentPath === '/files/view/' ? (
           <FileViewPage />
         ) : (

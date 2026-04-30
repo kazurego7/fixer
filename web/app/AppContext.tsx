@@ -50,6 +50,7 @@ export interface AppContextValue {
   hasReasoningStarted: boolean;
   hasAnswerStarted: boolean;
   navigate: (path: string, replace?: boolean) => void;
+  navigateWorkspaceTab: (path: '/chat/' | '/files/' | '/issues/') => void;
   bootstrapConnection: () => Promise<void>;
   fetchRepos: (nextQuery?: string) => Promise<void>;
   createRepo: (name: string, visibility: 'public' | 'private') => Promise<RepoSummary>;
@@ -99,11 +100,8 @@ export interface AppContextValue {
   pendingUserInputBusy: PendingBusyMap;
   pendingUserInputDrafts: UserInputDraftMap;
   issueItems: IssueItem[];
-  issuePanelOpen: boolean;
   issueLoading: boolean;
   issueError: string;
-  openIssuePanel: () => void;
-  closeIssuePanel: () => void;
   markTurnBad: (turnId: string) => Promise<void>;
   badMarkerBusy: boolean;
   markedBadTurnIds: string[];

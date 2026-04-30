@@ -47,6 +47,7 @@ interface UseRepoWorkspaceArgs {
   streaming: boolean;
   activeRepoRef: MutableRefObject<string | null>;
   outputRef: RefObject<HTMLElement | null>;
+  chatReturnScrollTopRef: MutableRefObject<number | null>;
   pendingChatScrollRestoreRef: MutableRefObject<number | null>;
   navigate: (path: string, replace?: boolean) => void;
   setMessage: (value: string) => void;
@@ -63,6 +64,7 @@ export function useRepoWorkspace({
   streaming,
   activeRepoRef,
   outputRef,
+  chatReturnScrollTopRef,
   pendingChatScrollRestoreRef,
   navigate,
   setMessage,
@@ -88,13 +90,11 @@ export function useRepoWorkspace({
   const [selectedFileViewLoading, setSelectedFileViewLoading] = useState(false);
   const [selectedFileViewError, setSelectedFileViewError] = useState('');
   const [issueItems, setIssueItems] = useState<IssueItem[]>([]);
-  const [issuePanelOpen, setIssuePanelOpen] = useState(false);
   const [issueLoading, setIssueLoading] = useState(false);
   const [issueError, setIssueError] = useState('');
   const [badMarkerBusy, setBadMarkerBusy] = useState(false);
   const [markedBadTurnIds, setMarkedBadTurnIds] = useState<string[]>([]);
   const fileViewReturnPathRef = useRef<'/files/' | '/chat/'>('/files/');
-  const fileViewReturnChatScrollTopRef = useRef<number | null>(null);
 
   const activeRepoModel = activeRepoFullName ? String(modelByRepo[activeRepoFullName] || '').trim() : '';
   function getRepoModel(repoFullName: string | null = activeRepoRef.current): string {
@@ -233,18 +233,23 @@ export function useRepoWorkspace({
       if (currentPath === '/chat/') {
         const node = outputRef.current;
         fileViewReturnPathRef.current = '/chat/';
-        fileViewReturnChatScrollTopRef.current = node instanceof HTMLElement ? node.scrollTop : 0;
+        chatReturnScrollTopRef.current = node instanceof HTMLElement ? node.scrollTop : 0;
+        if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
       } else {
         fileViewReturnPathRef.current = '/files/';
-        fileViewReturnChatScrollTopRef.current = null;
       }
     }
     navigate(buildFileViewPath(filePath, line, jumpToFirstDiff), replace);
   }
 
   function returnFromFileView(): void {
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     if (fileViewReturnPathRef.current === '/chat/') {
-      pendingChatScrollRestoreRef.current = fileViewReturnChatScrollTopRef.current;
+      pendingChatScrollRestoreRef.current = chatReturnScrollTopRef.current;
       navigate('/chat/');
       return;
     }
@@ -273,15 +278,6 @@ export function useRepoWorkspace({
     } finally {
       if (activeRepoRef.current === repoFullName) setIssueLoading(false);
     }
-  }
-
-  function openIssuePanel(): void {
-    setIssuePanelOpen(true);
-    fetchIssues().catch(() => {});
-  }
-
-  function closeIssuePanel(): void {
-    setIssuePanelOpen(false);
   }
 
   async function markTurnBad(turnId: string): Promise<void> {
@@ -313,7 +309,7 @@ export function useRepoWorkspace({
     const prompt = String(issue?.nextPrompt || '').trim();
     if (!prompt) return;
     setMessage(prompt);
-    setIssuePanelOpen(false);
+    navigate('/chat/');
     toast('課題を入力欄へ入れました');
   }
 
@@ -344,7 +340,6 @@ export function useRepoWorkspace({
       setIssueItems([]);
       setIssueError('');
       setIssueLoading(false);
-      setIssuePanelOpen(false);
       setMarkedBadTurnIds([]);
       return;
     }
@@ -373,6 +368,9 @@ export function useRepoWorkspace({
 
   useEffect(() => {
     if (!chatVisible || !activeRepoFullName) return;
+    if (currentPath === '/issues/') {
+      fetchIssues(activeRepoFullName).catch(() => {});
+    }
     if (currentPath === '/files/' || currentPath === '/files/view/') {
       fetchFileList(false, activeRepoFullName).catch(() => {});
     }
@@ -416,7 +414,6 @@ export function useRepoWorkspace({
       badMarkerBusy,
       chatSettingsOpen,
       closeChatSettings,
-      closeIssuePanel,
       fetchIssues,
       fetchFileList,
       fetchGitStatus,
@@ -431,14 +428,12 @@ export function useRepoWorkspace({
       issueError,
       issueItems,
       issueLoading,
-      issuePanelOpen,
       loadAvailableModels,
       markedBadTurnIds,
       markTurnBad,
       modelsError,
       modelsLoading,
       openChatSettings,
-      openIssuePanel,
       openRepoFile,
       resolveIssue,
       returnFromFileView,
@@ -466,7 +461,6 @@ export function useRepoWorkspace({
       issueError,
       issueItems,
       issueLoading,
-      issuePanelOpen,
       markedBadTurnIds,
       modelsError,
       modelsLoading,

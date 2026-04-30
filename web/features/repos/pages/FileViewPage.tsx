@@ -11,6 +11,7 @@ import {
   findVirtualLineIndex
 } from '../fileViewModel';
 import { getCurrentFileParams } from '../../../app/navigation';
+import { RepoWorkspaceNav } from '../RepoWorkspaceNav';
 
 export function FileViewPage() {
   const { selectedFileView, selectedFileViewLoading, selectedFileViewError, fileListItems, openRepoFile, returnFromFileView } = useAppCtx();
@@ -239,17 +240,13 @@ export function FileViewPage() {
   return (
     <Page noNavbar>
       <PageContent className="fx-page fx-page-file-view">
-        <div className="fx-chat-head">
-          <button
-            className="fx-back-icon"
-            type="button"
-            onClick={returnFromFileView}
-            data-testid="file-view-back-button"
-          >
-            ←
-          </button>
-          <div className="fx-files-title" data-testid="file-view-path">{fileTitle}</div>
-        </div>
+        <RepoWorkspaceNav
+          activeTab="files"
+          onBack={returnFromFileView}
+          backTestId="file-view-back-button"
+          title={fileTitle}
+          titleTestId="file-view-path"
+        />
         <div className="fx-file-view-toolbar">
           <div className="fx-file-view-actions">
             <button

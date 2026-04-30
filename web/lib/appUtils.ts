@@ -49,6 +49,13 @@ export function formatIssueStatus(status: IssueItem['status']): string {
   return '待機中';
 }
 
+export function formatRepoDisplayName(fullName: string | null | undefined): string {
+  const normalized = String(fullName || '').trim();
+  if (!normalized) return 'リポジトリ未選択';
+  const segments = normalized.split('/').filter(Boolean);
+  return segments[segments.length - 1] || normalized;
+}
+
 export function outputItemTurnId(item: OutputItem | null | undefined): string {
   const id = String(item?.id || '').trim();
   const idx = id.indexOf(':');

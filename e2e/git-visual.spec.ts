@@ -14,6 +14,7 @@ type GitVisualScenario = {
         body: Record<string, unknown>;
       };
   expectedText: string;
+  expectedTabStatus: 'idle' | 'updated' | 'conflict';
   buttonEnabled: boolean;
 };
 
@@ -41,6 +42,7 @@ const scenarios: GitVisualScenario[] = [
       }
     },
     expectedText: 'Git は同期済みです',
+    expectedTabStatus: 'idle',
     buttonEnabled: false
   },
   {
@@ -66,6 +68,7 @@ const scenarios: GitVisualScenario[] = [
       }
     },
     expectedText: '変更あり',
+    expectedTabStatus: 'updated',
     buttonEnabled: true
   },
   {
@@ -91,6 +94,7 @@ const scenarios: GitVisualScenario[] = [
       }
     },
     expectedText: '未 push のコミット 3 件',
+    expectedTabStatus: 'idle',
     buttonEnabled: true
   },
   {
@@ -116,6 +120,7 @@ const scenarios: GitVisualScenario[] = [
       }
     },
     expectedText: 'Git 競合 2 件',
+    expectedTabStatus: 'conflict',
     buttonEnabled: true
   },
   {
@@ -129,6 +134,7 @@ const scenarios: GitVisualScenario[] = [
       }
     },
     expectedText: 'Git 状態取得失敗',
+    expectedTabStatus: 'idle',
     buttonEnabled: false
   }
 ];
@@ -149,15 +155,18 @@ for (const scenario of scenarios) {
 
     await page.goto('/chat/');
 
-    const statusLine = page.getByTestId('git-status-line');
+    const filesTab = page.getByTestId('workspace-tab-files');
     const button = page.getByTestId('git-commit-push-button');
 
-    await expect(statusLine).toContainText(scenario.expectedText);
+    await expect(filesTab).toHaveAttribute('data-status', scenario.expectedTabStatus);
+    if (scenario.expectedTabStatus !== 'idle') {
+      await expect(filesTab).toHaveAttribute('title', new RegExp(scenario.expectedText));
+    }
     if (scenario.buttonEnabled) await expect(button).toBeEnabled();
     else await expect(button).toBeDisabled();
 
-    await saveVisualScreenshot(page, testInfo, `git-status-${scenario.fileSlug}.png`, {
-      attachmentName: `git-status-${scenario.fileSlug}`
+    await saveVisualScreenshot(page, testInfo, `git-tab-${scenario.fileSlug}.png`, {
+      attachmentName: `git-tab-${scenario.fileSlug}`
     });
   });
 }

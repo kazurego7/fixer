@@ -3,6 +3,7 @@ export function normalizePath(rawPath: string): string {
   const pathname = pathWithoutQuery.split('#')[0] ?? '';
   if (pathname === '/files' || pathname === '/files/') return '/files/';
   if (pathname === '/files/view' || pathname === '/files/view/') return '/files/view/';
+  if (pathname === '/issues' || pathname === '/issues/') return '/issues/';
   if (pathname === '/chat' || pathname === '/chat/') return '/chat/';
   if (pathname === '/repos/new' || pathname === '/repos/new/') return '/repos/new/';
   return '/repos/';

@@ -4,7 +4,8 @@ import type { UserInputDraft } from '../../../../shared/types';
 import { renderAssistant } from '../assistantRender';
 import { useAppCtx } from '../../../app/AppContext';
 import { resolveRepoRelativeFilePath } from '../../../app/navigation';
-import { formatFileSize, formatIssueStatus, outputItemTurnId } from '../../../lib/appUtils';
+import { formatFileSize, formatIssueStatus, formatRepoDisplayName, outputItemTurnId } from '../../../lib/appUtils';
+import { RepoWorkspaceNav } from '../../repos/RepoWorkspaceNav';
 
 export function ChatPage() {
   const EXPANDED_COMPOSER_MAX_HEIGHT = 140;
@@ -58,17 +59,9 @@ export function ChatPage() {
     selectUserInputOption,
     pendingUserInputBusy,
     pendingUserInputDrafts,
-    issueItems,
-    issuePanelOpen,
-    issueLoading,
-    issueError,
-    openIssuePanel,
-    closeIssuePanel,
     markTurnBad,
     badMarkerBusy,
     markedBadTurnIds,
-    useIssuePrompt,
-    resolveIssue
   } = useAppCtx();
   const hasComposerInput = message.trim().length > 0 || pendingAttachments.length > 0;
   const canSend = hasComposerInput;
@@ -118,12 +111,7 @@ export function ChatPage() {
     const hit = availableModels.find((item) => item.id === activeRepoModel);
     return hit?.name || activeRepoModel;
   }, [availableModels, activeRepoModel]);
-  const gitStatusSummary = gitStatusLoading
-    ? 'Git 状態を確認中...'
-    : gitStatusError
-      ? `Git 状態取得失敗: ${gitStatusError}`
-      : gitStatus?.summary || 'Git 状態を確認できません';
-  const gitStatusTone = gitStatusError ? 'danger' : gitStatus?.tone || 'neutral';
+  const repoDisplayName = formatRepoDisplayName(activeRepoFullName);
   const canRequestGitCommitPush = Boolean(
     !busy &&
       !streaming &&
@@ -131,8 +119,6 @@ export function ChatPage() {
       !gitStatusError &&
       gitStatus?.actionRecommended
   );
-  const canOpenFiles = Boolean(activeRepoFullName);
-  const openIssueCount = issueItems.filter((item) => item.status !== 'resolved').length;
   const isComposerExpanded = isInputFocused;
   const chatScrollPaddingBottom = Math.max(78, composerHeight + keyboardInset + 12);
   const composerInlineStyle = keyboardInset > 0 ? { bottom: `${keyboardInset}px` } : undefined;
@@ -338,124 +324,84 @@ export function ChatPage() {
   return (
     <Page noNavbar>
       <PageContent className="fx-page fx-page-chat">
-        <div className="fx-chat-head">
-          <button
-            className="fx-back-icon"
-            type="button"
-            onClick={goBackToRepoList}
-            data-testid="back-button"
-          >
-            ←
-          </button>
-          <button
-            className="fx-repo-pill fx-repo-pill-btn"
-            type="button"
-            onClick={openChatSettings}
-            data-testid="chat-settings-trigger"
-            aria-label="チャット設定を開く"
-            title="チャット設定"
-          >
-            <span className="fx-repo-pill-text">{activeRepoFullName}</span>
-            <span className="fx-repo-pill-gear" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+        <RepoWorkspaceNav
+          activeTab="chat"
+          onBack={goBackToRepoList}
+          backTestId="back-button"
+          title={
+            <button
+              className="fx-repo-pill fx-repo-pill-btn"
+              type="button"
+              onClick={openChatSettings}
+              data-testid="chat-settings-trigger"
+              aria-label="チャット設定を開く"
+              title="チャット設定"
+            >
+              <span className="fx-repo-pill-text">{repoDisplayName}</span>
+              <span className="fx-repo-pill-gear" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+                  <path
+                    d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37c.996 -1.636 .04 -2.433 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1.636 .996 2.433 .04 2.572 -1.065z"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" stroke="currentColor" strokeWidth="1.7" />
+                </svg>
+              </span>
+            </button>
+          }
+          rightSlot={
+            <button
+              className="fx-git-action-icon"
+              type="button"
+              onClick={requestGitCommitPush}
+              disabled={!canRequestGitCommitPush}
+              aria-label="Codex にコミットと push を依頼"
+              title="Codex にコミットと push を依頼"
+              data-testid="git-commit-push-button"
+            >
+              <svg
+                className="fx-git-action-icon-svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
                 <path
-                  d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37c.996 -1.636 .04 -2.433 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1.636 .996 2.433 .04 2.572 -1.065z"
+                  d="M6 4.5H16.5L19.5 7.5V19.5H4.5V6A1.5 1.5 0 0 1 6 4.5Z"
                   stroke="currentColor"
                   strokeWidth="1.7"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
-                <path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" stroke="currentColor" strokeWidth="1.7" />
+                <path
+                  d="M8 4.5V10H15V4.5"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M8 19.5V14.5A1 1 0 0 1 9 13.5H15A1 1 0 0 1 16 14.5V19.5"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M10 16.5H14"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
               </svg>
-            </span>
-          </button>
-          <button
-            className="fx-git-action-icon"
-            type="button"
-            onClick={requestGitCommitPush}
-            disabled={!canRequestGitCommitPush}
-            aria-label="Codex にコミットと push を依頼"
-            title="Codex にコミットと push を依頼"
-            data-testid="git-commit-push-button"
-          >
-            <svg
-              className="fx-git-action-icon-svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-              aria-hidden="true"
-            >
-              <path
-                d="M6 4.5H16.5L19.5 7.5V19.5H4.5V6A1.5 1.5 0 0 1 6 4.5Z"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M8 4.5V10H15V4.5"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M8 19.5V14.5A1 1 0 0 1 9 13.5H15A1 1 0 0 1 16 14.5V19.5"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M10 16.5H14"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-          <button
-            className="fx-git-action-icon fx-issue-nav-button"
-            type="button"
-            onClick={openIssuePanel}
-            aria-label="課題一覧"
-            title="課題一覧"
-            data-testid="issues-open-button"
-          >
-            <span className="fx-issue-nav-mark" aria-hidden="true">!</span>
-            {openIssueCount > 0 ? (
-              <span className="fx-issue-nav-count" data-testid="issues-count">
-                {openIssueCount}
-              </span>
-            ) : null}
-          </button>
-        </div>
-        <button
-          type="button"
-          className={`fx-git-status-line is-${gitStatusTone}`}
-          data-testid="git-status-line"
-          title={gitStatusSummary}
-          onClick={() => navigate('/files/')}
-          disabled={!canOpenFiles}
-        >
-          <span className="fx-git-status-dot" aria-hidden="true" />
-          <span className="fx-git-status-text">{gitStatusSummary}</span>
-          {gitStatus?.branch ? <span className="fx-git-status-branch">{gitStatus.branch}</span> : null}
-          <span className="fx-git-status-chevron" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path
-                d="M7.5 4.5L12.5 10L7.5 15.5"
-                stroke="currentColor"
-                strokeWidth="1.9"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </span>
-        </button>
-
+            </button>
+          }
+        />
         <article
           className="fx-chat-scroll"
           ref={outputRef}
@@ -756,69 +702,6 @@ export function ChatPage() {
                   <p className="fx-mini">利用可能なモデルが見つかりませんでした。</p>
                 ) : null}
               </div>
-            </section>
-          </div>
-        ) : null}
-
-        {issuePanelOpen ? (
-          <div className="fx-issue-panel-overlay" onClick={closeIssuePanel} data-testid="issues-panel">
-            <section
-              className="fx-issue-panel"
-              role="dialog"
-              aria-modal="true"
-              aria-label="課題一覧"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <header className="fx-issue-panel-head">
-                <h3>課題一覧</h3>
-                <button
-                  type="button"
-                  className="fx-chat-settings-close"
-                  onClick={closeIssuePanel}
-                  aria-label="課題一覧を閉じる"
-                  data-testid="issues-close-button"
-                >
-                  ×
-                </button>
-              </header>
-              {issueLoading ? <div className="fx-issue-empty">読み込み中...</div> : null}
-              {issueError ? <div className="fx-issue-error">{issueError}</div> : null}
-              {!issueLoading && !issueError && issueItems.length === 0 ? (
-                <div className="fx-issue-empty">課題はまだありません。</div>
-              ) : null}
-              {!issueLoading && !issueError && issueItems.length > 0 ? (
-                <div className="fx-issue-list">
-                  {issueItems.map((issue) => (
-                    <article key={issue.id} className={`fx-issue-item is-${issue.status}`} data-testid="issue-item">
-                      <div className="fx-issue-item-head">
-                        <h4>{issue.title}</h4>
-                        <span className="fx-issue-status">{formatIssueStatus(issue.status)}</span>
-                      </div>
-                      <p>{issue.summary}</p>
-                      <div className="fx-issue-actions">
-                        <button
-                          type="button"
-                          className="fx-issue-action"
-                          onClick={() => useIssuePrompt(issue)}
-                          disabled={!issue.nextPrompt || issue.status !== 'open'}
-                          data-testid="issue-use-button"
-                        >
-                          対応する
-                        </button>
-                        <button
-                          type="button"
-                          className="fx-issue-action is-muted"
-                          onClick={() => resolveIssue(issue)}
-                          disabled={issue.status !== 'open'}
-                          data-testid="issue-resolve-button"
-                        >
-                          解決済み
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              ) : null}
             </section>
           </div>
         ) : null}

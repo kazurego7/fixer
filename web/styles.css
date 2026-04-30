@@ -288,12 +288,15 @@ body {
   font-size: 0.8rem;
 }
 
-.fx-chat-head {
+.fx-repo-nav {
+  flex: 0 0 auto;
+}
+
+.fx-chat-head,
+.fx-repo-nav-head {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: center;
-  position: relative;
   min-height: calc(2.45rem + var(--fx-safe-top));
   padding: calc(var(--fx-safe-top) + 0.02rem) 0.75rem 0.02rem;
   border-bottom: 1px solid #dbeafe;
@@ -301,11 +304,31 @@ body {
   backdrop-filter: blur(10px);
 }
 
+.fx-repo-nav-head {
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.fx-repo-nav-side {
+  flex: 0 0 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.fx-repo-nav-side.is-right {
+  justify-content: flex-end;
+}
+
+.fx-repo-nav-title {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .fx-back-icon {
-  position: absolute;
-  left: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
   width: 2rem;
   height: 2rem;
   border-radius: 999px;
@@ -317,10 +340,6 @@ body {
 }
 
 .fx-git-action-icon {
-  position: absolute;
-  right: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
   width: 2rem;
   height: 2rem;
   display: flex;
@@ -342,33 +361,6 @@ body {
   height: 1.16rem;
 }
 
-.fx-issue-nav-button {
-  right: 3.08rem;
-}
-
-.fx-issue-nav-mark {
-  font-weight: 800;
-  font-size: 0.95rem;
-  line-height: 1;
-  color: #b91c1c;
-}
-
-.fx-issue-nav-count {
-  position: absolute;
-  right: -0.25rem;
-  top: -0.28rem;
-  min-width: 1rem;
-  height: 1rem;
-  padding: 0 0.2rem;
-  border-radius: 999px;
-  background: #ef4444;
-  color: #ffffff;
-  font-size: 0.65rem;
-  line-height: 1rem;
-  text-align: center;
-  font-weight: 700;
-}
-
 .fx-repo-pill {
   display: inline-flex;
   align-items: center;
@@ -377,7 +369,7 @@ body {
   font-size: 0.88rem;
   font-weight: 600;
   text-align: center;
-  max-width: calc(100% - 7.6rem);
+  max-width: 100%;
 }
 
 .fx-repo-pill-btn {
@@ -403,7 +395,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: calc(100vw - 10.6rem);
+  max-width: min(100%, calc(100vw - 10.6rem));
 }
 
 .fx-repo-pill-gear {
@@ -459,82 +451,65 @@ body {
   background: #f8fafc;
 }
 
-.fx-git-status-line {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 0.42rem;
-  padding: 0.42rem 0.75rem;
-  border: 0;
+.fx-workspace-tabs {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  padding: 0 0.75rem;
   border-bottom: 1px solid #e2e8f0;
   background: rgba(255, 255, 255, 0.92);
-  text-align: left;
-  appearance: none;
-  cursor: pointer;
 }
 
-.fx-git-status-line:disabled {
-  cursor: default;
-  opacity: 0.72;
+.fx-workspace-tab {
+  min-height: 2.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.7rem 0.4rem 0.6rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #64748b;
+  font-size: 0.84rem;
+  font-weight: 700;
 }
 
-.fx-git-status-line.is-neutral {
-  color: #475569;
+.fx-workspace-tab.is-active {
+  border-bottom-color: #2563eb;
+  color: #1d4ed8;
 }
 
-.fx-git-status-line.is-success {
-  color: #166534;
+.fx-workspace-tab.is-updated {
+  color: #b45309;
 }
 
-.fx-git-status-line.is-warning {
-  color: #9a3412;
-  background: #fff7ed;
-}
-
-.fx-git-status-line.is-danger {
+.fx-workspace-tab.is-conflict {
   color: #b91c1c;
-  background: #fef2f2;
 }
 
-.fx-git-status-dot {
-  width: 0.46rem;
-  height: 0.46rem;
+.fx-workspace-tab.is-updated.is-active {
+  border-bottom-color: #d97706;
+  color: #b45309;
+}
+
+.fx-workspace-tab.is-conflict.is-active {
+  border-bottom-color: #dc2626;
+  color: #b91c1c;
+}
+
+.fx-workspace-tab-count {
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.25rem;
   border-radius: 999px;
-  background: currentColor;
-  flex: 0 0 auto;
-}
-
-.fx-git-status-text {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.76rem;
-  line-height: 1.2;
-}
-
-.fx-git-status-branch {
-  flex: 0 0 auto;
-  padding: 0.14rem 0.42rem;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  line-height: 1.1;
-  opacity: 0.8;
-}
-
-.fx-git-status-chevron {
-  width: 0.95rem;
-  height: 0.95rem;
-  flex: 0 0 auto;
-  opacity: 0.72;
-}
-
-.fx-git-status-chevron svg {
-  width: 100%;
-  height: 100%;
-  display: block;
+  background: #ef4444;
+  color: #ffffff;
+  font-size: 0.64rem;
+  line-height: 1.1rem;
+  text-align: center;
+  font-weight: 700;
 }
 
 .fx-chat-settings-overlay {
@@ -608,45 +583,6 @@ body {
   align-items: center;
   gap: 0.46rem;
   margin-bottom: 0.42rem;
-}
-
-.fx-issue-panel-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 42;
-  background: rgba(15, 23, 42, 0.38);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  padding: 0.7rem;
-}
-
-.fx-issue-panel {
-  width: min(560px, 100%);
-  max-height: 78vh;
-  overflow: auto;
-  border-radius: 16px;
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.24);
-}
-
-.fx-issue-panel-head {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.64rem 0.72rem;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.fx-issue-panel-head h3 {
-  margin: 0;
-  font-size: 0.96rem;
-  color: #0f172a;
 }
 
 .fx-issue-list {
@@ -751,7 +687,8 @@ body {
   background: #f8fafc;
 }
 
-.fx-files-title {
+.fx-files-title,
+.fx-repo-nav-title {
   font-size: 0.94rem;
   font-weight: 700;
   color: #0f172a;
@@ -792,22 +729,20 @@ body {
   min-height: 1.1rem;
 }
 
-.fx-files-toolbar-repo {
-  min-width: 0;
-  color: #64748b;
-  font-size: 0.74rem;
-  text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .fx-files-list,
 .fx-file-view-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 0.7rem 0.75rem calc(0.95rem + var(--fx-safe-bottom));
+}
+
+.fx-issues-page-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.75rem;
+  background: #f8fafc;
 }
 
 .fx-files-list {

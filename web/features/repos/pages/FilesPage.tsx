@@ -1,6 +1,8 @@
 import { Page, PageContent } from 'framework7-react';
 import { useAppCtx } from '../../../app/AppContext';
+import { formatRepoDisplayName } from '../../../lib/appUtils';
 import { FileTreeNode, useFileTreeState } from '../fileTree';
+import { RepoWorkspaceNav } from '../RepoWorkspaceNav';
 
 export function FilesPage() {
   const { activeRepoFullName, fileListIncludeUnchanged, setFileListIncludeUnchanged, openRepoFile, navigate } = useAppCtx();
@@ -9,21 +11,25 @@ export function FilesPage() {
     includeUnchanged: fileListIncludeUnchanged
   });
   const { rootItems, rootLoading, rootError } = treeState;
+  const repoDisplayName = formatRepoDisplayName(activeRepoFullName);
+  const goBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    navigate('/chat/');
+  };
 
   return (
     <Page noNavbar>
       <PageContent className="fx-page fx-page-files">
-        <div className="fx-chat-head">
-          <button
-            className="fx-back-icon"
-            type="button"
-            onClick={() => navigate('/chat/')}
-            data-testid="files-back-button"
-          >
-            ←
-          </button>
-          <div className="fx-files-title">ファイル一覧</div>
-        </div>
+        <RepoWorkspaceNav
+          activeTab="files"
+          onBack={goBack}
+          backTestId="files-back-button"
+          title={repoDisplayName}
+          titleTestId="files-page-title"
+        />
         <div className="fx-files-toolbar">
           <label className="fx-files-toggle" htmlFor="files-include-unchanged" data-testid="files-include-unchanged-toggle">
             <input
@@ -34,7 +40,6 @@ export function FilesPage() {
             />
             <span>変更差分なしも表示</span>
           </label>
-          <div className="fx-files-toolbar-repo">{activeRepoFullName || 'リポジトリ未選択'}</div>
         </div>
         <div className="fx-files-list" data-testid="files-list">
           {rootLoading ? <p className="fx-mini">ファイル一覧を読み込み中...</p> : null}

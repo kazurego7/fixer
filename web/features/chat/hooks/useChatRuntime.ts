@@ -1,4 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type MutableRefObject,
+  type RefObject,
+  type SetStateAction
+} from 'react';
 import type {
   CollaborationMode,
   ImageAttachmentDraft,
@@ -127,6 +137,7 @@ export function useChatRuntime({
   const chatEntryPathRef = useRef(currentPath);
   const lastChatEntryAlignKeyRef = useRef('');
   const chatEntryScrollTopRef = useRef(0);
+  const suppressChatEntryAlignRef = useRef(false);
   const activeThreadRef = useRef<string | null>(activeThreadId);
   const activeTurnIdRef = useRef('');
   const compactionStatusTimerRef = useRef<number | null>(null);
@@ -1096,11 +1107,12 @@ export function useChatRuntime({
     outputRef.current.scrollTop = outputRef.current.scrollHeight;
   }, [outputItems, streaming]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const prevPath = chatEntryPathRef.current;
     chatEntryPathRef.current = currentPath;
     if (currentPath !== '/chat/' || prevPath === '/chat/') return;
     lastChatEntryAlignKeyRef.current = '';
+    suppressChatEntryAlignRef.current = pendingChatScrollRestoreRef.current !== null;
     const node = outputRef.current;
     chatEntryScrollTopRef.current = node instanceof HTMLElement ? node.scrollTop : 0;
   }, [currentPath]);
@@ -1116,10 +1128,13 @@ export function useChatRuntime({
     return () => container.removeEventListener('scroll', onScroll);
   }, [currentPath, chatVisible, activeThreadId, outputItems.length]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (currentPath !== '/chat/' || !chatVisible) return;
     const preferredScrollTop = pendingChatScrollRestoreRef.current;
     if (preferredScrollTop === null) return;
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     const container = outputRef.current;
     if (!(container instanceof HTMLElement)) return;
     const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
@@ -1129,12 +1144,14 @@ export function useChatRuntime({
     chatEntryScrollTopRef.current = nextScrollTop;
     pendingChatScrollRestoreRef.current = null;
     lastChatEntryAlignKeyRef.current = `${String(activeThreadId || '')}:${currentPath}`;
+    suppressChatEntryAlignRef.current = true;
   }, [currentPath, chatVisible, outputItems, activeThreadId]);
 
   useEffect(() => {
     if (currentPath !== '/chat/' || !chatVisible) return;
     if (typeof window === 'undefined') return;
     if (outputItems.length === 0) return;
+    if (suppressChatEntryAlignRef.current) return;
     const alignKey = `${String(activeThreadId || '')}:${currentPath}`;
     if (lastChatEntryAlignKeyRef.current === alignKey) return;
     let attempts = 0;
